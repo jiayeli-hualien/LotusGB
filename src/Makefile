@@ -3,12 +3,17 @@
 executables := application gbit_test
 sub_folders := lib $(executables)
 
-.PHONY: $(sub_folders)
+.PHONY: $(sub_folders) unit_test test
 
 all: $(sub_folders)
 
 $(executables): lib
 	$(MAKE) -C ./$@ build_dir=$(build_dir)
+
+unit_test:
+	$(MAKE) -C ./unit_test build_dir=$(build_dir)
+
+test: unit_test
 
 # TODO: re-write makefile to leverage dependycy & parallel build
 lib:

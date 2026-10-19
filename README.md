@@ -1,0 +1,87 @@
+# LotusGB
+
+LotusGB is a learning project to build a Nintendo Game Boy emulator in C++.
+
+## Project status
+
+The repository currently contains a CPU implementation and an adapter used to
+run it against [GBIT](https://github.com/koenk/gbit), a Game Boy instruction
+test harness. It is not yet a complete Game Boy emulator: memory mapping,
+cartridge support, graphics, audio, timers, and input are not implemented as a
+full system.
+
+CPU behavior and timing still need review. The CPU currently advances in
+memory-cycle-sized steps; system components will need to share a consistent
+clock as they are added.
+
+## Roadmap
+
+### Near term
+
+- Review the CPU TODOs and resolve correctness and timing issues against
+  reliable references and test ROMs.
+- Maintain GitHub Actions CI for the project build, CPU unit tests, and GBIT
+  instruction tests.
+
+### Longer term
+
+- Implement the remaining Game Boy system components.
+- Add a libretro adapter so the emulator can run as a RetroArch core.
+
+## Building
+
+The project uses GNU Make and GCC/G++. From the repository root, run:
+
+```sh
+make build
+```
+
+Run the CPU interface unit tests with:
+
+```sh
+make test
+```
+
+These tests use fake memory, decoder, and instruction implementations and do
+not require GBIT. They check the CPU's cycle-stepping contract at its public
+boundary.
+
+The `gbit_test` target expects the [GBIT repository](https://github.com/koenk/gbit)
+to be checked out as a sibling directory next to `lotus-gbemu`. The current
+`application` target is still a placeholder. After building, run the GBIT
+instruction checks from the build directory:
+
+```sh
+cd build
+LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
+```
+
+## History
+
+- **2023-02-12:** Started the project, added an example using GBIT, and began a
+  C/C++ wrapper.
+- **2023-02-15:** Integrated GBIT; the initial NOP test did not pass. Planned
+  state accessors for the GBIT adapter.
+
+## References
+
+### Game Boy development and hardware
+
+- [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr)
+- [Building a Game Boy emulator](https://wwssllabcd.github.io/2021/02/08/how-to-build-a-gameboy-emulator-1/)
+- [Game Boy emulator notes (HackMD)](https://hackmd.io/@sysprog/BJvOWzFqv)
+- [Game Boy emulator notes by RinHizakura](https://hackmd.io/@RinHizakura/BJ6HoW29v)
+- [The Ultimate Game Boy Talk](https://media.ccc.de/v/33c3-8029-the_ultimate_game_boy_talk)
+- [Thomas Spurden's Game Boy notes](https://thomas.spurden.name/gameboy)
+
+### Project and build references
+
+- [GBIT](https://github.com/koenk/gbit)
+- [Calling C++ from C](http://www.huoschen.idv.tw/blog/programming/c-calling-c++-functions/)
+- [Creating a shared library with Make](https://stackoverflow.com/questions/8096015/creating-a-simple-makefile-to-build-a-shared-library)
+- [GNU Make notes](https://jasonblog.github.io/note/gunmake/gunmake.html)
+- [Makefile example](https://gist.github.com/wenchy/64db1636845a3da0c4c7)
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out LotusGB
+        uses: actions/checkout@v7
+        with:
+          path: lotus-gbemu
+
+      - name: Check out pinned GBIT
+        uses: actions/checkout@v7
+        with:
+          repository: koenk/gbit
+          ref: 392603def44e78a6b6e8cea23c3fcdd181c491d5
+          path: gbit
+
+      - name: Build GBIT
+        run: make -C gbit
+
+      - name: Build LotusGB
+        working-directory: lotus-gbemu
+        run: make build
+
+      - name: Run CPU unit tests
+        working-directory: lotus-gbemu
+        run: make test
+
+      - name: Run GBIT instruction tests
+        working-directory: lotus-gbemu
+        run: |
+          cd build
+          LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test

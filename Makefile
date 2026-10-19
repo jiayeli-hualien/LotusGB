@@ -4,7 +4,7 @@ src_dir := $(CURDIR)/src
 build_dir := $(CURDIR)/build
 
 # PHONY: non file targets
-.PHONY: build clean
+.PHONY: build test clean
 
 all: build
 
@@ -13,6 +13,9 @@ $(build_dir):
 
 build: $(build_dir)
 	$(MAKE) -C $(src_dir) build_dir=$(build_dir)
+
+test: $(build_dir)
+	$(MAKE) -C $(src_dir) test build_dir=$(build_dir)
 
 clean:
 	rm $(build_dir) -r
