@@ -82,10 +82,30 @@ void testTimerInterruptWakesHaltAndRunsHandler() {
            "timer overflow requests an interrupt that wakes HALT and runs the timer handler");
 }
 
+void testGameBoySystemAcceptsButtonInput() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x20,       // LD A, $20
+        0xE0, 0x00,       // LDH ($FF00), A (select directions)
+        0xFA, 0x00, 0xFF, // LD A, ($FF00)
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+
+    GameBoySystem system(std::move(rom));
+    system.setButtonState(JoypadButton::Right, true);
+    for (unsigned step = 0; step < 16; ++step)
+        expect(system.stepOneCycle().success, "button input program advances successfully");
+
+    expect(system.getCpuRegisters().getRefA() == 0xEE,
+           "button state reaches the CPU through the joypad register on the system bus");
+}
+
 }
 
 int main() {
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
     testTimerInterruptWakesHaltAndRunsHandler();
+    testGameBoySystemAcceptsButtonInput();
     std::cout << "Headless system tests passed\n";
 }

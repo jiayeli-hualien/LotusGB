@@ -9,6 +9,7 @@
 #include "cartridge.hpp"
 #include "decoder.hpp"
 #include "interrupt_registers.hpp"
+#include "joypad.hpp"
 #include "memory_region.hpp"
 #include "system_clock.hpp"
 #include "timer.hpp"
@@ -16,7 +17,7 @@
 namespace LOTUSGB {
 
 // Initial headless DMG composition: ROM-only cartridge, basic RAM regions,
-// CPU, address bus, and shared clock. PPU, timer, and I/O devices are pending.
+// CPU, address bus, timer, joypad input, and shared clock. PPU is pending.
 class GameBoySystem {
 public:
     explicit GameBoySystem(std::vector<uint8_t> rom);
@@ -24,6 +25,7 @@ public:
     RetStepOneCycle stepOneCycle();
     uint64_t getElapsedTCycles() const;
     Reg getCpuRegisters();
+    void setButtonState(JoypadButton button, bool pressed);
 
 private:
     RomOnlyCartridge cartridge;
@@ -32,6 +34,7 @@ private:
     RamRegion objectRam;
     RamRegion highRam;
     InterruptRegisters interruptRegisters;
+    Joypad joypad;
     Timer timer;
     AddressBus bus;
     Decoder decoder{false};
