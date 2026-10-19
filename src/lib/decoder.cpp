@@ -1,7 +1,6 @@
 #include "include/decoder.hpp"
 #include "include/generated_decode_tables.hpp"
 #include <iostream>
-#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -14,24 +13,20 @@ template <typename DecodeRows, typename InstructionRows>
 static void initializeTables(
     std::vector<Instruction> &instList, uint8_t (&lutInstIdx)[256],
     const DecodeRows &rules, const InstructionRows &instructionRows) {
-    std::unordered_map<string, size_t> instIdx;
     for (const auto &row : instructionRows) {
         vector<IInstruction::FUNC_TYPE> functions;
-        functions.reserve(row.cycles);
-        for (size_t i = 0; i < row.cycles; ++i) {
+        functions.reserve(row.functions.size());
+        for (size_t i = 0; i < row.functions.size(); ++i) {
             functions.emplace_back(row.functions[i]);
         }
-        instIdx.emplace(string(row.name), instList.size());
-        instList.emplace_back(string(row.name), row.cycles, std::move(functions));
+        instList.emplace_back(string(row.name), row.functions.size(), std::move(functions));
     }
 
     for (int opcode = 0; opcode < 256; ++opcode) {
         lutInstIdx[opcode] = static_cast<uint8_t>(instList.size());
         for (const auto &rule : rules) {
             if ((opcode & rule.mask) == (rule.value & rule.mask)) {
-                const auto it = instIdx.find(string(rule.instruction));
-                if (it != instIdx.end())
-                    lutInstIdx[opcode] = static_cast<uint8_t>(it->second);
+                lutInstIdx[opcode] = static_cast<uint8_t>(rule.instruction);
                 break;
             }
         }
