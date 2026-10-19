@@ -18,8 +18,7 @@
 namespace LOTUSGB {
 
 // Initial headless DMG composition: ROM-only cartridge, basic RAM regions,
-// CPU, address bus, timer, PPU timing, joypad input, and shared clock.
-// PPU rendering is still pending.
+// CPU, address bus, timer, PPU timing/rendering, joypad input, and shared clock.
 class GameBoySystem {
 public:
     explicit GameBoySystem(std::vector<uint8_t> rom);
@@ -27,6 +26,7 @@ public:
     RetStepOneCycle stepOneCycle();
     uint64_t getElapsedTCycles() const;
     Reg getCpuRegisters();
+    const DmgPpu::FrameBuffer &getFrameBuffer() const;
     void setButtonState(JoypadButton button, bool pressed);
 
 private:

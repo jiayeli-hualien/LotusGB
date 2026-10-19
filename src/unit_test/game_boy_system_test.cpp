@@ -131,6 +131,31 @@ void testPpuAdvancesAndExposesScanlineThroughSystemBus() {
            "system clock advances at least one complete scanline");
 }
 
+void testGameBoySystemExposesRenderedFrameBuffer() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x80,       // LD A, $80
+        0xEA, 0x00, 0x80, // LD ($8000), A (tile 0, row 0, color 1 at x=0)
+        0x3E, 0x00,       // LD A, $00
+        0xEA, 0x00, 0x98, // LD ($9800), A (BG map points to tile 0)
+        0x3E, 0xE4,       // LD A, $E4 (identity DMG palette)
+        0xE0, 0x47,       // LDH ($FF47), A (BGP)
+        0x3E, 0x91,       // LD A, $91 (LCD, unsigned tiles, BG enabled)
+        0xE0, 0x40,       // LDH ($FF40), A (enable LCD)
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+
+    GameBoySystem system(std::move(rom));
+    for (unsigned step = 0; step < 180; ++step)
+        expect(system.stepOneCycle().success, "framebuffer integration step succeeds");
+
+    const auto &frame = system.getFrameBuffer();
+    expect(frame.size() == DmgPpu::FRAME_WIDTH * DmgPpu::FRAME_HEIGHT,
+           "system exposes a complete 160 by 144 framebuffer");
+    expect(frame[0] == 1, "system framebuffer includes the rendered BG pixel");
+}
+
 }
 
 int main() {
@@ -138,5 +163,6 @@ int main() {
     testTimerInterruptWakesHaltAndRunsHandler();
     testGameBoySystemAcceptsButtonInput();
     testPpuAdvancesAndExposesScanlineThroughSystemBus();
+    testGameBoySystemExposesRenderedFrameBuffer();
     std::cout << "Headless system tests passed\n";
 }

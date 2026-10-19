@@ -41,6 +41,10 @@ Reg GameBoySystem::getCpuRegisters() {
     return cpu.getReg();
 }
 
+const DmgPpu::FrameBuffer &GameBoySystem::getFrameBuffer() const {
+    return ppu.getFrameBuffer();
+}
+
 void GameBoySystem::setButtonState(JoypadButton button, bool pressed) {
     joypad.setButtonState(button, pressed);
 }
