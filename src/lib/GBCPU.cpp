@@ -86,7 +86,7 @@ RetStepOneCycle GBCPU::stepOneCycle() {
         // Keep the resumed opcode bus read inside a CPU machine cycle.
         fetchAfterStopWake = false;
         doFetchNextOp();
-        clockTimeStamp += 4;
+        clockTimeStamp += T_CYCLES_PER_M_CYCLE;
         ret.fetchedNewInst = true;
         ret.success = true;
         return ret;
@@ -94,7 +94,7 @@ RetStepOneCycle GBCPU::stepOneCycle() {
     if (isHalt) {
         // The system clock continues while HALTed; an interrupt controller can
         // wake the CPU through setHALT(false).
-        clockTimeStamp += 4;
+        clockTimeStamp += T_CYCLES_PER_M_CYCLE;
         ret.success = true;
         return ret;
     }
@@ -149,7 +149,7 @@ RetStepOneCycle GBCPU::stepOneCycle() {
         default:
             break;
     }
-    clockTimeStamp+=4;
+    clockTimeStamp += T_CYCLES_PER_M_CYCLE;
     ret.success = true;
     return ret;
 }

@@ -344,6 +344,29 @@ void testStopDecodeAndHaltIdle() {
     expect(halt.cpu.stepOneCycle().fetchedNewInst, "waking HALT resumes the prefetched instruction");
 }
 
+void testMemoryAccessesOccurWithinTheirMCycle() {
+    CpuFixture f{{0x0000, 0x7E}, {0x0001, 0x00}, {0xC000, 0xA5}}; // LD A,(HL)
+    Reg reg = f.cpu.getReg();
+    reg.getRefH() = 0xC0;
+    reg.getRefL() = 0x00;
+    f.cpu.setReg(reg);
+
+    expect(T_CYCLES_PER_M_CYCLE == 4, "one CPU machine cycle contains four T-cycles");
+    const auto readData = f.cpu.stepOneCycle();
+    expect(readData.success && !readData.fetchedNewInst,
+           "LD A,(HL) performs its data access in the first instruction cycle");
+    expect(f.memory.reads == std::vector<uint16_t>{0xC000},
+           "the first instruction cycle exposes only the HL data read");
+
+    const auto fetchNext = f.cpu.stepOneCycle();
+    expect(fetchNext.success && fetchNext.fetchedNewInst,
+           "LD A,(HL) fetches the next opcode in its second instruction cycle");
+    expect(f.memory.reads == std::vector<uint16_t>({0xC000, 0x0001}),
+           "the second instruction cycle exposes the next opcode fetch");
+    expect(f.cpu.getReg().getRefA() == 0xA5,
+           "the data read is committed to A by the end of the instruction");
+}
+
 void testEiDelay() {
     CpuFixture f{{0x0000, 0xFB}, {0x0001, 0x01}, {0x0002, 0x34},
                  {0x0003, 0x12}, {0x0004, 0x00}};
@@ -374,6 +397,7 @@ int main() {
     testPopRetAndJumpBusTiming();
     testConditionalBranchAndCallBusTiming();
     testStopDecodeAndHaltIdle();
+    testMemoryAccessesOccurWithinTheirMCycle();
     testEiDelay();
     std::cout << "CPU instruction tests passed\n";
     return EXIT_SUCCESS;

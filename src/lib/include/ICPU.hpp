@@ -7,6 +7,10 @@
 
 namespace LOTUSGB {
 
+// The current CPU stepping interface advances one machine cycle at a time.
+// Each M-cycle contains four CPU T-cycles.
+static constexpr unsigned T_CYCLES_PER_M_CYCLE = 4;
+
 struct RetStepOneCycle {
     bool success = false;
     bool fetchedNewInst = false;
@@ -18,9 +22,8 @@ public:
     virtual void reset() = 0;
     virtual void fetchFirstOpcode() = 0;
 
-    // step one memory cycle
-    virtual RetStepOneCycle stepOneCycle() = 0; // 1Hz mem cycle
-    // TODO: func stepOneCPUClock
+    // Advance the CPU by one machine cycle (T_CYCLES_PER_M_CYCLE T-cycles).
+    virtual RetStepOneCycle stepOneCycle() = 0;
 
     // tool functions for GBIT
     // TODO: remove them from API, or provide Memento Pattern

@@ -12,6 +12,7 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - Polymorphic interfaces used through owning pointers now have virtual destructors. `GBCPU` marks memory/decoder dependencies as borrowed references, and each GBIT adapter owns its dependencies and helper independently.
 - A regression test creates two GBIT adapters, destroys one, and verifies that the other remains usable.
 - CPU-local STOP and HALT states are separate; STOP consumes its second byte, ignores its value, and resumes fetching only after an explicit wake request.
+- The CPU stepping interface defines one M-cycle as four T-cycles; an instruction test checks its data read and next-opcode fetch in their respective M-cycles.
 
 ## Delivery milestones
 
@@ -26,7 +27,7 @@ The first major delivery goal is running a Game Boy ROM in RetroArch on Ubuntu. 
 
 ## Next work, in order
 
-1. **Define the system clock and bus contract.** Treat one CPU M-cycle as four T-cycles, with a future system scheduler owning shared time and advancing peripherals from that clock. Keep M-cycle stepping as the CPU's current instruction interface; refine CPU/bus timing at T-cycle granularity when PPU or bus behavior tests require it. Make each memory access visible at a defined cycle boundary, and move reset's initial opcode fetch into the same bus/timing contract.
+1. **Integrate the shared system clock and bus.** Keep CPU stepping at one M-cycle (four T-cycles) for now, and make a system scheduler the time authority for CPU and peripherals. Make memory transactions visible at defined cycle boundaries; move reset's initial opcode fetch into the same bus/timing contract. Refine CPU/bus timing at T-cycle granularity when PPU or bus behavior tests require it.
 2. **Add a real address bus and cartridge boundary.** Replace flat/mock memory in the emulator path with address-region routing, then add cartridge ROM access and mapper support. Keep the GBIT memory adapter as test infrastructure rather than the system memory implementation.
 3. **Add timer and interrupt components.** Connect timer state, interrupt request/enable registers, CPU IME, HALT wake-up, and interrupt entry through explicit interfaces. Test the interactions together, especially delayed EI and HALT edge cases.
 4. **Add the PPU and input path.** Build a headless system loop that advances CPU, timer, and PPU on one shared clock; then add input state and a minimal frame output. Keep rendering/UI separate from emulation state. Use Game Boy F-1 Race as one visual compatibility target when a frame can be rendered.
