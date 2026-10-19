@@ -12,7 +12,7 @@ csv_sources := $(wildcard ../lib/include/*.csv)
 test_executables := $(build_dir)/cpu_interface_test $(build_dir)/cpu_instruction_test \
 	$(build_dir)/adapter_lifetime_test $(build_dir)/system_clock_test \
 	$(build_dir)/address_bus_test $(build_dir)/game_boy_system_test \
-	$(build_dir)/timer_test $(build_dir)/joypad_test
+	$(build_dir)/timer_test $(build_dir)/joypad_test $(build_dir)/dmg_ppu_test
 
 .PHONY: test
 
@@ -25,6 +25,7 @@ test: $(test_executables)
 	$(build_dir)/game_boy_system_test
 	$(build_dir)/timer_test
 	$(build_dir)/joypad_test
+	$(build_dir)/dmg_ppu_test
 
 $(build_dir)/cpu_interface_test: cpu_cycle_test.cpp ../lib/GBCPU.cpp $(test_headers) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/GBCPU.cpp -o $@
@@ -56,6 +57,11 @@ $(build_dir)/timer_test: timer_test.cpp ../lib/timer.cpp \
 $(build_dir)/joypad_test: joypad_test.cpp ../lib/joypad.cpp \
 		../lib/interrupt_registers.cpp $(test_headers) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/joypad.cpp ../lib/interrupt_registers.cpp -o $@
+
+$(build_dir)/dmg_ppu_test: dmg_ppu_test.cpp ../lib/dmg_ppu.cpp \
+		../lib/interrupt_registers.cpp $(test_headers) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< ../lib/dmg_ppu.cpp \
+		../lib/interrupt_registers.cpp -o $@
 
 $(build_dir):
 	mkdir -p $@

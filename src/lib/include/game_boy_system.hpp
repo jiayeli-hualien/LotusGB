@@ -8,6 +8,7 @@
 #include "address_bus.hpp"
 #include "cartridge.hpp"
 #include "decoder.hpp"
+#include "dmg_ppu.hpp"
 #include "interrupt_registers.hpp"
 #include "joypad.hpp"
 #include "memory_region.hpp"
@@ -17,7 +18,8 @@
 namespace LOTUSGB {
 
 // Initial headless DMG composition: ROM-only cartridge, basic RAM regions,
-// CPU, address bus, timer, joypad input, and shared clock. PPU is pending.
+// CPU, address bus, timer, PPU timing, joypad input, and shared clock.
+// PPU rendering is still pending.
 class GameBoySystem {
 public:
     explicit GameBoySystem(std::vector<uint8_t> rom);
@@ -29,13 +31,12 @@ public:
 
 private:
     RomOnlyCartridge cartridge;
-    RamRegion videoRam;
     RamRegion workRam;
-    RamRegion objectRam;
     RamRegion highRam;
     InterruptRegisters interruptRegisters;
     Joypad joypad;
     Timer timer;
+    DmgPpu ppu;
     AddressBus bus;
     Decoder decoder{false};
     Decoder decoderCB{true};

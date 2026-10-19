@@ -101,11 +101,42 @@ void testGameBoySystemAcceptsButtonInput() {
            "button state reaches the CPU through the joypad register on the system bus");
 }
 
+void testPpuAdvancesAndExposesScanlineThroughSystemBus() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x80,       // LD A, $80
+        0xE0, 0x40,       // LDH ($FF40), A (enable LCD)
+        0xF0, 0x44,       // loop: LDH A, ($FF44)
+        0xFE, 0x01,       // CP $01
+        0x20, 0xFA,       // JR NZ, loop
+        0x06, 0x5A,       // LD B, $5A (exit marker)
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+
+    GameBoySystem system(std::move(rom));
+    bool reachedNextLine = false;
+    for (unsigned step = 0; step < 1000; ++step) {
+        const auto result = system.stepOneCycle();
+        expect(result.success, "PPU system integration step succeeds");
+        if (system.getCpuRegisters().getRefB() == 0x5A) {
+            reachedNextLine = true;
+            break;
+        }
+    }
+
+    expect(reachedNextLine,
+           "CPU observes LY advance through the address bus as the system clock advances PPU");
+    expect(system.getElapsedTCycles() >= 456,
+           "system clock advances at least one complete scanline");
+}
+
 }
 
 int main() {
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
     testTimerInterruptWakesHaltAndRunsHandler();
     testGameBoySystemAcceptsButtonInput();
+    testPpuAdvancesAndExposesScanlineThroughSystemBus();
     std::cout << "Headless system tests passed\n";
 }

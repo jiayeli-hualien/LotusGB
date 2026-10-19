@@ -19,32 +19,54 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - A regression test creates two GBIT adapters, destroys one, and verifies that the other remains usable.
 - CPU-local STOP and HALT states are separate; STOP consumes its second byte, ignores its value, and resumes fetching only after an explicit wake request.
 - The CPU stepping interface defines one M-cycle as four T-cycles and reports elapsed T-cycles per step (zero during STOP idle). Tests check elapsed time and memory accesses across instruction M-cycles.
+- The initial DMG PPU owns VRAM/OAM and implements LCD registers, 456-dot scanlines, mode 0/1/2/3 transitions, VBlank and edge-triggered STAT requests, plus mode-based CPU video-memory access restrictions. Mode 3 currently uses its 172-dot minimum; rendering and timing penalties are not implemented yet.
 
 ## Delivery milestones
 
-The first major delivery goal is running a Game Boy ROM in RetroArch on Ubuntu. Build the shared emulator core first; do not make a standalone GUI a prerequisite.
+The first playable milestone is running a Game Boy ROM in RetroArch on Ubuntu. Build and test the shared headless core first; it is a prerequisite, not a separate player-facing milestone. Do not make a standalone GUI a prerequisite.
 
-1. **Headless Game Boy core.** Implement the shared clock and bus, address map and cartridge loading, timer and interrupts, then a minimal PPU and input path. Acceptance: headless tests can load a test ROM, advance frames, provide input, and inspect generated video output.
-2. **Ubuntu RetroArch core.** Add the libretro adapter after the headless core can run a cartridge. Acceptance: build a Linux libretro shared library, load it in RetroArch on Ubuntu, start a ROM, display frames, and receive input. Audio can follow after this first playable milestone.
-3. **Audio and compatibility.** Add audio output and cartridge persistence, then improve timing and visual compatibility with focused tests and reference games. Use Game Boy F-1 Race as one PPU visual target.
-4. **Steam Deck.** Build and verify the libretro core in RetroArch on SteamOS, including controls, display scaling, and audio.
-5. **Raspberry Pi with Recalbox.** Build and verify the core for the supported Raspberry Pi model and Recalbox environment, including controls, video, and audio.
-6. **Windows.** Add a Windows build and CI job for the libretro core, then verify it in a Windows RetroArch installation.
+1. **First playable milestone: Ubuntu RetroArch core.** Implement the shared clock and bus, address map and initial cartridge loading, timer and interrupts, then a minimal PPU, input path, and libretro adapter. Acceptance: build a Linux libretro shared library; RetroArch loads a supported homebrew ROM; the game produces video frames and responds to input through a short gameplay loop. Use [GB Pong Clone](https://github.com/AlexMGiroux/gb-pong-clone) as the initial ROM candidate after confirming its cartridge mapper and ROM redistribution terms. Audio and save persistence are not required for this milestone.
+2. **Audio and compatibility.** Add audio output and cartridge persistence, then improve timing and visual compatibility with focused tests and reference games. Use Game Boy F-1 Race as one PPU visual target.
+3. **Steam Deck.** Build and verify the libretro core in RetroArch on SteamOS, including controls, display scaling, and audio.
+4. **Raspberry Pi with Recalbox.** Build and verify the core for the supported Raspberry Pi model and Recalbox environment, including controls, video, and audio.
+5. **Windows.** Add a Windows build and CI job for the libretro core, then verify it in a Windows RetroArch installation.
 
 ## Next work, in order
 
-1. **Integrate the shared system clock and bus.** Keep CPU stepping at one M-cycle (four T-cycles) for now, and make a system scheduler the time authority for CPU and peripherals. Initial scheduler scaffold is in place: it advances clocked components by the CPU step's reported T-cycles and leaves system time unchanged for failed or zero-time steps. Reset's initial opcode fetch now occurs in the first timed CPU step; CPU memory transactions are observable synchronously through `IMemoryAccess` during each M-cycle. The explicit fetch helper remains for GBIT reference-test setup. Define how bus transactions line up with peripheral advancement, then refine timing at T-cycle granularity when PPU or bus behavior tests require it.
+1. **Integrate the shared system clock and bus.** Keep CPU stepping at one M-cycle (four T-cycles) for now, and make a system scheduler the time authority for CPU and peripherals. Initial scheduler scaffold is in place: it advances clocked components by the CPU step's reported T-cycles and leaves system time unchanged for failed or zero-time steps. Reset's initial opcode fetch now occurs in the first timed CPU step; CPU memory transactions are observable synchronously through `IMemoryAccess` during each M-cycle, before the clock advances peripherals for that step. PPU memory restrictions therefore observe the mode at the start of the CPU M-cycle. Move bus transactions to finer timing only when targeted tests demonstrate that M-cycle granularity is insufficient.
 2. **Add a real address bus and cartridge boundary.** Address-range routing, zero-initialized VRAM/WRAM/OAM/HRAM regions, and a ROM-only cartridge window are composed into an initial headless system and covered by tests. ROM-only cartridges are limited to at most 32 KiB; header parsing, file loading, banked mappers, echo RAM, and hardware-backed I/O devices remain to be implemented. Keep the GBIT memory adapter as test infrastructure.
 3. **Add timer and interrupt components.** The initial DMG timer registers (`DIV`, `TIMA`, `TMA`, `TAC`), divider-edge counter, delayed overflow reload, and timer interrupt request/enable registers are mapped and covered by focused tests. The CPU now accepts enabled requests at instruction boundaries, applies priority, acknowledges only the selected IF bit, pushes the return PC and vectors through a five-M-cycle interrupt-entry sequence, and handles IME delay, HALT wake-up, and the HALT bug. Timer and CPU depend on an interrupt-controller interface so other hardware sources can request interrupts without depending on the IF/IE register implementation. Further refine timer/interrupt edge timing against dedicated ROM tests as those suites are added.
-4. **Add the PPU and input path.** The JOYP register is mapped at `FF00`, with active-low direction/button selection, falling-edge interrupt requests, and a `GameBoySystem` button-state API covered by unit and system tests. Next add a DMG PPU to the shared clock, first covering LCD register behavior, line/mode timing, and VBlank/STAT requests; then render background/window and objects into a headless frame buffer. Keep rendering/UI separate from emulation state. Use Game Boy F-1 Race as one visual compatibility target after the basic renderer works.
-5. **Add audio and cartridge persistence.** These can be developed after the system loop and memory map exist, with component-level tests and suitable ROM or hardware test suites.
-6. **Add the libretro adapter.** Do this after a headless system can load a cartridge, advance frames, and expose input/video/audio callbacks. Keep RetroArch-specific lifecycle and callbacks outside CPU and hardware components.
+4. **Add the PPU and input path.** The JOYP register is mapped at `FF00`, with active-low direction/button selection, falling-edge interrupt requests, and a `GameBoySystem` button-state API covered by unit and system tests. The initial DMG PPU now owns VRAM/OAM, LCD registers, line/mode timing, VBlank/STAT requests, and mode-based CPU access restrictions. Next render background/window and objects into a headless frame buffer, then use dmg-acid2 for the first PPU visual acceptance check. Keep rendering/UI separate from emulation state. Use Game Boy F-1 Race as a later visual compatibility target.
+5. **Add the libretro adapter.** Do this after a headless system can load a cartridge, advance frames, and expose input and video. Audio callbacks can follow the first playable milestone. Keep RetroArch-specific lifecycle and callbacks outside CPU and hardware components.
+6. **Add audio and cartridge persistence.** Add these after the first playable RetroArch milestone, with component-level tests and suitable ROM or hardware test suites.
+
+## Open design questions
+
+These are discussion prompts, not approved implementation tasks. Discuss them one at a time; promote an item into the roadmap only if it is worth addressing.
+
+1. **Clock and bus timing for the PPU.** Is the current four-T-cycle CPU step sufficient for the first PPU, or should CPU bus transactions be placed within individual T-cycles before PPU timing begins? This affects mode transitions, VRAM/OAM access restrictions, and timing-sensitive visual effects.
+2. **Startup state and boot ROM.** Should normal cartridge execution run a boot ROM, start from a documented DMG post-boot state, or support both? Current CPU and PPU reset values are synthetic test-friendly state, not a complete hardware startup path.
+3. **Joypad and STOP wake-up.** Should button input wake STOP in the current system, and what exact joypad signal should trigger it? The current input API updates JOYP and requests its interrupt but does not wake the CPU from STOP.
+4. **CPU reference tests.** How should CI present known GBIT disagreements (currently STOP and EI) while keeping hardware behavior as the source of truth? Consider adding focused community test ROMs as their required hardware becomes available.
+5. **GBIT adapter boundary.** Move GBIT-only sources out of `src/lib` and build them as test support before or during the libretro adapter work; the current library Makefile includes every `.cpp` in that directory.
+
+## Resolved design questions
+
+- Keep virtual interfaces where they let unit tests substitute fake dependencies; do not add them to every class by default.
+- Let the PPU own VRAM/OAM and route CPU access through the PPU so it can enforce mode-based access restrictions.
+- Defer a broad `src` directory reorganization. Isolate GBIT adapter code before libretro, then group hardware modules when the PPU makes the current flat library directory harder to navigate.
+- Use Pan Docs as a hardware reference and list it in the README; verify behavior with focused tests rather than treating any one reference emulator as the specification.
 
 ## Validation rule
 
 For each step, state what externally observable behavior changes, add a focused regression test at the narrowest useful boundary, and run the relevant unit or integration checks. Use GBIT as one CPU comparison source; investigate disagreements instead of copying behavior without hardware evidence.
 
-Add community test ROMs as the corresponding hardware features become available. Select focused ROMs from suites such as Mooneye and Blargg for CPU, timer, interrupt, memory, and PPU behavior; record each test's model, boot ROM, and other execution requirements. Do not treat passing an entire suite as an early milestone when its dependent hardware is not implemented.
+## Test ROMs and acceptance
+
+- Use focused tests from the [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) and [Blargg test ROM collection](https://github.com/c-sp/game-boy-test-roms) for CPU, timer, interrupt, memory, and other hardware behavior as those features become available. Record each selected ROM's model, boot ROM, hardware dependencies, and pass/fail signal. Do not make passing an entire suite an early milestone.
+- Use [dmg-acid2](https://github.com/mattcurrie/dmg-acid2) for the DMG PPU visual acceptance check once the renderer can produce frames; compare its output with the published reference image.
+- Use a supported, legally distributable homebrew game for the first playable RetroArch acceptance check. The current candidate is GB Pong Clone; confirm its mapper and ROM redistribution terms before treating it as the fixed target. The check must include an input that visibly changes gameplay, not only a loaded core or static frame.
+- Keep downloaded ROM binaries out of the repository unless their redistribution terms are clear. Pin the selected source or release and record a checksum for repeatable local and CI runs.
 
 ## Platform support
 
