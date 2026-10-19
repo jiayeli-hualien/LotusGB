@@ -33,13 +33,18 @@ static void initializeTables(
     }
 }
 
-Decoder::Decoder(bool cbOpcodeTable) {
+Decoder::Decoder(bool cbOpcodeTable, bool stopWorkaround) {
     if (cbOpcodeTable)
         initializeTables(instList, lutInstIdx, GeneratedDecodeTables::cbDecodeRules,
                          GeneratedDecodeTables::cbInstructions);
-    else
+    else {
         initializeTables(instList, lutInstIdx, GeneratedDecodeTables::decodeRules,
                          GeneratedDecodeTables::instructions);
+        if (stopWorkaround) {
+            lutInstIdx[0x10] = static_cast<uint8_t>(
+                GeneratedDecodeTables::InstructionId::Base_STOP_Workaround);
+        }
+    }
 }
 
 IInstruction* Decoder::decode(const uint8_t &opcode) {

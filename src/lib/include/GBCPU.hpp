@@ -22,6 +22,8 @@ public:
     void setIME(bool ime);
     bool getHALT();
     void setHALT(bool halt);
+    bool getStopped();
+    void wakeFromStop();
 private:
     IInstruction* fetch(uint16_t addr);
     void doFetchNextOp();
@@ -36,6 +38,9 @@ private:
     u_int64_t clockTimeStamp;
     bool interruptMasterEnable = true;
     bool isHalt = false;
+    bool isStopped = false;
+    bool fetchAfterStopWake = false;
+    bool imeEnablePending = false;
     bool waitDecodeCB = false;
     InstState instStat;
     IInstruction *pInst;

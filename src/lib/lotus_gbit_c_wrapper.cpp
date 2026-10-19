@@ -26,7 +26,7 @@ pILotusGBIT lotusGBIT_Create() {
     // TODO: factory for decoder
     // TODO: delete objects
     if (!pDecoder)
-        pDecoder = new Decoder(false);
+        pDecoder = new Decoder(false, true);
     if (!pDecoderCB)
         pDecoderCB = new Decoder(true);
     auto spMockMMU = make_shared<MemoryGBIT>();

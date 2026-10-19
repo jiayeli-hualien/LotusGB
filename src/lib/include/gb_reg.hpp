@@ -41,7 +41,6 @@ class Reg {
     uint16_t pc = 0;
     uint16_t a16Addr = 0;
 public:
-    // TODO: more regs
     // TODO: move function to a .cpp file
     inline uint8_t& getRefA() { return reg8bit[REG_ID_A]; };
     inline uint8_t& getRefF() { return reg8bit[REG_ID_F]; };

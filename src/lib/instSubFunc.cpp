@@ -58,8 +58,7 @@ SUB_FUNC_IMPL(PUSH_LD_A16_RR) {
 SUB_FUNC_IMPL(POP_LD_R16_MEM16) {
     pInstState->memMode = MEM_MODE_FETCH;
     _getPushPopReg16(pInstState->opcode, pReg) = pInstState->a16Addr;
-    // TODO: refine F's behavior
-    // non-flags always zero
+    // The low, unused bits of F are always zero on the Game Boy CPU.
     pReg->getRefF() = pReg->getRefF() & 0xF0;
 }
 
@@ -447,30 +446,26 @@ SUB_FUNC_IMPL(SCF) {
 }
 
 SUB_FUNC_IMPL(DAA) {
-    // https://forums.nesdev.org/viewtopic.php?t=15944
-    // If you want to do BCD arithmatic,
-    // Call DAA after any ADD/SUB about Reg A
-    static const int BCD_MAX = 0x99;
-    static const int BCD_MAX_HALF = 0x9;
-
-    // TODO: understand fast carry
-    static const int FAST_CARRY = 0x60; // Do adujst without %10 and shift
-    static const int FAST_CARRY_HALF = 0x06;
     GB_Flag flag;
     pReg->getFlag(flag);
-    if (flag.N) { // after sub
-        if (flag.C)
-            pReg->getRefA() = GET_LSB(pReg->getRefA() - FAST_CARRY);
+
+    uint8_t adjustment = 0;
+    if (flag.N) {
         if (flag.H)
-            pReg->getRefA() = GET_LSB(pReg->getRefA() - FAST_CARRY_HALF);
-    } else { // after add
-        if (flag.C || pReg->getRefA() > BCD_MAX) {
+            adjustment |= 0x06;
+        if (flag.C)
+            adjustment |= 0x60;
+        pReg->getRefA() = static_cast<uint8_t>(pReg->getRefA() - adjustment);
+    } else {
+        if (flag.H || (pReg->getRefA() & 0x0F) > 0x09)
+            adjustment |= 0x06;
+        if (flag.C || pReg->getRefA() > 0x99) {
+            adjustment |= 0x60;
             flag.C = true;
-            pReg->getRefA() = GET_LSB(pReg->getRefA() + FAST_CARRY);
         }
-        if (flag.H || GET_HALF_INT(pReg->getRefA()) > BCD_MAX_HALF)
-            pReg->getRefA() = GET_LSB(pReg->getRefA() + FAST_CARRY_HALF);
+        pReg->getRefA() = static_cast<uint8_t>(pReg->getRefA() + adjustment);
     }
+
     flag.Z = !pReg->getRefA();
     flag.H = false;
     pReg->setFlag(flag);
@@ -586,11 +581,11 @@ SUB_FUNC_IMPL(StopWorkaround) {
 }
 
 SUB_FUNC_IMPL(Stop) {
-    // TODO: stop the CPU
     if (pInstState->memValue) {
         std::cerr << "invalid stop instrcution" << std::endl;
     } else {
-        pInstState->clockAction = CLOCK_ACTION_HALT;
+        pInstState->clockAction = CLOCK_ACTION_STOP;
+        pInstState->memMode = MEM_MODE_SLEEP;
     }
 }
 
@@ -599,7 +594,7 @@ SUB_FUNC_IMPL(DI) {
 }
 
 SUB_FUNC_IMPL(EI) {
-    pInstState->imeAction = IME_ACTION_ENABLE;
+    pInstState->imeAction = IME_ACTION_ENABLE_DELAYED;
 }
 
 SUB_FUNC_IMPL(IncRR) {
@@ -613,7 +608,8 @@ SUB_FUNC_IMPL(DecRR) {
 }
 
 SUB_FUNC_IMPL(Add_HL_RR) {
-    // TODO: emu by 8 bit adder twice?
+    // The instruction's M-cycle sequence is modeled in the decode table; the
+    // internal 8-bit ALU phases are not modeled separately.
     const int lhs = pReg->getRefHL();
     const int rhs = _getCommonReg16(pInstState->opcode, pReg);
     const int  result = lhs + rhs;
@@ -626,34 +622,33 @@ SUB_FUNC_IMPL(Add_HL_RR) {
     pReg->setFlag(flag);
 }
 
-static inline int _add_SP_R8(const int lhs, const int rhs, GB_Flag &flag) {
-    const int result = lhs + rhs;
+static inline uint16_t _add_SP_R8(const uint16_t lhs, const uint8_t offset,
+                                  GB_Flag &flag) {
+    const int signedOffset = offset < 0x80 ? offset : (int)offset - 0x100;
     flag.Z = false;
     flag.N = false;
-    // TODO: is H or C correct?
-    flag.H = (HALF_OP_HELPER(lhs, +, rhs) >
-              HALF_UPPER_BOUND);
-    flag.C = GET_LSB_INT(lhs) + GET_LSB_INT(rhs) > 0xFF;
-    return result;
+    flag.H = (lhs & 0x0F) + (offset & 0x0F) > 0x0F;
+    flag.C = (lhs & 0xFF) + offset > 0xFF;
+    return static_cast<uint16_t>(lhs + signedOffset);
 }
 
 SUB_FUNC_IMPL(Add_SP_R8) {
-    // TODO: get correct pipeline timing
+    // The decode table preserves the instruction's M-cycle count. The
+    // intermediate ALU substeps are not modeled; the result is committed here.
     GB_Flag flag;
     pReg->getFlag(flag);
-    const int result = _add_SP_R8(pReg->getRefSP(),
-                                  (int)((int8_t)(pInstState->memValue)), flag);
-    pReg->getRefSP() = (uint16_t)(result & 0xFFFF);
+    const uint16_t result = _add_SP_R8(pReg->getRefSP(), pInstState->memValue, flag);
+    pReg->getRefSP() = result;
     pReg->setFlag(flag);
 }
 
 SUB_FUNC_IMPL(Add_HL_SP_R8) {
-    // TODO: get correct pipeline timing
+    // The decode table preserves the instruction's M-cycle count. The
+    // intermediate ALU substeps are not modeled; the result is committed here.
     GB_Flag flag;
     pReg->getFlag(flag);
-    const int result = _add_SP_R8(pReg->getRefSP(),
-                                  (int)((int8_t)(pInstState->memValue)), flag);
-    pReg->getRefHL() = (uint16_t)(result & 0xFFFF);
+    const uint16_t result = _add_SP_R8(pReg->getRefSP(), pInstState->memValue, flag);
+    pReg->getRefHL() = result;
     pReg->setFlag(flag);
 }
 

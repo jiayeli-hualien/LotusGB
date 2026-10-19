@@ -23,12 +23,14 @@ enum MEM_MODE {
 enum IME_ACTION {
     IME_ACTION_NONE = 0,
     IME_ACTION_ENABLE,
+    IME_ACTION_ENABLE_DELAYED,
     IME_ACTION_DISABLE,
 };
 
 enum CLOCK_ACTION {
     CLOCK_ACTION_NONE = 0,
     CLOCK_ACTION_HALT,
+    CLOCK_ACTION_STOP,
 };
 
 static constexpr size_t MAX_INST_LEN = 4; // in bytes, acutaly 3 but align 4

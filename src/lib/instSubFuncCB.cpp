@@ -74,7 +74,7 @@ static inline void _RL(uint8_t *value, GB_Flag &flag) {
     flag.H = false;
     result = (result << 1) | (flag.C ? 1 : 0);
     flag.C = (1<<8)&result;
-    flag.Z = !result;
+    flag.Z = !GET_LSB(result);
     *value = GET_LSB(result);
 }
 
@@ -126,7 +126,8 @@ static inline void _SLA(uint8_t *value, GB_Flag &flag) {
     flag.N = false;
     flag.H = false;
     flag.C = (1<<7)&result;
-    flag.Z = !(result <<= 1);
+    result <<= 1;
+    flag.Z = !GET_LSB(result);
     *value = GET_LSB(result);
 }
 
@@ -250,7 +251,8 @@ SUB_FUNC_IMPL(BIT_MEMVAL) {
     _BIT(&pInstState->memValue, flag, pInstState->opcode);
     pReg->setFlag(flag);
 
-    // TODO: check spec & memcycle, why does BIT (HL) need 16 cycles?
+    // The decode table schedules the memory read and BIT operation in separate
+    // M-cycles; the instruction's total cycle count is covered by GBIT checks.
     pInstState->memMode = MEM_MODE_SLEEP;
 }
 

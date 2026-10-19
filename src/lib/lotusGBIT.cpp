@@ -30,7 +30,7 @@ void LotusGBIT::getState(LotusGBState *pState) {
     pState->e = reg.getRefE();
     pState->h = reg.getRefH();
     pState->l = reg.getRefL();
-    pState->is_halt = upCPU->getHALT();
+    pState->is_halt = upCPU->getHALT() || upCPU->getStopped();
     pState->interrupts_master_enable = upCPU->getIME();
     pState->num_accesses = spMMU->getMemoryState(pState->mem_accesses);
 }

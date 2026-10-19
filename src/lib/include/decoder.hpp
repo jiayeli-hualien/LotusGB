@@ -11,7 +11,7 @@ class Decoder : public IDecoder {
     // Instruct factory, get instruction object from opcode
     // TODO: refactor by abstraction factory pattern
 public:
-    explicit Decoder(bool cbOpcodeTable);
+    explicit Decoder(bool cbOpcodeTable, bool stopWorkaround = false);
     IInstruction* decode(const uint8_t &opcode);
 private:
     std::vector<Instruction> instList;

@@ -33,6 +33,9 @@ void GBCPU::reset() {
     clockTimeStamp = 0;
     interruptMasterEnable = true;
     isHalt = false;
+    isStopped = false;
+    fetchAfterStopWake = false;
+    imeEnablePending = false;
     waitDecodeCB = false;
     instStat = {};
     // load first op
@@ -74,6 +77,28 @@ bool GBCPU::stepInstruction() {
 
 RetStepOneCycle GBCPU::stepOneCycle() {
     RetStepOneCycle ret;
+    if (isStopped) {
+        // STOP freezes the CPU clock until the system explicitly wakes it.
+        ret.success = true;
+        return ret;
+    }
+    if (fetchAfterStopWake) {
+        // Keep the resumed opcode bus read inside a CPU machine cycle.
+        fetchAfterStopWake = false;
+        doFetchNextOp();
+        clockTimeStamp += 4;
+        ret.fetchedNewInst = true;
+        ret.success = true;
+        return ret;
+    }
+    if (isHalt) {
+        // The system clock continues while HALTed; an interrupt controller can
+        // wake the CPU through setHALT(false).
+        clockTimeStamp += 4;
+        ret.success = true;
+        return ret;
+    }
+
     instStat.memMode = MEM_MODE_FETCH;
     instStat.imeAction = IME_ACTION_NONE;
     instStat.clockAction = CLOCK_ACTION_NONE;
@@ -81,11 +106,19 @@ RetStepOneCycle GBCPU::stepOneCycle() {
     if (!stepInstruction())
         return ret;
 
-    switch (instStat.imeAction) { // TODO: let instruction fully control IME?
+    const bool enableImeAfterNextInstruction =
+        instStat.imeAction == IME_ACTION_ENABLE_DELAYED;
+    switch (instStat.imeAction) {
         case IME_ACTION_ENABLE:
-            setIME(true); break;
+            setIME(true);
+            imeEnablePending = false;
+            break;
+        case IME_ACTION_ENABLE_DELAYED:
+            break;
         case IME_ACTION_DISABLE:
-            setIME(false); break;
+            setIME(false);
+            imeEnablePending = false;
+            break;
         case IME_ACTION_NONE:
         default:
             break;
@@ -93,9 +126,18 @@ RetStepOneCycle GBCPU::stepOneCycle() {
 
     if (instStat.clockAction == CLOCK_ACTION_HALT)
         setHALT(true);
+    else if (instStat.clockAction == CLOCK_ACTION_STOP)
+        isStopped = true;
 
     ret.fetchedNewInst = (!waitDecodeCB)
                          && (instStat.memMode == MEM_MODE_FETCH);
+
+    if (ret.fetchedNewInst && imeEnablePending) {
+        setIME(true);
+        imeEnablePending = false;
+    }
+    if (enableImeAfterNextInstruction)
+        imeEnablePending = true;
 
     switch (instStat.memMode) {
         case MEM_MODE_FETCH: doFetchNextOp(); break;
@@ -134,6 +176,17 @@ bool GBCPU::getHALT() {
 
 void GBCPU::setHALT(bool halt) {
     this->isHalt = halt;
+}
+
+bool GBCPU::getStopped() {
+    return isStopped;
+}
+
+void GBCPU::wakeFromStop() {
+    if (!isStopped)
+        return;
+    isStopped = false;
+    fetchAfterStopWake = true;
 }
 
 }

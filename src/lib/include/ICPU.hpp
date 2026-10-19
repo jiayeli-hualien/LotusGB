@@ -29,6 +29,8 @@ public:
     virtual void setIME(bool ime) = 0;
     virtual bool getHALT() = 0;
     virtual void setHALT(bool halt) = 0;
+    virtual bool getStopped() = 0;
+    virtual void wakeFromStop() = 0;
 };
 
 }
