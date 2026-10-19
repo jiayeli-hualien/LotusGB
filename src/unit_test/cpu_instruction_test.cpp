@@ -232,11 +232,17 @@ void testPushBusOrder() {
     f.cpu.setReg(reg);
 
     expect(!f.cpu.stepOneCycle().fetchedNewInst, "PUSH starts with an internal cycle");
+    expect(f.cpu.getReg().getRefSP() == 0xC100,
+           "PUSH leaves SP unchanged during its internal cycle");
     expect(f.memory.writes.empty(), "PUSH has no bus write in its first M-cycle");
     expect(!f.cpu.stepOneCycle().fetchedNewInst, "PUSH writes the high byte before low byte");
+    expect(f.cpu.getReg().getRefSP() == 0xC0FF,
+           "PUSH decrements SP in the high-byte write M-cycle");
     expect(f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{{0xC0FF, 0x12}},
            "PUSH writes high byte at SP-1");
     expect(!f.cpu.stepOneCycle().fetchedNewInst, "PUSH writes its low byte in the next M-cycle");
+    expect(f.cpu.getReg().getRefSP() == 0xC0FE,
+           "PUSH decrements SP again in the low-byte write M-cycle");
     expect(f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
                {0xC0FF, 0x12}, {0xC0FE, 0x34}},
            "PUSH writes low byte at SP-2");
@@ -250,7 +256,14 @@ void testPopRetAndJumpBusTiming() {
     Reg reg = pop.cpu.getReg();
     reg.getRefSP() = 0xC000;
     pop.cpu.setReg(reg);
-    expect(pop.runUntilNextOpcode() == 3, "POP rr takes three M-cycles");
+    expect(!pop.cpu.stepOneCycle().fetchedNewInst, "POP reads its low byte in cycle one");
+    expect(pop.cpu.getReg().getRefSP() == 0xC001,
+           "POP increments SP in the low-byte read M-cycle");
+    expect(!pop.cpu.stepOneCycle().fetchedNewInst, "POP reads its high byte in cycle two");
+    expect(pop.cpu.getReg().getRefSP() == 0xC002,
+           "POP increments SP again in the high-byte read M-cycle");
+    expect(pop.cpu.stepOneCycle().fetchedNewInst,
+           "POP commits the register pair and fetches the next opcode in cycle three");
     reg = pop.cpu.getReg();
     expect(reg.getRefBC() == 0x1234 && reg.getRefSP() == 0xC002,
            "POP reads low byte then high byte and increments SP twice");

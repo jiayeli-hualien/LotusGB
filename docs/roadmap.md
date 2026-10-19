@@ -8,7 +8,7 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - Decoder metadata is compiled into typed C++ tables from the CSV source files.
 - CPU interface and instruction unit tests run through `make test`.
 - GitHub Actions builds the project, runs unit tests, and checks instructions against a pinned GBIT fork.
-- Regression coverage includes DAA, `ADD SP,e8` flags, EI delay, and several stack/jump memory-cycle sequences.
+- Regression coverage includes DAA, `ADD SP,e8` flags, EI delay, stack/jump memory-cycle sequences, and the M-cycle when PUSH/POP update SP.
 - Polymorphic interfaces used through owning pointers now have virtual destructors. `GBCPU` marks memory/decoder dependencies as borrowed references, and each GBIT adapter owns its dependencies and helper independently.
 - A regression test creates two GBIT adapters, destroys one, and verifies that the other remains usable.
 - CPU-local STOP and HALT states are separate; STOP consumes its second byte, ignores its value, and resumes fetching only after an explicit wake request.

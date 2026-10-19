@@ -82,8 +82,7 @@ SUB_FUNC_DECLARE(JR);
 SUB_FUNC_DECLARE(CondJR);
 SUB_FUNC_DECLARE(SwapPC_MEM16);
 SUB_FUNC_DECLARE(CondSwapPC_MEM16);
-// TODO: why GB need idle at this mem clock?
-// TODO: let SP value correct in every clock.
+// Represents an internal M-cycle with no memory bus access.
 SUB_FUNC_DECLARE(Bubble);
 SUB_FUNC_DECLARE(CondPOP_LD_A16_LSB);
 SUB_FUNC_DECLARE(LD_PC_MEM16_RETI);
