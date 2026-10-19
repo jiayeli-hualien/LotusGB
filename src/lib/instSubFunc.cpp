@@ -574,12 +574,6 @@ SUB_FUNC_IMPL(Halt) {
     pInstState->clockAction = CLOCK_ACTION_HALT;
 }
 
-SUB_FUNC_IMPL(StopWorkaround) {
-    // TODO: stop the CPU
-    // workaround for gbit only fetch first byte of op STOP
-    pInstState->clockAction = CLOCK_ACTION_HALT;
-}
-
 SUB_FUNC_IMPL(Stop) {
     // The byte following STOP is consumed as part of the instruction, but its
     // value is ignored by the SM83 instruction definition.

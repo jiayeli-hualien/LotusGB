@@ -17,7 +17,7 @@ using std::make_shared;
 using std::make_unique;
 
 pILotusGBIT lotusGBIT_Create() {
-    auto spDecoder = make_shared<Decoder>(false, true);
+    auto spDecoder = make_shared<Decoder>(false);
     auto spDecoderCB = make_shared<Decoder>(true);
     auto spMockMMU = make_shared<MemoryGBIT>();
     auto upCPU = make_unique<GBCPU>(*spMockMMU, *spDecoder, *spDecoderCB);

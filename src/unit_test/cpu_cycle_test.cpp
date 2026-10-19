@@ -87,6 +87,12 @@ void testFetchAndInstructionStep() {
     GBCPU cpu(memory, baseDecoder, cbDecoder);
 
     cpu.reset();
+    expect(memory.reads.empty(), "reset does not fetch an opcode outside a CPU cycle");
+    const RetStepOneCycle initialFetch = cpu.stepOneCycle();
+    expect(initialFetch.success && initialFetch.fetchedNewInst,
+           "the first timed CPU cycle fetches the initial opcode");
+    expect(initialFetch.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+           "initial opcode fetch consumes one machine cycle");
     const RetStepOneCycle result = cpu.stepOneCycle();
     Reg reg = cpu.getReg();
 
@@ -95,8 +101,8 @@ void testFetchAndInstructionStep() {
            "an executed CPU machine cycle reports four elapsed T-cycles");
     expect(result.fetchedNewInst, "CPU reports completion when it fetches the next opcode");
     expect(reg.getRefA() == 1, "the decoded instruction updates CPU state");
-    expect(reg.getRefPC() == 2, "reset and the next-opcode fetch advance PC");
-    expect(memory.reads.size() == 2, "reset and instruction completion each read the opcode");
+    expect(reg.getRefPC() == 2, "initial and next-opcode fetches advance PC");
+    expect(memory.reads.size() == 2, "timed opcode fetches each read memory once");
     expect(baseDecoder.decodedOpcodes == std::vector<uint8_t>({0x00, 0x01}),
            "base decoder receives fetched opcodes in order");
 }
@@ -111,6 +117,7 @@ void testMemoryWriteThroughInterface() {
     TestDecoder cbDecoder(&instruction);
     GBCPU cpu(memory, baseDecoder, cbDecoder);
     cpu.reset();
+    expect(cpu.stepOneCycle().fetchedNewInst, "initial opcode fetch uses its own cycle");
 
     const RetStepOneCycle writeResult = cpu.stepOneCycle();
     expect(writeResult.success, "CPU accepts a memory-write cycle");

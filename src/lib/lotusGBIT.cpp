@@ -19,7 +19,9 @@ void LotusGBIT::getState(LotusGBState *pState) {
     memset(pState, 0, sizeof(LotusGBState));
     Reg reg = upCPU->getReg();
     // gbit reference CPU don't have parallel fetch/excute overlap
-    pState->pc = reg.getRefPC() - 1;
+    // While stopped, the CPU has consumed STOP's padding byte and has not
+    // prefetched the next opcode, so PC already points at the next instruction.
+    pState->pc = upCPU->getStopped() ? reg.getRefPC() : reg.getRefPC() - 1;
     pState->sp = reg.getRefSP();
     pState->a = reg.getRefA();
     pState->f = reg.getRefF();

@@ -9,7 +9,7 @@ int GBITCPU::stepOneInstruction() {
     int cntMemCycle = 0;
     RetStepOneCycle res;
     while (res = pCPU -> stepOneCycle(),
-            res.success && !res.fetchedNewInst)
+            res.success && !res.fetchedNewInst && !pCPU->getStopped())
         cntMemCycle++;
     return cntMemCycle;
 }

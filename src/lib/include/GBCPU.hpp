@@ -42,6 +42,7 @@ private:
     bool isHalt = false;
     bool isStopped = false;
     bool fetchAfterStopWake = false;
+    bool initialFetchPending = false;
     bool imeEnablePending = false;
     bool waitDecodeCB = false;
     InstState instStat;

@@ -20,6 +20,8 @@ struct RetStepOneCycle {
 class ICPU {
 public:
     virtual ~ICPU() = default;
+    // Reset register/state only. The first opcode fetch is part of the first
+    // timed step; fetchFirstOpcode remains available for reference-test setup.
     virtual void reset() = 0;
     virtual void fetchFirstOpcode() = 0;
 

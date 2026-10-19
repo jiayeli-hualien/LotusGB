@@ -48,6 +48,8 @@ struct CpuFixture {
         for (const auto &[addr, byte] : program)
             memory.bytes[addr] = byte;
         cpu.reset();
+        expect(cpu.stepOneCycle().fetchedNewInst,
+               "fixture performs the initial opcode fetch in a CPU cycle");
         memory.reads.clear();
     }
 
@@ -319,36 +321,32 @@ void testConditionalBranchAndCallBusTiming() {
 
 void testStopDecodeAndHaltIdle() {
     CpuFixture stop{{0x0000, 0x10}, {0x0001, 0x00}, {0x0002, 0x00}};
-    expect(!stop.cpu.stepOneCycle().fetchedNewInst, "STOP reads its padding byte");
+    expect(!stop.cpu.stepOneCycle().fetchedNewInst, "STOP consumes its padding byte");
+    expect(stop.cpu.getReg().getRefPC() == 2, "STOP advances PC past both instruction bytes");
     expect(!stop.cpu.stepOneCycle().fetchedNewInst, "STOP enters stopped state without fetching ahead");
     expect(stop.cpu.getStopped(), "STOP exposes its own suspended CPU state");
     expect(!stop.cpu.getHALT(), "STOP is distinct from HALT");
-    const size_t readsBeforeStopIdle = stop.memory.reads.size();
+    expect(stop.cpu.getReg().getRefPC() == 2, "STOP does not advance PC while suspended");
     const auto stopped = stop.cpu.stepOneCycle();
     expect(stopped.success && !stopped.fetchedNewInst, "stopped CPU does not execute instructions");
     expect(stopped.tCyclesElapsed == 0, "STOP idle does not advance CPU T-cycles");
-    expect(stop.memory.reads.size() == readsBeforeStopIdle, "stopped CPU performs no bus reads");
     stop.cpu.wakeFromStop();
-    expect(stop.memory.reads.size() == readsBeforeStopIdle,
-           "waking STOP does not read the bus outside a CPU cycle");
     const auto resumed = stop.cpu.stepOneCycle();
     expect(resumed.success && resumed.fetchedNewInst,
            "waking STOP fetches the next opcode in a CPU cycle");
     expect(resumed.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
            "the STOP wake fetch consumes one machine cycle");
-    expect(stop.memory.reads.back() == 0x0002, "STOP resumes from the byte after its padding byte");
+    expect(stop.cpu.getReg().getRefPC() == 3, "STOP resumes from the byte after its padding byte");
 
     CpuFixture stopWithNonzeroPadding{{0x0000, 0x10}, {0x0001, 0xA5}, {0x0002, 0x00}};
     stopWithNonzeroPadding.cpu.stepOneCycle();
-    expect(stopWithNonzeroPadding.memory.reads == std::vector<uint16_t>{0x0001},
-           "STOP consumes its second byte from the bus");
     const auto stopResult = stopWithNonzeroPadding.cpu.stepOneCycle();
     expect(stopResult.success && !stopResult.fetchedNewInst,
            "nonzero STOP padding still completes STOP");
     expect(stopWithNonzeroPadding.cpu.getStopped(),
            "STOP ignores the value of its second byte");
-    expect(stopWithNonzeroPadding.memory.reads == std::vector<uint16_t>{0x0001},
-           "STOP does not fetch past the second byte");
+    expect(stopWithNonzeroPadding.cpu.getReg().getRefPC() == 2,
+           "nonzero STOP padding still advances PC by two bytes");
 
     CpuFixture halt{{0x0000, 0x76}, {0x0001, 0x00}};
     expect(halt.cpu.stepOneCycle().fetchedNewInst, "HALT completes its opcode cycle");

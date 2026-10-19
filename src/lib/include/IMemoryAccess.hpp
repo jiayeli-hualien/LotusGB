@@ -6,8 +6,9 @@
 namespace LOTUSGB {
 
 class IMemoryAccess {
-    // Common interfaoce for memory and MMU
-    // TODO: memory clock definitions
+    // CPU read/write calls occur synchronously inside the M-cycle being
+    // advanced by ICPU::stepOneCycle(). A system bus can therefore observe
+    // each transaction at M-cycle granularity; T-cycle ordering is deferred.
 public:
     virtual ~IMemoryAccess() = default;
     virtual uint8_t read(uint16_t addr) = 0;

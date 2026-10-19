@@ -2,6 +2,12 @@
 
 This roadmap keeps the next work in dependency order. Prefer small changes with a focused unit test or integration check. Revisit the order when implementation reveals a real dependency; do not rewrite the CPU just to make the design look cleaner.
 
+## Development priorities
+
+- Make emulation correctness the first priority. Define hardware behavior from reliable specifications and observable behavior, and cover it with focused unit or integration tests.
+- Once behavior is tested and stable, measure performance before optimizing. Implementation and storage choices must not define emulation behavior or rely on operating-system-specific semantics in the core.
+- Keep platform-specific file access behind a narrow boundary so the emulator core can use portable ROM storage and support alternate backends when profiling justifies them.
+
 ## Completed foundation
 
 - CPU instruction execution advances in M-cycle steps.
@@ -27,9 +33,9 @@ The first major delivery goal is running a Game Boy ROM in RetroArch on Ubuntu. 
 
 ## Next work, in order
 
-1. **Integrate the shared system clock and bus.** Keep CPU stepping at one M-cycle (four T-cycles) for now, and make a system scheduler the time authority for CPU and peripherals. Make memory transactions visible at defined cycle boundaries; move reset's initial opcode fetch into the same bus/timing contract. Refine CPU/bus timing at T-cycle granularity when PPU or bus behavior tests require it.
-2. **Add a real address bus and cartridge boundary.** Replace flat/mock memory in the emulator path with address-region routing, then add cartridge ROM access and mapper support. Keep the GBIT memory adapter as test infrastructure rather than the system memory implementation.
-3. **Add timer and interrupt components.** Connect timer state, interrupt request/enable registers, CPU IME, HALT wake-up, and interrupt entry through explicit interfaces. Test the interactions together, especially delayed EI and HALT edge cases.
+1. **Integrate the shared system clock and bus.** Keep CPU stepping at one M-cycle (four T-cycles) for now, and make a system scheduler the time authority for CPU and peripherals. Initial scheduler scaffold is in place: it advances clocked components by the CPU step's reported T-cycles and leaves system time unchanged for failed or zero-time steps. Reset's initial opcode fetch now occurs in the first timed CPU step; CPU memory transactions are observable synchronously through `IMemoryAccess` during each M-cycle. The explicit fetch helper remains for GBIT reference-test setup. Define how bus transactions line up with peripheral advancement, then refine timing at T-cycle granularity when PPU or bus behavior tests require it.
+2. **Add a real address bus and cartridge boundary.** Address-range routing, zero-initialized VRAM/WRAM/OAM/HRAM regions, and a ROM-only cartridge window are composed into an initial headless system and covered by tests. ROM-only cartridges are limited to at most 32 KiB; header parsing, file loading, banked mappers, echo RAM, and hardware-backed I/O devices remain to be implemented. Keep the GBIT memory adapter as test infrastructure.
+3. **Add timer and interrupt components.** The initial DMG timer registers (`DIV`, `TIMA`, `TMA`, `TAC`), divider-edge counter, delayed overflow reload, and timer interrupt request/enable registers are now mapped and covered by focused tests. Next connect pending requests to CPU IME, HALT wake-up, and interrupt entry through explicit interfaces. Test the interactions together, especially delayed EI and HALT edge cases.
 4. **Add the PPU and input path.** Build a headless system loop that advances CPU, timer, and PPU on one shared clock; then add input state and a minimal frame output. Keep rendering/UI separate from emulation state. Use Game Boy F-1 Race as one visual compatibility target when a frame can be rendered.
 5. **Add audio and cartridge persistence.** These can be developed after the system loop and memory map exist, with component-level tests and suitable ROM or hardware test suites.
 6. **Add the libretro adapter.** Do this after a headless system can load a cartridge, advance frames, and expose input/video/audio callbacks. Keep RetroArch-specific lifecycle and callbacks outside CPU and hardware components.
@@ -37,6 +43,8 @@ The first major delivery goal is running a Game Boy ROM in RetroArch on Ubuntu. 
 ## Validation rule
 
 For each step, state what externally observable behavior changes, add a focused regression test at the narrowest useful boundary, and run the relevant unit or integration checks. Use GBIT as one CPU comparison source; investigate disagreements instead of copying behavior without hardware evidence.
+
+Add community test ROMs as the corresponding hardware features become available. Select focused ROMs from suites such as Mooneye and Blargg for CPU, timer, interrupt, memory, and PPU behavior; record each test's model, boot ROM, and other execution requirements. Do not treat passing an entire suite as an early milestone when its dependent hardware is not implemented.
 
 ## Platform support
 

@@ -23,6 +23,7 @@ IInstruction* GBCPU::fetch(uint16_t addr) {
 }
 
 void GBCPU::fetchFirstOpcode() {
+    initialFetchPending = false;
     waitDecodeCB = false;
     instStat = {};
     pInst = fetch(reg.getRefPC()++);
@@ -34,11 +35,11 @@ void GBCPU::reset() {
     isHalt = false;
     isStopped = false;
     fetchAfterStopWake = false;
+    initialFetchPending = true;
     imeEnablePending = false;
     waitDecodeCB = false;
     instStat = {};
-    // load first op
-    fetchFirstOpcode();
+    pInst = nullptr;
 }
 
 void GBCPU::doFetchNextOp() {
@@ -79,6 +80,14 @@ RetStepOneCycle GBCPU::stepOneCycle() {
     if (isStopped) {
         // STOP freezes the CPU clock until the system explicitly wakes it.
         ret.success = true;
+        return ret;
+    }
+    if (initialFetchPending) {
+        initialFetchPending = false;
+        doFetchNextOp();
+        ret.fetchedNewInst = true;
+        ret.success = true;
+        ret.tCyclesElapsed = T_CYCLES_PER_M_CYCLE;
         return ret;
     }
     if (fetchAfterStopWake) {
