@@ -7,6 +7,7 @@
 
 #include "GBCPU.hpp"
 #include "decoder.hpp"
+#include "interrupt_registers.hpp"
 
 namespace {
 
@@ -40,9 +41,10 @@ public:
 
 struct CpuFixture {
     TestMemory memory;
+    InterruptRegisters interrupts;
     Decoder baseDecoder{false};
     Decoder cbDecoder{true};
-    GBCPU cpu{memory, baseDecoder, cbDecoder};
+    GBCPU cpu{memory, baseDecoder, cbDecoder, &interrupts};
 
     explicit CpuFixture(std::initializer_list<std::pair<uint16_t, uint8_t>> program) {
         for (const auto &[addr, byte] : program)
@@ -402,6 +404,84 @@ void testEiDelay() {
     eiDi.cpu.stepOneCycle();
     eiDi.cpu.stepOneCycle();
     expect(!eiDi.cpu.getIME(), "DI cancels a pending EI enable");
+
+    CpuFixture eiPending{{0x0000, 0xFB}, {0x0001, 0x06}, {0x0002, 0xA5},
+                         {0x0003, 0x00}, {0x0040, 0x00}};
+    eiPending.cpu.setIME(false);
+    eiPending.interrupts.write(0xFFFF, 0x01);
+    eiPending.interrupts.write(0xFF0F, 0x01);
+    eiPending.cpu.stepOneCycle();
+    expect(!eiPending.cpu.getIME(), "EI keeps IME disabled through its own cycle");
+    expect(!eiPending.cpu.stepOneCycle().fetchedNewInst,
+           "the instruction after EI starts before a pending interrupt is accepted");
+    expect(eiPending.cpu.stepOneCycle().fetchedNewInst,
+           "the instruction after EI completes before interrupt entry");
+    expect(eiPending.cpu.getIME(), "IME becomes enabled at the following instruction boundary");
+    expect(eiPending.cpu.stepOneCycle().success && !eiPending.cpu.getIME(),
+           "the pending interrupt is accepted at the next instruction boundary");
+}
+
+void testInterruptEntryPriorityStackAndVector() {
+    CpuFixture f{{0x0000, 0x00}, {0x0001, 0x00}, {0x0040, 0x00},
+                 {0x0048, 0x00}, {0x0050, 0x00}};
+    Reg reg = f.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    f.cpu.setReg(reg);
+    expect(f.cpu.stepOneCycle().fetchedNewInst,
+           "the instruction before interrupt completes and prefetches next opcode");
+
+    f.interrupts.write(0xFFFF, 0xFF);
+    f.interrupts.write(0xFF0F, 0x85); // VBlank and timer requests; VBlank wins.
+    const size_t readsBeforeInterrupt = f.memory.reads.size();
+    for (unsigned cycle = 0; cycle < 5; ++cycle) {
+        const auto result = f.cpu.stepOneCycle();
+        expect(result.success && result.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+               "each interrupt-entry machine cycle advances four T-cycles");
+        expect(result.fetchedNewInst == (cycle == 4),
+               "interrupt entry fetches the vector opcode only in its fifth cycle");
+    }
+
+    reg = f.cpu.getReg();
+    expect(!f.cpu.getIME(), "interrupt entry disables IME");
+    expect(reg.getRefPC() == 0x0041, "interrupt entry jumps to the highest-priority vector");
+    expect(reg.getRefSP() == 0xC0FE, "interrupt entry pushes two bytes onto the stack");
+    expect(f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+               {0xC0FF, 0x00}, {0xC0FE, 0x01}},
+           "interrupt entry pushes return PC high byte then low byte");
+    expect(f.interrupts.read(0xFF0F) == 0xE4,
+           "interrupt entry acknowledges only the selected VBlank request");
+    expect(f.memory.reads.size() == readsBeforeInterrupt + 1 &&
+               f.memory.reads.back() == 0x0040,
+           "interrupt entry fetches the handler opcode after its stack writes");
+}
+
+void testHaltWakeAndHaltBug() {
+    CpuFixture halted{{0x0000, 0x76}, {0x0001, 0x00}, {0x0002, 0x00}};
+    halted.cpu.setIME(false);
+    halted.cpu.stepOneCycle();
+    expect(halted.cpu.getHALT(), "HALT sleeps when no enabled interrupt is pending");
+    halted.interrupts.write(0xFFFF, 0x01);
+    halted.interrupts.write(0xFF0F, 0x01);
+    const auto wake = halted.cpu.stepOneCycle();
+    expect(wake.fetchedNewInst && !halted.cpu.getHALT(),
+           "a pending enabled interrupt wakes HALT even while IME is clear");
+    expect(halted.cpu.getReg().getRefPC() == 3,
+           "IME-clear HALT wake executes the prefetched next opcode without rewinding PC");
+
+    CpuFixture bug{{0x0000, 0x76}, {0x0001, 0x3E}, {0x0002, 0x42}, {0x0003, 0x00}};
+    bug.cpu.setIME(false);
+    bug.interrupts.write(0xFFFF, 0x01);
+    bug.interrupts.write(0xFF0F, 0x01);
+    bug.cpu.stepOneCycle();
+    expect(!bug.cpu.getHALT(), "HALT does not enter sleep when IME is clear with pending IF&IE");
+    expect(bug.cpu.getReg().getRefPC() == 1,
+           "HALT bug suppresses the increment of the next opcode fetch");
+    expect(!bug.cpu.stepOneCycle().fetchedNewInst,
+           "the following instruction reads its immediate in the next M-cycle");
+    expect(bug.cpu.stepOneCycle().fetchedNewInst,
+           "the HALT-bugged immediate instruction completes in its second M-cycle");
+    expect(bug.cpu.getReg().getRefA() == 0x3E,
+           "HALT bug makes the opcode byte repeat as the immediate operand");
 }
 
 } // namespace
@@ -416,6 +496,8 @@ int main() {
     testStopDecodeAndHaltIdle();
     testMemoryAccessesOccurWithinTheirMCycle();
     testEiDelay();
+    testInterruptEntryPriorityStackAndVector();
+    testHaltWakeAndHaltBug();
     std::cout << "CPU instruction tests passed\n";
     return EXIT_SUCCESS;
 }

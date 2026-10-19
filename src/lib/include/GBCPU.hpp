@@ -5,13 +5,15 @@
 #include "IMemoryAccess.hpp"
 #include "gb_reg.hpp"
 #include "IDecoder.hpp"
+#include "IInterruptController.hpp"
 
 namespace LOTUSGB {
 
 // TODO: refactor the naming: GBCPU->GbCpu, find a tool
 class GBCPU : public ICPU {
 public:
-    GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB);
+    GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB,
+          IInterruptController *interruptController = nullptr);
     void reset();
     RetStepOneCycle stepOneCycle();
 
@@ -27,6 +29,7 @@ public:
 private:
     IInstruction* fetch(uint16_t addr);
     void doFetchNextOp();
+    RetStepOneCycle stepInterruptCycle();
     void doMemRead(InstState &instStat);
     void doMemReadAddrMSB(InstState &instStat);
     void doMemReadAddrLSB(InstState &instStat);
@@ -37,6 +40,7 @@ private:
     IMemoryAccess &memory;
     IDecoder &decoder;
     IDecoder &decoderCB;
+    IInterruptController *interruptController;
     Reg reg;
     bool interruptMasterEnable = true;
     bool isHalt = false;
@@ -45,6 +49,12 @@ private:
     bool initialFetchPending = false;
     bool imeEnablePending = false;
     bool waitDecodeCB = false;
+    bool instructionBoundary = false;
+    bool haltBugPending = false;
+    bool interruptSequenceActive = false;
+    uint8_t interruptSequenceCycle = 0;
+    uint8_t activeInterruptMask = 0;
+    uint16_t activeInterruptVector = 0;
     InstState instStat;
     IInstruction *pInst;
 };

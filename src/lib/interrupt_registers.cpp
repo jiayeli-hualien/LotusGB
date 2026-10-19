@@ -24,11 +24,19 @@ void InterruptRegisters::write(uint16_t address, uint8_t value) {
 }
 
 void InterruptRegisters::requestTimerInterrupt() {
-    interruptFlags |= 0x04;
+    requestInterrupt(0x04);
 }
 
-uint8_t InterruptRegisters::getRequestedInterrupts() const {
+uint8_t InterruptRegisters::getPendingInterrupts() const {
     return interruptFlags & interruptEnable;
+}
+
+void InterruptRegisters::acknowledgeInterrupt(uint8_t interruptMask) {
+    interruptFlags &= static_cast<uint8_t>(~interruptMask);
+}
+
+void InterruptRegisters::requestInterrupt(uint8_t interruptMask) {
+    interruptFlags |= interruptMask & INTERRUPT_MASK;
 }
 
 }

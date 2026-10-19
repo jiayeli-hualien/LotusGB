@@ -11,7 +11,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom)
       objectRam(0xFE00, 0x00A0),
       highRam(0xFF80, 0x007F),
       timer(interruptRegisters),
-      cpu(bus, decoder, decoderCB),
+      cpu(bus, decoder, decoderCB, &interruptRegisters),
       systemClock(cpu) {
     bus.map(0x0000, 0x7FFF, cartridge);
     bus.map(0x8000, 0x9FFF, videoRam);

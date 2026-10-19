@@ -45,9 +45,47 @@ void testCpuFetchesAndExecutesFromCartridgeThroughSystemBus() {
            "system clock accumulates all CPU M-cycles");
 }
 
+void testTimerInterruptWakesHaltAndRunsHandler() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x31, 0x00, 0xC1, // LD SP, $C100
+        0x3E, 0x04,       // LD A, $04
+        0xEA, 0xFF, 0xFF, // LD ($FFFF), A (enable timer interrupt)
+        0x3E, 0x00,       // LD A, $00
+        0xE0, 0x06,       // LDH ($FF06), A (TMA)
+        0x3E, 0xFF,       // LD A, $FF
+        0xE0, 0x05,       // LDH ($FF05), A (TIMA)
+        0x3E, 0x05,       // LD A, $05
+        0xE0, 0x07,       // LDH ($FF07), A (enable timer, 16 T-cycle frequency)
+        0xFB,             // EI
+        0x76,             // HALT
+        0x00,             // NOP
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+    rom[0x0050] = 0x06; // LD B, $42
+    rom[0x0051] = 0x42;
+    rom[0x0052] = 0xD9; // RETI
+
+    GameBoySystem system(std::move(rom));
+    bool handlerRan = false;
+    for (unsigned step = 0; step < 100; ++step) {
+        const auto result = system.stepOneCycle();
+        expect(result.success, "timer interrupt integration step succeeds");
+        if (system.getCpuRegisters().getRefB() == 0x42) {
+            handlerRan = true;
+            break;
+        }
+    }
+
+    expect(handlerRan,
+           "timer overflow requests an interrupt that wakes HALT and runs the timer handler");
+}
+
 }
 
 int main() {
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
+    testTimerInterruptWakesHaltAndRunsHandler();
     std::cout << "Headless system tests passed\n";
 }

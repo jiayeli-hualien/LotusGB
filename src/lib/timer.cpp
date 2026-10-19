@@ -1,7 +1,5 @@
 #include "include/timer.hpp"
 
-#include "include/interrupt_registers.hpp"
-
 namespace LOTUSGB {
 
 namespace {
@@ -14,7 +12,7 @@ constexpr uint8_t timerCounterBitForTacValue[4] = {9, 3, 5, 7};
 constexpr int OVERFLOW_RELOAD_DELAY_T_CYCLES = 4;
 }
 
-Timer::Timer(InterruptRegisters &interrupts) : interrupts(interrupts) {}
+Timer::Timer(IInterruptController &interrupts) : interrupts(interrupts) {}
 
 uint8_t Timer::read(uint16_t address) {
     switch (address) {
@@ -70,7 +68,7 @@ void Timer::advanceTCycles(uint64_t tCycles) {
             --overflowReloadTCycles;
             if (overflowReloadTCycles == 0) {
                 tima = tma;
-                interrupts.requestTimerInterrupt();
+                interrupts.requestInterrupt(INTERRUPT_TIMER);
             }
         }
 

@@ -3,18 +3,17 @@
 
 #include <cstdint>
 
+#include "IInterruptController.hpp"
 #include "address_bus.hpp"
 #include "system_clock.hpp"
 
 namespace LOTUSGB {
 
-class InterruptRegisters;
-
 // DMG timer registers and divider. The timer input is derived from a falling
 // edge of one bit of the internal 16-bit system counter.
 class Timer final : public IAddressRegion, public IClockedComponent {
 public:
-    explicit Timer(InterruptRegisters &interrupts);
+    explicit Timer(IInterruptController &interrupts);
 
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
@@ -25,7 +24,7 @@ private:
     void incrementTima();
     void applyTimerInputTransition(bool oldInput);
 
-    InterruptRegisters &interrupts;
+    IInterruptController &interrupts;
     uint16_t systemCounter = 0;
     uint8_t tima = 0;
     uint8_t tma = 0;

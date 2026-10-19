@@ -6,8 +6,10 @@
 
 namespace LOTUSGB {
 
-GBCPU::GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB)
-:memory(memory), decoder(decoder), decoderCB(decoderCB) {
+GBCPU::GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB,
+             IInterruptController *interruptController)
+:memory(memory), decoder(decoder), decoderCB(decoderCB),
+ interruptController(interruptController) {
 }
 
 IInstruction* GBCPU::fetch(uint16_t addr) {
@@ -27,6 +29,7 @@ void GBCPU::fetchFirstOpcode() {
     waitDecodeCB = false;
     instStat = {};
     pInst = fetch(reg.getRefPC()++);
+    instructionBoundary = true;
 }
 
 void GBCPU::reset() {
@@ -38,13 +41,63 @@ void GBCPU::reset() {
     initialFetchPending = true;
     imeEnablePending = false;
     waitDecodeCB = false;
+    instructionBoundary = false;
+    haltBugPending = false;
+    interruptSequenceActive = false;
+    interruptSequenceCycle = 0;
+    activeInterruptMask = 0;
+    activeInterruptVector = 0;
     instStat = {};
     pInst = nullptr;
 }
 
 void GBCPU::doFetchNextOp() {
     instStat = {};
-    pInst = fetch(reg.getRefPC()++);
+    uint16_t &pc = reg.getRefPC();
+    const uint16_t fetchAddress = pc;
+    if (haltBugPending)
+        haltBugPending = false;
+    else
+        ++pc;
+    pInst = fetch(fetchAddress);
+    instructionBoundary = true;
+}
+
+RetStepOneCycle GBCPU::stepInterruptCycle() {
+    RetStepOneCycle ret;
+    ret.success = true;
+    ret.tCyclesElapsed = T_CYCLES_PER_M_CYCLE;
+
+    switch (interruptSequenceCycle) {
+        case 0:
+        case 1:
+            break;
+        case 2: {
+            uint16_t &sp = reg.getRefSP();
+            --sp;
+            memory.write(sp, static_cast<uint8_t>(reg.getRefPC() >> 8));
+            break;
+        }
+        case 3: {
+            uint16_t &sp = reg.getRefSP();
+            --sp;
+            memory.write(sp, static_cast<uint8_t>(reg.getRefPC() & 0xFF));
+            break;
+        }
+        case 4:
+            reg.getRefPC() = activeInterruptVector;
+            doFetchNextOp();
+            ret.fetchedNewInst = true;
+            interruptSequenceActive = false;
+            break;
+        default:
+            ret.success = false;
+            return ret;
+    }
+
+    if (interruptSequenceActive)
+        ++interruptSequenceCycle;
+    return ret;
 }
 
 void GBCPU::doMemRead(InstState &instStat) {
@@ -99,13 +152,49 @@ RetStepOneCycle GBCPU::stepOneCycle() {
         ret.tCyclesElapsed = T_CYCLES_PER_M_CYCLE;
         return ret;
     }
+
+    if (interruptSequenceActive)
+        return stepInterruptCycle();
+
+    const uint8_t pendingInterrupts = interruptController
+        ? interruptController->getPendingInterrupts() : 0;
     if (isHalt) {
-        // The system clock continues while HALTed; an interrupt controller can
-        // wake the CPU through setHALT(false).
-        ret.success = true;
-        ret.tCyclesElapsed = T_CYCLES_PER_M_CYCLE;
-        return ret;
+        if (pendingInterrupts == 0) {
+            ret.success = true;
+            ret.tCyclesElapsed = T_CYCLES_PER_M_CYCLE;
+            return ret;
+        }
+        isHalt = false;
     }
+
+    if (instructionBoundary && interruptMasterEnable && pendingInterrupts != 0) {
+        constexpr uint8_t interruptMasks[] = {
+            INTERRUPT_VBLANK, INTERRUPT_LCD_STAT, INTERRUPT_TIMER,
+            INTERRUPT_SERIAL, INTERRUPT_JOYPAD};
+        constexpr uint16_t interruptVectors[] = {0x0040, 0x0048, 0x0050, 0x0058, 0x0060};
+        for (size_t i = 0; i < 5; ++i) {
+            if ((pendingInterrupts & interruptMasks[i]) == 0)
+                continue;
+            activeInterruptMask = interruptMasks[i];
+            activeInterruptVector = interruptVectors[i];
+            break;
+        }
+
+        // The opcode at PC-1 was prefetched at the preceding instruction's
+        // boundary. Interrupt entry discards it and returns to its address.
+        --reg.getRefPC();
+        pInst = nullptr;
+        waitDecodeCB = false;
+        instructionBoundary = false;
+        interruptMasterEnable = false;
+        imeEnablePending = false;
+        interruptController->acknowledgeInterrupt(activeInterruptMask);
+        interruptSequenceActive = true;
+        interruptSequenceCycle = 0;
+        return stepInterruptCycle();
+    }
+
+    instructionBoundary = false;
 
     instStat.memMode = MEM_MODE_FETCH;
     instStat.imeAction = IME_ACTION_NONE;
@@ -132,8 +221,14 @@ RetStepOneCycle GBCPU::stepOneCycle() {
             break;
     }
 
-    if (instStat.clockAction == CLOCK_ACTION_HALT)
-        setHALT(true);
+    if (instStat.clockAction == CLOCK_ACTION_HALT) {
+        if (!interruptMasterEnable && pendingInterrupts != 0) {
+            isHalt = false;
+            haltBugPending = true;
+        } else {
+            setHALT(true);
+        }
+    }
     else if (instStat.clockAction == CLOCK_ACTION_STOP)
         isStopped = true;
 

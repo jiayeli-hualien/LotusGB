@@ -5,7 +5,8 @@ build_dir ?= build
 test_source := cpu_cycle_test.cpp
 test_headers := $(wildcard ../lib/include/*.hpp)
 core_sources := ../lib/GBCPU.cpp ../lib/decoder.cpp ../lib/instruction.cpp \
-	../lib/instSubFunc.cpp ../lib/instSubFuncCB.cpp ../lib/instSubFuncCommon.cpp
+	../lib/instSubFunc.cpp ../lib/instSubFuncCB.cpp ../lib/instSubFuncCommon.cpp \
+	../lib/interrupt_registers.cpp
 generated_tables := ../lib/include/generated_decode_tables.hpp
 csv_sources := $(wildcard ../lib/include/*.csv)
 test_executables := $(build_dir)/cpu_interface_test $(build_dir)/cpu_instruction_test \
