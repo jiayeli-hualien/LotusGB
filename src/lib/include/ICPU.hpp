@@ -14,6 +14,7 @@ static constexpr unsigned T_CYCLES_PER_M_CYCLE = 4;
 struct RetStepOneCycle {
     bool success = false;
     bool fetchedNewInst = false;
+    unsigned tCyclesElapsed = 0;
 };
 
 class ICPU {

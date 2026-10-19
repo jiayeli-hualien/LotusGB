@@ -313,6 +313,7 @@ void testStopDecodeAndHaltIdle() {
     const size_t readsBeforeStopIdle = stop.memory.reads.size();
     const auto stopped = stop.cpu.stepOneCycle();
     expect(stopped.success && !stopped.fetchedNewInst, "stopped CPU does not execute instructions");
+    expect(stopped.tCyclesElapsed == 0, "STOP idle does not advance CPU T-cycles");
     expect(stop.memory.reads.size() == readsBeforeStopIdle, "stopped CPU performs no bus reads");
     stop.cpu.wakeFromStop();
     expect(stop.memory.reads.size() == readsBeforeStopIdle,
@@ -320,6 +321,8 @@ void testStopDecodeAndHaltIdle() {
     const auto resumed = stop.cpu.stepOneCycle();
     expect(resumed.success && resumed.fetchedNewInst,
            "waking STOP fetches the next opcode in a CPU cycle");
+    expect(resumed.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+           "the STOP wake fetch consumes one machine cycle");
     expect(stop.memory.reads.back() == 0x0002, "STOP resumes from the byte after its padding byte");
 
     CpuFixture stopWithNonzeroPadding{{0x0000, 0x10}, {0x0001, 0xA5}, {0x0002, 0x00}};
@@ -338,7 +341,10 @@ void testStopDecodeAndHaltIdle() {
     expect(halt.cpu.stepOneCycle().fetchedNewInst, "HALT completes its opcode cycle");
     expect(halt.cpu.getHALT() && !halt.cpu.getStopped(), "HALT is distinct from STOP");
     const size_t readsBeforeHaltIdle = halt.memory.reads.size();
-    expect(halt.cpu.stepOneCycle().success, "HALT advances an idle machine cycle");
+    const auto haltedIdle = halt.cpu.stepOneCycle();
+    expect(haltedIdle.success, "HALT advances an idle machine cycle");
+    expect(haltedIdle.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+           "HALT idle advances the CPU clock by one machine cycle");
     expect(halt.memory.reads.size() == readsBeforeHaltIdle, "HALT idle does not fetch instructions");
     halt.cpu.setHALT(false);
     expect(halt.cpu.stepOneCycle().fetchedNewInst, "waking HALT resumes the prefetched instruction");

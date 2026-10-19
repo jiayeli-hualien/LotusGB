@@ -91,6 +91,8 @@ void testFetchAndInstructionStep() {
     Reg reg = cpu.getReg();
 
     expect(result.success, "CPU accepts a valid instruction cycle");
+    expect(result.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+           "an executed CPU machine cycle reports four elapsed T-cycles");
     expect(result.fetchedNewInst, "CPU reports completion when it fetches the next opcode");
     expect(reg.getRefA() == 1, "the decoded instruction updates CPU state");
     expect(reg.getRefPC() == 2, "reset and the next-opcode fetch advance PC");
@@ -112,6 +114,8 @@ void testMemoryWriteThroughInterface() {
 
     const RetStepOneCycle writeResult = cpu.stepOneCycle();
     expect(writeResult.success, "CPU accepts a memory-write cycle");
+    expect(writeResult.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+           "a memory-write machine cycle reports its elapsed T-cycles");
     expect(!writeResult.fetchedNewInst, "an intermediate write cycle is not a new instruction");
     expect(memory.writes == std::vector<std::pair<uint16_t, uint8_t>>({{0xC000, 0x42}}),
            "CPU forwards the instruction's write to memory");

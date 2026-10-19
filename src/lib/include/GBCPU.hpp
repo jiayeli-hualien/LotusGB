@@ -38,7 +38,6 @@ private:
     IDecoder &decoder;
     IDecoder &decoderCB;
     Reg reg;
-    u_int64_t clockTimeStamp;
     bool interruptMasterEnable = true;
     bool isHalt = false;
     bool isStopped = false;

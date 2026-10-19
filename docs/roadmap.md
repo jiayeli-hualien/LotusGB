@@ -12,7 +12,7 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - Polymorphic interfaces used through owning pointers now have virtual destructors. `GBCPU` marks memory/decoder dependencies as borrowed references, and each GBIT adapter owns its dependencies and helper independently.
 - A regression test creates two GBIT adapters, destroys one, and verifies that the other remains usable.
 - CPU-local STOP and HALT states are separate; STOP consumes its second byte, ignores its value, and resumes fetching only after an explicit wake request.
-- The CPU stepping interface defines one M-cycle as four T-cycles; an instruction test checks its data read and next-opcode fetch in their respective M-cycles.
+- The CPU stepping interface defines one M-cycle as four T-cycles and reports elapsed T-cycles per step (zero during STOP idle). Tests check elapsed time and memory accesses across instruction M-cycles.
 
 ## Delivery milestones
 
