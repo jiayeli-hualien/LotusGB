@@ -13,9 +13,20 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - A regression test creates two GBIT adapters, destroys one, and verifies that the other remains usable.
 - CPU-local STOP and HALT states are separate; STOP consumes its second byte, ignores its value, and resumes fetching only after an explicit wake request.
 
+## Delivery milestones
+
+The first major delivery goal is running a Game Boy ROM in RetroArch on Ubuntu. Build the shared emulator core first; do not make a standalone GUI a prerequisite.
+
+1. **Headless Game Boy core.** Implement the shared clock and bus, address map and cartridge loading, timer and interrupts, then a minimal PPU and input path. Acceptance: headless tests can load a test ROM, advance frames, provide input, and inspect generated video output.
+2. **Ubuntu RetroArch core.** Add the libretro adapter after the headless core can run a cartridge. Acceptance: build a Linux libretro shared library, load it in RetroArch on Ubuntu, start a ROM, display frames, and receive input. Audio can follow after this first playable milestone.
+3. **Audio and compatibility.** Add audio output and cartridge persistence, then improve timing and visual compatibility with focused tests and reference games. Use Game Boy F-1 Race as one PPU visual target.
+4. **Steam Deck.** Build and verify the libretro core in RetroArch on SteamOS, including controls, display scaling, and audio.
+5. **Raspberry Pi with Recalbox.** Build and verify the core for the supported Raspberry Pi model and Recalbox environment, including controls, video, and audio.
+6. **Windows.** Add a Windows build and CI job for the libretro core, then verify it in a Windows RetroArch installation.
+
 ## Next work, in order
 
-1. **Define the system clock and bus contract.** Before adding peripherals, decide how CPU M-cycles advance shared time and how reads/writes are presented to the system bus. Keep the current M-cycle model unless a tested device behavior requires T-cycle stepping. Add tests that make CPU bus accesses visible at the right cycle boundaries.
+1. **Define the system clock and bus contract.** Treat one CPU M-cycle as four T-cycles, with a future system scheduler owning shared time and advancing peripherals from that clock. Keep M-cycle stepping as the CPU's current instruction interface; refine CPU/bus timing at T-cycle granularity when PPU or bus behavior tests require it. Make each memory access visible at a defined cycle boundary, and move reset's initial opcode fetch into the same bus/timing contract.
 2. **Add a real address bus and cartridge boundary.** Replace flat/mock memory in the emulator path with address-region routing, then add cartridge ROM access and mapper support. Keep the GBIT memory adapter as test infrastructure rather than the system memory implementation.
 3. **Add timer and interrupt components.** Connect timer state, interrupt request/enable registers, CPU IME, HALT wake-up, and interrupt entry through explicit interfaces. Test the interactions together, especially delayed EI and HALT edge cases.
 4. **Add the PPU and input path.** Build a headless system loop that advances CPU, timer, and PPU on one shared clock; then add input state and a minimal frame output. Keep rendering/UI separate from emulation state. Use Game Boy F-1 Race as one visual compatibility target when a frame can be rendered.
@@ -25,3 +36,7 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 ## Validation rule
 
 For each step, state what externally observable behavior changes, add a focused regression test at the narrowest useful boundary, and run the relevant unit or integration checks. Use GBIT as one CPU comparison source; investigate disagreements instead of copying behavior without hardware evidence.
+
+## Platform support
+
+Use Linux as the primary development and CI platform for now. Steam Deck, Raspberry Pi running Recalbox, and Windows are target platforms. Build the portable emulator core and libretro adapter first, then add platform-specific build and integration checks. Keep code and build configuration portable where practical; defer dedicated checks for each target until the core and libretro adapter are established.
