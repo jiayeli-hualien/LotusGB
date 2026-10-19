@@ -20,8 +20,6 @@ http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf
 // TODO: codegen? how to handle function not implemented?
 namespace LOTUSGB {
 
-subFunMapType getSubFuncMap();
-
 SUB_FUNC_DECLARE(NOT_SUPPORT);
 SUB_FUNC_DECLARE(LDRR);
 SUB_FUNC_DECLARE(LD_R_MEMVAL);

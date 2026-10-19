@@ -17,14 +17,10 @@ SUB_FUNC_OP_RET SUB_FUNC_OP;\
 
 #define SUB_FUNC_IMPL(x) SUB_FUNC_OP_RET subFunc##x::SUB_FUNC_OP
 
-#define MAP_ENTRY(name) (map[#name]=subFunc##name())
-
 #else // INST_USE_FUNC_OBJ
 
 #define SUB_FUNC_IMPL(x) SUB_FUNC_OP_RET subFunc##x(SUB_FUNC_PARAMS)
 #define SUB_FUNC_DECLARE(x) SUB_FUNC_OP_RET subFunc##x(SUB_FUNC_PARAMS)
-#define MAP_ENTRY(name) (map[#name]=subFunc##name)
-
 #endif // INST_USE_FUNC_OBJ
 
 // int for leverage int promotion

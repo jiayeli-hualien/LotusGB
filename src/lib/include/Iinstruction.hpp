@@ -73,8 +73,6 @@ public:
     virtual bool stepOneMemCycle(SUB_FUNC_PARAMS) = 0;
 };
 
-using subFunMapType = std::unordered_map<std::string, IInstruction::FUNC_TYPE>;
-
 }
 
 #endif // LOTUSGB_IINSTRUCTION_HPP

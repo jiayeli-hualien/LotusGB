@@ -10,35 +10,6 @@
 
 namespace LOTUSGB {
 
-subFunMapType getSubFuncMapCB() {
-    subFunMapType map;
-    MAP_ENTRY(NOP);
-    MAP_ENTRY(MemReadIndirectHL);
-    MAP_ENTRY(RLC);
-    MAP_ENTRY(RLC_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(RRC);
-    MAP_ENTRY(RRC_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(RL);
-    MAP_ENTRY(RL_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(RR);
-    MAP_ENTRY(RR_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(SLA);
-    MAP_ENTRY(SLA_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(SRA);
-    MAP_ENTRY(SRA_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(SWAP);
-    MAP_ENTRY(SWAP_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(SRL);
-    MAP_ENTRY(SRL_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(BIT);
-    MAP_ENTRY(BIT_MEMVAL);
-    MAP_ENTRY(RES);
-    MAP_ENTRY(RES_MEMVAL_MemWriteIndirectHL);
-    MAP_ENTRY(SET);
-    MAP_ENTRY(SET_MEMVAL_MemWriteIndirectHL);
-    return map;
-}
-
 static inline void _RLC(uint8_t *value, GB_Flag &flag) {
     int result = *value;
     flag.N = false;

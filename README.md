@@ -36,6 +36,11 @@ The project uses GNU Make and GCC/G++. From the repository root, run:
 make build
 ```
 
+The opcode CSV files in `src/lib/include` are the editable source for the
+decoder tables. The build converts their fields into typed C++ tables in a
+generated header; the program does not parse CSV or open CSV files at runtime.
+Python 3 is needed to regenerate that header when a CSV changes.
+
 Run the CPU interface unit tests with:
 
 ```sh

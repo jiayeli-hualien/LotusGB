@@ -18,8 +18,6 @@ http://marc.rawer.de/Gameboy/Docs/GBCPUman.pdf
 
 namespace LOTUSGB {
 
-subFunMapType getSubFuncMapCB();
-
 SUB_FUNC_DECLARE(RLC);
 // TODO: read official doc of the CPU
 // TODO: split one mem cycle to reg/mem
