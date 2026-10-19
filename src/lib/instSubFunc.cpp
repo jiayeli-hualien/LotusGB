@@ -581,12 +581,10 @@ SUB_FUNC_IMPL(StopWorkaround) {
 }
 
 SUB_FUNC_IMPL(Stop) {
-    if (pInstState->memValue) {
-        std::cerr << "invalid stop instrcution" << std::endl;
-    } else {
-        pInstState->clockAction = CLOCK_ACTION_STOP;
-        pInstState->memMode = MEM_MODE_SLEEP;
-    }
+    // The byte following STOP is consumed as part of the instruction, but its
+    // value is ignored by the SM83 instruction definition.
+    pInstState->clockAction = CLOCK_ACTION_STOP;
+    pInstState->memMode = MEM_MODE_SLEEP;
 }
 
 SUB_FUNC_IMPL(DI) {

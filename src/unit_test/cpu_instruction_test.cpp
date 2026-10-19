@@ -322,6 +322,18 @@ void testStopDecodeAndHaltIdle() {
            "waking STOP fetches the next opcode in a CPU cycle");
     expect(stop.memory.reads.back() == 0x0002, "STOP resumes from the byte after its padding byte");
 
+    CpuFixture stopWithNonzeroPadding{{0x0000, 0x10}, {0x0001, 0xA5}, {0x0002, 0x00}};
+    stopWithNonzeroPadding.cpu.stepOneCycle();
+    expect(stopWithNonzeroPadding.memory.reads == std::vector<uint16_t>{0x0001},
+           "STOP consumes its second byte from the bus");
+    const auto stopResult = stopWithNonzeroPadding.cpu.stepOneCycle();
+    expect(stopResult.success && !stopResult.fetchedNewInst,
+           "nonzero STOP padding still completes STOP");
+    expect(stopWithNonzeroPadding.cpu.getStopped(),
+           "STOP ignores the value of its second byte");
+    expect(stopWithNonzeroPadding.memory.reads == std::vector<uint16_t>{0x0001},
+           "STOP does not fetch past the second byte");
+
     CpuFixture halt{{0x0000, 0x76}, {0x0001, 0x00}};
     expect(halt.cpu.stepOneCycle().fetchedNewInst, "HALT completes its opcode cycle");
     expect(halt.cpu.getHALT() && !halt.cpu.getStopped(), "HALT is distinct from STOP");
