@@ -6,20 +6,20 @@
 
 namespace LOTUSGB {
 
-GBCPU::GBCPU(IMemoryAccess *pMmu, IDecoder *pDecoder, IDecoder *pDecoderCB)
-:pMmu(pMmu), pDecoder(pDecoder), pDecoderCB(pDecoderCB) {
+GBCPU::GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB)
+:memory(memory), decoder(decoder), decoderCB(decoderCB) {
 }
 
 IInstruction* GBCPU::fetch(uint16_t addr) {
     // TODO: handle deced failed
     const uint8_t OPCODE_CB = 0xCB;
-    instStat.opcode = pMmu->read(addr);
+    instStat.opcode = memory.read(addr);
     if (waitDecodeCB) {
         waitDecodeCB = false;
-        return pDecoderCB->decode(instStat.opcode);
+        return decoderCB.decode(instStat.opcode);
     }
     waitDecodeCB = (instStat.opcode == OPCODE_CB);
-    return pDecoder->decode(instStat.opcode);
+    return decoder.decode(instStat.opcode);
 }
 
 void GBCPU::fetchFirstOpcode() {
@@ -48,18 +48,18 @@ void GBCPU::doFetchNextOp() {
 }
 
 void GBCPU::doMemRead(InstState &instStat) {
-    instStat.memValue = pMmu->read(instStat.memAddr);
+    instStat.memValue = memory.read(instStat.memAddr);
 }
 void GBCPU::doMemReadAddrLSB(InstState &instStat) {
-    const uint8_t tmp = pMmu->read(instStat.memAddr);
+    const uint8_t tmp = memory.read(instStat.memAddr);
     instStat.a16Addr = HIGH_MEM_ADDR | tmp;
 }
 void GBCPU::doMemReadAddrMSB(InstState &instStat) {
-    const uint8_t tmp = pMmu->read(instStat.memAddr);
+    const uint8_t tmp = memory.read(instStat.memAddr);
     instStat.a16Addr = (tmp << 8U) | (instStat.a16Addr & 0xFF);
 }
 void GBCPU::doMemWrite(InstState &instStat) {
-    pMmu->write(instStat.memAddr,  instStat.memValue);
+    memory.write(instStat.memAddr, instStat.memValue);
 }
 
 bool GBCPU::stepInstruction() {

@@ -11,7 +11,7 @@ namespace LOTUSGB {
 // TODO: refactor the naming: GBCPU->GbCpu, find a tool
 class GBCPU : public ICPU {
 public:
-    GBCPU(IMemoryAccess *pMmu, IDecoder *pDecoder, IDecoder *pDecoderCB);
+    GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB);
     void reset();
     RetStepOneCycle stepOneCycle();
 
@@ -33,7 +33,10 @@ private:
     void doMemWrite(InstState &instStat);
     bool stepInstruction();
 
-    IMemoryAccess *pMmu;
+    // These dependencies are borrowed; their owner must outlive the CPU.
+    IMemoryAccess &memory;
+    IDecoder &decoder;
+    IDecoder &decoderCB;
     Reg reg;
     u_int64_t clockTimeStamp;
     bool interruptMasterEnable = true;
@@ -44,8 +47,6 @@ private:
     bool waitDecodeCB = false;
     InstState instStat;
     IInstruction *pInst;
-    IDecoder *pDecoder = nullptr;
-    IDecoder *pDecoderCB = nullptr;
 };
 
 }

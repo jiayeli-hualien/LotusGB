@@ -84,7 +84,7 @@ void testFetchAndInstructionStep() {
     IncrementAccumulator instruction;
     TestDecoder baseDecoder(&instruction);
     TestDecoder cbDecoder(&instruction);
-    GBCPU cpu(&memory, &baseDecoder, &cbDecoder);
+    GBCPU cpu(memory, baseDecoder, cbDecoder);
 
     cpu.reset();
     const RetStepOneCycle result = cpu.stepOneCycle();
@@ -107,7 +107,7 @@ void testMemoryWriteThroughInterface() {
     WriteThenFetch instruction;
     TestDecoder baseDecoder(&instruction);
     TestDecoder cbDecoder(&instruction);
-    GBCPU cpu(&memory, &baseDecoder, &cbDecoder);
+    GBCPU cpu(memory, baseDecoder, cbDecoder);
     cpu.reset();
 
     const RetStepOneCycle writeResult = cpu.stepOneCycle();

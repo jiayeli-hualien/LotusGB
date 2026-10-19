@@ -42,7 +42,7 @@ struct CpuFixture {
     TestMemory memory;
     Decoder baseDecoder{false};
     Decoder cbDecoder{true};
-    GBCPU cpu{&memory, &baseDecoder, &cbDecoder};
+    GBCPU cpu{memory, baseDecoder, cbDecoder};
 
     explicit CpuFixture(std::initializer_list<std::pair<uint16_t, uint8_t>> program) {
         for (const auto &[addr, byte] : program)

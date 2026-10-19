@@ -14,6 +14,7 @@ struct RetStepOneCycle {
 
 class ICPU {
 public:
+    virtual ~ICPU() = default;
     virtual void reset() = 0;
     virtual void fetchFirstOpcode() = 0;
 

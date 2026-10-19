@@ -3,7 +3,6 @@
 #include "include/ILotusGBIT.hpp"
 #include "include/lotusGBIT.hpp"
 #include "include/GBCPU.hpp"
-#include "include/memory.hpp"
 #include "include/memoryGBIT.hpp"
 #include "include/Iinstruction.hpp"
 #include "include/IDecoder.hpp"
@@ -11,34 +10,22 @@
 
 using LOTUSGB::LotusGBIT;
 using LOTUSGB::GBCPU;
-using LOTUSGB::Memory;
 using LOTUSGB::MemoryGBIT;
 using LOTUSGB::IDecoder;
 using LOTUSGB::Decoder;
 using std::make_shared;
 using std::make_unique;
 
-// TODO: IDecoder & pass shared_ptr into LotusGBIT
-static IDecoder *pDecoder = nullptr;
-static IDecoder *pDecoderCB = nullptr;
 pILotusGBIT lotusGBIT_Create() {
-    // TODO: factory
-    // TODO: factory for decoder
-    // TODO: delete objects
-    if (!pDecoder)
-        pDecoder = new Decoder(false, true);
-    if (!pDecoderCB)
-        pDecoderCB = new Decoder(true);
+    auto spDecoder = make_shared<Decoder>(false, true);
+    auto spDecoderCB = make_shared<Decoder>(true);
     auto spMockMMU = make_shared<MemoryGBIT>();
-    auto upCPU = make_unique<GBCPU>(spMockMMU.get(), pDecoder, pDecoderCB);
-    return new LotusGBIT(std::move(upCPU), spMockMMU);
+    auto upCPU = make_unique<GBCPU>(*spMockMMU, *spDecoder, *spDecoderCB);
+    return new LotusGBIT(std::move(upCPU), std::move(spMockMMU),
+                         std::move(spDecoder), std::move(spDecoderCB));
 }
 
 void lotusGBIT_Destroy(pILotusGBIT pTestObj) {
-    delete pDecoder;
-    pDecoder = nullptr;
-    delete pDecoderCB;
-    pDecoder = nullptr;
     delete pTestObj;
 }
 

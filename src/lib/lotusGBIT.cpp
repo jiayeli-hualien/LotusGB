@@ -5,14 +5,13 @@
 
 namespace LOTUSGB {
 
-LotusGBIT::LotusGBIT(unique_ptr<ICPU> &&upCPU, shared_ptr<IMemoryGBIT> spMMU)
-:upCPU(std::move(upCPU)), spMMU(spMMU) {
+LotusGBIT::LotusGBIT(unique_ptr<ICPU> &&upCPU, shared_ptr<IMemoryGBIT> spMMU,
+                     shared_ptr<IDecoder> spDecoder,
+                     shared_ptr<IDecoder> spDecoderCB)
+:spMMU(std::move(spMMU)), spDecoder(std::move(spDecoder)),
+ spDecoderCB(std::move(spDecoderCB)), upCPU(std::move(upCPU)) {
     // TODO: only access via interfaces
-    pGBITCPU = new GBITCPU(this->upCPU.get());
-}
-
-LotusGBIT::~LotusGBIT() {
-    delete pGBITCPU;
+    upGBITCPU = std::make_unique<GBITCPU>(this->upCPU.get());
 }
 
 void LotusGBIT::getState(LotusGBState *pState) {
@@ -64,7 +63,7 @@ void LotusGBIT::setState(LotusGBState *pState) {
 }
 
 int LotusGBIT::step() {
-   return pGBITCPU->stepOneInstruction()*4;
+   return upGBITCPU->stepOneInstruction()*4;
 }
 
 }

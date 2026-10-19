@@ -66,6 +66,7 @@ class IInstruction {
 // Stateless interface/object, state from InstructState
 // Child class can hold read-only data/function pointer
 public:
+    virtual ~IInstruction() = default;
 #if INST_USE_FUNC_OBJ
     using FUNC_TYPE =
         std::function<SUB_FUNC_OP_RET(SUB_FUNC_PARAMS)>;
