@@ -1,0 +1,37 @@
+# Development notes
+
+## Project scope
+
+LotusGB is a C++ Game Boy emulator project. The current implementation focuses on the CPU; it is not yet a complete system emulator. Keep CPU behavior testable through its public interfaces so memory, timing, and future system components can be integrated later.
+
+## Build and checks
+
+From the repository root:
+
+- `make build` builds the project.
+- `make test` runs the CPU interface and instruction unit tests. These tests do not require GBIT.
+- The GBIT integration executable expects the `gbit` repository beside this repository. Build it with `make -C ../gbit`, then run the test executable from `build/`:
+
+  ```sh
+  cd build
+  LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
+  ```
+
+GitHub Actions builds the pinned `jiayeli-hualien/gbit` revision, builds LotusGB, runs `make test`, and then runs the GBIT instruction tests. Keep local integration instructions consistent with `.github/workflows/ci.yml`.
+
+## Decoder tables
+
+`src/lib/include/instruction_table.csv` and `src/lib/include/decode_table.csv` are the editable opcode metadata. `tools/generate_decode_tables.py` converts them into `src/lib/include/generated_decode_tables.hpp`; runtime code uses the generated C++ table and does not parse CSV files. Do not edit the generated header by hand. When changing the CSV metadata or generator, regenerate the header with:
+
+```sh
+python3 tools/generate_decode_tables.py
+```
+
+Commit the generated header together with the CSV or generator change so builds use the matching decoder data.
+
+## CPU changes
+
+- Add focused unit tests in `src/unit_test/` for externally observable CPU behavior, such as registers, flags, cycle count, memory access, and interrupt state.
+- Treat hardware documentation and targeted tests as the source of truth for Game Boy behavior. GBIT is a useful integration check, but investigate disagreements instead of adding compatibility workarounds without evidence.
+- Model CPU progress in M-cycle steps unless a demonstrated observable timing requirement needs finer clock detail.
+- Preserve the distinction between STOP and HALT state and test their wake-up behavior when changing those paths.

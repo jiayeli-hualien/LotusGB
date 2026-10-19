@@ -18,8 +18,10 @@ clock as they are added.
 
 ### Near term
 
-- Review the CPU TODOs and resolve correctness and timing issues against
-  reliable references and test ROMs.
+- Expand CPU regression coverage for flag edge cases and externally observable
+  cycle/bus timing, using GBIT and targeted timing tests.
+- Keep modeling CPU work in M-cycle steps. Defer internal ALU substeps unless
+  later system components need that detail for observable bus or clock timing.
 - Maintain GitHub Actions CI for the project build, CPU unit tests, and GBIT
   instruction tests.
 
@@ -51,7 +53,7 @@ These tests use fake memory, decoder, and instruction implementations and do
 not require GBIT. They check the CPU's cycle-stepping contract at its public
 boundary.
 
-The `gbit_test` target expects the [GBIT repository](https://github.com/koenk/gbit)
+The `gbit_test` target expects your [GBIT fork](https://github.com/jiayeli-hualien/gbit)
 to be checked out as a sibling directory next to `lotus-gbemu`. The current
 `application` target is still a placeholder. After building, run the GBIT
 instruction checks from the build directory:

@@ -17,11 +17,11 @@ jobs:
         with:
           path: lotus-gbemu
 
-      - name: Check out pinned GBIT
+      - name: Check out pinned GBIT fork
         uses: actions/checkout@v7
         with:
-          repository: koenk/gbit
-          ref: 392603def44e78a6b6e8cea23c3fcdd181c491d5
+          repository: jiayeli-hualien/gbit
+          ref: 3fa132a2ae9dc9da1529aafe3ac06d8767327d80
           path: gbit
 
       - name: Build GBIT
