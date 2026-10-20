@@ -22,12 +22,14 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     bus.map(0xFF80, 0xFFFE, highRam);
     bus.map(0xFF00, 0xFF00, joypad);
     bus.map(0xFF04, 0xFF07, timer);
+    bus.map(0xFF10, 0xFF26, apu);
     bus.map(0xFF40, 0xFF45, ppu);
     bus.map(0xFF47, 0xFF4B, ppu);
     bus.map(0xFF46, 0xFF46, oamDma);
     bus.map(0xFF0F, 0xFF0F, interruptRegisters);
     bus.map(0xFFFF, 0xFFFF, interruptRegisters);
     systemClock.addClockedComponent(timer);
+    systemClock.addClockedComponent(apu);
     systemClock.addClockedComponent(ppu);
     cpu.reset();
     if (startupMode == SystemStartupMode::DmgPostBoot)
@@ -70,6 +72,10 @@ const DmgPpu::FrameBuffer &GameBoySystem::getFrameBuffer() const {
     return ppu.getFrameBuffer();
 }
 
+std::vector<int16_t> GameBoySystem::takeAudioSamples() {
+    return apu.takeAudioSamples();
+}
+
 void GameBoySystem::setButtonState(JoypadButton button, bool pressed) {
     joypad.setButtonState(button, pressed);
 }
@@ -91,6 +97,7 @@ void GameBoySystem::initializeDmgPostBootState() {
     cpu.setIME(true);
 
     timer.initializeDmgPostBootState();
+    apu.initializeDmgPostBootState();
     ppu.initializeDmgPostBootState();
     joypad.write(0xFF00, 0x00);
     interruptRegisters.write(0xFF0F, 0xE1);

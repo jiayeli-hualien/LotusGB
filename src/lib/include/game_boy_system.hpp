@@ -8,6 +8,7 @@
 #include "address_bus.hpp"
 #include "cartridge.hpp"
 #include "decoder.hpp"
+#include "dmg_apu.hpp"
 #include "dmg_ppu.hpp"
 #include "dmg_oam_dma.hpp"
 #include "interrupt_registers.hpp"
@@ -44,6 +45,7 @@ public:
     uint64_t getElapsedTCycles() const;
     Reg getCpuRegisters();
     const DmgPpu::FrameBuffer &getFrameBuffer() const;
+    std::vector<int16_t> takeAudioSamples();
     void setButtonState(JoypadButton button, bool pressed);
 
 private:
@@ -55,6 +57,7 @@ private:
     InterruptRegisters interruptRegisters;
     Joypad joypad;
     Timer timer;
+    DmgApu apu;
     DmgPpu ppu;
     AddressBus bus;
     DmgOamDma oamDma;

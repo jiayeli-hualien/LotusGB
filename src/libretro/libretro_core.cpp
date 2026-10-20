@@ -21,6 +21,8 @@ constexpr double DMG_FRAME_RATE = 4194304.0 / GameBoySystem::DMG_FRAME_T_CYCLES;
 
 retro_environment_t environmentCallback = nullptr;
 retro_video_refresh_t videoRefreshCallback = nullptr;
+retro_audio_sample_t audioSampleCallback = nullptr;
+retro_audio_sample_batch_t audioSampleBatchCallback = nullptr;
 retro_input_poll_t inputPollCallback = nullptr;
 retro_input_state_t inputStateCallback = nullptr;
 
@@ -108,6 +110,23 @@ void renderFrame() {
     }
 }
 
+void submitAudio() {
+    if (!emulatorSystem)
+        return;
+
+    const std::vector<int16_t> samples = emulatorSystem->takeAudioSamples();
+    const size_t frameCount = samples.size() / 2;
+    if (frameCount == 0)
+        return;
+
+    if (audioSampleBatchCallback) {
+        audioSampleBatchCallback(samples.data(), frameCount);
+    } else if (audioSampleCallback) {
+        for (size_t frame = 0; frame < frameCount; ++frame)
+            audioSampleCallback(samples[frame * 2], samples[frame * 2 + 1]);
+    }
+}
+
 } // namespace
 
 extern "C" {
@@ -121,11 +140,11 @@ void retro_set_video_refresh(retro_video_refresh_t callback) {
 }
 
 void retro_set_audio_sample(retro_audio_sample_t callback) {
-    (void)callback;
+    audioSampleCallback = callback;
 }
 
 void retro_set_audio_sample_batch(retro_audio_sample_batch_t callback) {
-    (void)callback;
+    audioSampleBatchCallback = callback;
 }
 
 void retro_set_input_poll(retro_input_poll_t callback) {
@@ -197,6 +216,7 @@ void retro_run(void) {
     pollInput();
     emulatorSystem->stepFrame();
     renderFrame();
+    submitAudio();
 }
 
 size_t retro_serialize_size(void) {

@@ -1,5 +1,6 @@
 #include "libretro.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -23,6 +24,9 @@ unsigned inputPollCount = 0;
 unsigned videoRefreshCount = 0;
 unsigned observedPitch = 0;
 bool upPressed = false;
+unsigned audioBatchCallCount = 0;
+size_t audioFrameCount = 0;
+size_t nonzeroAudioSampleCount = 0;
 std::array<uint32_t, WIDTH * HEIGHT> observedFrame{};
 
 void expect(bool condition, const char *message) {
@@ -74,6 +78,14 @@ void videoRefreshCallback(const void *data, unsigned width, unsigned height,
     observedPitch = static_cast<unsigned>(pitch);
     const auto *pixels = static_cast<const uint8_t *>(data);
     std::memcpy(observedFrame.data(), pixels, sizeof(observedFrame));
+}
+
+size_t audioSampleBatchCallback(const int16_t *data, size_t frames) {
+    ++audioBatchCallCount;
+    audioFrameCount += frames;
+    for (size_t i = 0; i < frames * 2; ++i)
+        nonzeroAudioSampleCount += data[i] != 0;
+    return frames;
 }
 
 void testLibretroLoadsAcid2AndPublishesReferenceFrame() {
@@ -157,6 +169,40 @@ void testLibretroInputChangesPongGameplayFrame() {
            "holding D-Pad Up visibly moves the player's paddle in Pong");
 }
 
+void testLibretroPublishesPulseChannelAudio() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0xF0, 0xE0, 0x12, // NR12: enable channel 1 DAC at volume 15
+        0x3E, 0x80, 0xE0, 0x11, // NR11: 50% duty
+        0x3E, 0x77, 0xE0, 0x24, // NR50: full output volume
+        0x3E, 0x11, 0xE0, 0x25, // NR51: route channel 1 left and right
+        0x3E, 0x00, 0xE0, 0x13, // NR13: frequency low
+        0x3E, 0x86, 0xE0, 0x14, // NR14: trigger channel 1
+        0x18, 0xFE,             // loop forever
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    rom[0x147] = 0x00; // ROM-only cartridge
+
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game), "core loads the pulse-channel test ROM");
+
+    audioBatchCallCount = 0;
+    audioFrameCount = 0;
+    nonzeroAudioSampleCount = 0;
+    retro_run();
+    retro_run();
+
+    expect(audioBatchCallCount == 2,
+           "core submits one audio batch per video frame");
+    expect(audioFrameCount > 0,
+           "core submits audio frames to the frontend");
+    expect(nonzeroAudioSampleCount > 0,
+           "channel 1 ROM output reaches the frontend as non-silent PCM");
+    retro_unload_game();
+}
+
 void testLibretroReportsApiAndVideoTiming() {
     expect(retro_api_version() == RETRO_API_VERSION,
            "core reports the libretro API version");
@@ -176,6 +222,8 @@ void testLibretroReportsApiAndVideoTiming() {
            "core reports native Game Boy video geometry");
     expect(avInfo.timing.fps > 59.7 && avInfo.timing.fps < 59.8,
            "core reports the DMG frame rate");
+    expect(avInfo.timing.sample_rate == 48000.0,
+           "core reports the DMG audio output sample rate");
 }
 
 }
@@ -183,6 +231,7 @@ void testLibretroReportsApiAndVideoTiming() {
 int main() {
     retro_set_environment(environmentCallback);
     retro_set_video_refresh(videoRefreshCallback);
+    retro_set_audio_sample_batch(audioSampleBatchCallback);
     retro_set_input_poll(inputPollCallback);
     retro_set_input_state(inputStateCallback);
     retro_init();
@@ -190,6 +239,7 @@ int main() {
     testLibretroReportsApiAndVideoTiming();
     testLibretroLoadsAcid2AndPublishesReferenceFrame();
     testLibretroInputChangesPongGameplayFrame();
+    testLibretroPublishesPulseChannelAudio();
 
     retro_unload_game();
     retro_deinit();
