@@ -13,6 +13,7 @@ test_executables := $(build_dir)/cpu_interface_test $(build_dir)/cpu_instruction
 	$(build_dir)/adapter_lifetime_test $(build_dir)/system_clock_test \
 	$(build_dir)/address_bus_test $(build_dir)/game_boy_system_test \
 	$(build_dir)/timer_test $(build_dir)/joypad_test $(build_dir)/dmg_ppu_test \
+	$(build_dir)/dmg_oam_dma_test \
 	$(build_dir)/dmg_acid2_test
 
 acid2_asset_dir := ../../tests/roms/dmg-acid2
@@ -30,6 +31,7 @@ test: $(test_executables)
 	$(build_dir)/timer_test
 	$(build_dir)/joypad_test
 	$(build_dir)/dmg_ppu_test
+	$(build_dir)/dmg_oam_dma_test
 	$(build_dir)/dmg_acid2_test
 
 $(build_dir)/cpu_interface_test: cpu_cycle_test.cpp ../lib/GBCPU.cpp $(test_headers) | $(build_dir)
@@ -67,6 +69,13 @@ $(build_dir)/dmg_ppu_test: dmg_ppu_test.cpp ../lib/dmg_ppu.cpp \
 		../lib/interrupt_registers.cpp $(test_headers) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/dmg_ppu.cpp \
 		../lib/interrupt_registers.cpp -o $@
+
+$(build_dir)/dmg_oam_dma_test: dmg_oam_dma_test.cpp ../lib/dmg_oam_dma.cpp \
+		../lib/dmg_ppu.cpp ../lib/address_bus.cpp ../lib/interrupt_registers.cpp \
+		../lib/memory_region.cpp $(test_headers) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< ../lib/dmg_oam_dma.cpp ../lib/dmg_ppu.cpp \
+		../lib/address_bus.cpp ../lib/interrupt_registers.cpp \
+		../lib/memory_region.cpp -o $@
 
 $(build_dir)/dmg_acid2_test: dmg_acid2_test.cpp $(wildcard ../lib/*.cpp) \
 		$(test_headers) $(generated_tables) $(acid2_assets) | $(build_dir)

@@ -17,6 +17,7 @@ class DmgPpu final : public IAddressRegion, public IClockedComponent {
 public:
     static constexpr size_t FRAME_WIDTH = 160;
     static constexpr size_t FRAME_HEIGHT = 144;
+    static constexpr size_t OAM_SIZE = 0x00A0;
     using FrameBuffer = std::array<uint8_t, FRAME_WIDTH * FRAME_HEIGHT>;
 
     explicit DmgPpu(IInterruptController &interrupts);
@@ -25,6 +26,7 @@ public:
     void write(uint16_t address, uint8_t value) override;
     void advanceTCycles(uint64_t tCycles) override;
     void initializeDmgPostBootState();
+    void writeOamFromDma(size_t offset, uint8_t value);
 
     // Each pixel is a DMG shade index (0 is lightest, 3 is darkest), after
     // applying BGP/OBP0/OBP1. The frontend chooses the actual output colors.
@@ -47,7 +49,7 @@ private:
 
     IInterruptController &interrupts;
     std::array<uint8_t, 0x2000> videoRam{};
-    std::array<uint8_t, 0x00A0> objectRam{};
+    std::array<uint8_t, OAM_SIZE> objectRam{};
     FrameBuffer frameBuffer{};
 
     uint8_t lcdControl = 0;

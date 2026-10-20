@@ -12,6 +12,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
       joypad(interruptRegisters),
       timer(interruptRegisters),
       ppu(interruptRegisters),
+      oamDma(bus, ppu),
       cpu(bus, decoder, decoderCB, &interruptRegisters),
       systemClock(cpu) {
     bus.map(0x0000, 0x7FFF, cartridge);
@@ -23,6 +24,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     bus.map(0xFF04, 0xFF07, timer);
     bus.map(0xFF40, 0xFF45, ppu);
     bus.map(0xFF47, 0xFF4B, ppu);
+    bus.map(0xFF46, 0xFF46, oamDma);
     bus.map(0xFF0F, 0xFF0F, interruptRegisters);
     bus.map(0xFFFF, 0xFFFF, interruptRegisters);
     systemClock.addClockedComponent(timer);

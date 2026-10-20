@@ -186,6 +186,11 @@ void DmgPpu::advanceTCycles(uint64_t tCycles) {
         advanceDot();
 }
 
+void DmgPpu::writeOamFromDma(size_t offset, uint8_t value) {
+    if (offset < objectRam.size())
+        objectRam[offset] = value;
+}
+
 const DmgPpu::FrameBuffer &DmgPpu::getFrameBuffer() const {
     return frameBuffer;
 }

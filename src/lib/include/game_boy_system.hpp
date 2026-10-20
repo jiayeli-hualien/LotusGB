@@ -9,6 +9,7 @@
 #include "cartridge.hpp"
 #include "decoder.hpp"
 #include "dmg_ppu.hpp"
+#include "dmg_oam_dma.hpp"
 #include "interrupt_registers.hpp"
 #include "joypad.hpp"
 #include "memory_region.hpp"
@@ -56,6 +57,7 @@ private:
     Timer timer;
     DmgPpu ppu;
     AddressBus bus;
+    DmgOamDma oamDma;
     Decoder decoder{false};
     Decoder decoderCB{true};
     GBCPU cpu;
