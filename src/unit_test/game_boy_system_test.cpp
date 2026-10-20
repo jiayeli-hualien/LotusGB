@@ -21,7 +21,7 @@ void testCpuFetchesAndExecutesFromCartridgeThroughSystemBus() {
     rom[1] = 0xA5;
     rom[2] = 0x00; // NOP
 
-    GameBoySystem system(std::move(rom));
+    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
 
     const auto initialFetch = system.stepOneCycle();
     expect(initialFetch.success && initialFetch.fetchedNewInst,
@@ -67,7 +67,7 @@ void testTimerInterruptWakesHaltAndRunsHandler() {
     rom[0x0051] = 0x42;
     rom[0x0052] = 0xD9; // RETI
 
-    GameBoySystem system(std::move(rom));
+    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
     bool handlerRan = false;
     for (unsigned step = 0; step < 100; ++step) {
         const auto result = system.stepOneCycle();
@@ -92,7 +92,7 @@ void testGameBoySystemAcceptsButtonInput() {
     for (size_t i = 0; i < sizeof(program); ++i)
         rom[i] = program[i];
 
-    GameBoySystem system(std::move(rom));
+    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
     system.setButtonState(JoypadButton::Right, true);
     for (unsigned step = 0; step < 16; ++step)
         expect(system.stepOneCycle().success, "button input program advances successfully");
@@ -114,7 +114,7 @@ void testPpuAdvancesAndExposesScanlineThroughSystemBus() {
     for (size_t i = 0; i < sizeof(program); ++i)
         rom[i] = program[i];
 
-    GameBoySystem system(std::move(rom));
+    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
     bool reachedNextLine = false;
     for (unsigned step = 0; step < 1000; ++step) {
         const auto result = system.stepOneCycle();
@@ -146,7 +146,7 @@ void testGameBoySystemExposesRenderedFrameBuffer() {
     for (size_t i = 0; i < sizeof(program); ++i)
         rom[i] = program[i];
 
-    GameBoySystem system(std::move(rom));
+    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
     for (unsigned step = 0; step < 180; ++step)
         expect(system.stepOneCycle().success, "framebuffer integration step succeeds");
 
@@ -154,6 +154,69 @@ void testGameBoySystemExposesRenderedFrameBuffer() {
     expect(frame.size() == DmgPpu::FRAME_WIDTH * DmgPpu::FRAME_HEIGHT,
            "system exposes a complete 160 by 144 framebuffer");
     expect(frame[0] == 1, "system framebuffer includes the rendered BG pixel");
+}
+
+void testDmgPostBootStartupAndFrameStepping() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0xF0, 0x04, 0x47, // LDH A, ($04); LD B, A (DIV)
+        0xF0, 0x47, 0x4F, // LDH A, ($47); LD C, A (BGP)
+        0xF0, 0x00, 0x57, // LDH A, ($00); LD D, A (P1)
+        0xF0, 0x0F, 0x5F, // LDH A, ($0F); LD E, A (IF)
+        0xF0, 0x40, 0x67, // LDH A, ($40); LD H, A (LCDC)
+        0xFA, 0xFF, 0xFF, 0x6F, // LD A, ($FFFF); LD L, A (IE)
+        0x18, 0xFE, // idle loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x0100 + i] = program[i];
+    rom[0x014D] = 0x01; // non-zero header checksum: H/C set by DMG boot ROM
+
+    GameBoySystem system(std::move(rom));
+    Reg registers = system.getCpuRegisters();
+    expect(registers.getRefPC() == 0x0100,
+           "normal system startup begins at the cartridge entry point");
+    expect(registers.getRefSP() == 0xFFFE,
+           "DMG post-boot stack pointer is initialized");
+    expect(registers.getRefAF() == 0x01B0,
+           "DMG post-boot accumulator and flags match a non-zero header checksum");
+    expect(registers.getRefBC() == 0x0013 && registers.getRefDE() == 0x00D8 &&
+               registers.getRefHL() == 0x014D,
+           "DMG post-boot general register pairs are initialized");
+
+    for (unsigned step = 0; step < 100; ++step)
+        expect(system.stepOneCycle().success,
+               "post-boot register inspection program advances successfully");
+    registers = system.getCpuRegisters();
+    expect(registers.getRefB() == 0xAB,
+           "DMG post-boot divider register starts at $AB");
+    expect(registers.getRefC() == 0xFC && registers.getRefD() == 0xCF,
+           "DMG post-boot background palette and joypad state are initialized");
+    expect(registers.getRefE() == 0xE1 && registers.getRefH() == 0x91 &&
+               registers.getRefL() == 0x00,
+           "DMG post-boot IF, LCDC, and IE values are initialized");
+
+    const uint64_t elapsedBeforeFrame = system.getElapsedTCycles();
+    const RetStepFrame frame = system.stepFrame();
+    expect(frame.success && frame.frameCompleted,
+           "frame stepping completes while the CPU is running");
+    expect(frame.tCyclesElapsed == GameBoySystem::DMG_FRAME_T_CYCLES,
+           "one frame step advances 456 by 154 T-cycles");
+    expect(system.getElapsedTCycles() ==
+               elapsedBeforeFrame + GameBoySystem::DMG_FRAME_T_CYCLES,
+           "system clock advances the requested frame duration");
+}
+
+void testFrameSteppingReturnsWhenCpuStops() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    rom[0x0100] = 0x10; // STOP
+    rom[0x0101] = 0x00;
+
+    GameBoySystem system(std::move(rom));
+    const RetStepFrame frame = system.stepFrame();
+    expect(frame.success && !frame.frameCompleted,
+           "frame stepping reports that STOP prevented frame completion");
+    expect(frame.tCyclesElapsed < GameBoySystem::DMG_FRAME_T_CYCLES,
+           "frame stepping returns instead of looping forever during STOP");
 }
 
 }
@@ -164,5 +227,7 @@ int main() {
     testGameBoySystemAcceptsButtonInput();
     testPpuAdvancesAndExposesScanlineThroughSystemBus();
     testGameBoySystemExposesRenderedFrameBuffer();
+    testDmgPostBootStartupAndFrameStepping();
+    testFrameSteppingReturnsWhenCpuStops();
     std::cout << "Headless system tests passed\n";
 }

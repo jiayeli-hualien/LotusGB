@@ -50,6 +50,25 @@ constexpr size_t MAX_OBJECTS_PER_SCANLINE = 10;
 
 DmgPpu::DmgPpu(IInterruptController &interrupts) : interrupts(interrupts) {}
 
+void DmgPpu::initializeDmgPostBootState() {
+    lcdControl = 0x91;
+    statInterruptEnable = 0;
+    scrollY = 0;
+    scrollX = 0;
+    ly = 0;
+    lyCompare = 0;
+    bgPalette = 0xFC;
+    // The DMG boot hand-off does not define these object palette registers.
+    objectPalette0 = 0;
+    objectPalette1 = 0;
+    windowY = 0;
+    windowX = 0;
+    windowLineCounter = 0;
+    dot = 0;
+    frameBuffer.fill(0);
+    statInterruptLine = false;
+}
+
 uint8_t DmgPpu::read(uint16_t address) {
     if (address >= VRAM_START && address <= VRAM_END) {
         if (lcdEnabled() && getMode() == 3)

@@ -40,13 +40,6 @@ void testDmgAcid2MatchesReferenceFrame() {
         std::exit(EXIT_FAILURE);
     }
 
-    // This headless system currently resets to synthetic PC=$0000. Redirect
-    // the initial fetch to the cartridge entry point until system startup
-    // initializes the documented post-boot state.
-    rom[0] = 0xC3; // JP $0100
-    rom[1] = 0x00;
-    rom[2] = 0x01;
-
     GameBoySystem system(std::move(rom));
     constexpr unsigned T_CYCLES_PER_FRAME = 456 * 154;
     constexpr unsigned M_CYCLES_PER_FRAME =

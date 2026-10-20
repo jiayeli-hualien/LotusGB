@@ -14,6 +14,14 @@ constexpr int OVERFLOW_RELOAD_DELAY_T_CYCLES = 4;
 
 Timer::Timer(IInterruptController &interrupts) : interrupts(interrupts) {}
 
+void Timer::initializeDmgPostBootState() {
+    systemCounter = 0xAB00;
+    tima = 0;
+    tma = 0;
+    tac = 0;
+    overflowReloadTCycles = 0;
+}
+
 uint8_t Timer::read(uint16_t address) {
     switch (address) {
         case DIV_ADDRESS:

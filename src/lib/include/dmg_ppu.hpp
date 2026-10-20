@@ -24,6 +24,7 @@ public:
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
     void advanceTCycles(uint64_t tCycles) override;
+    void initializeDmgPostBootState();
 
     // Each pixel is a DMG shade index (0 is lightest, 3 is darkest), after
     // applying BGP/OBP0/OBP1. The frontend chooses the actual output colors.

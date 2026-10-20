@@ -14,6 +14,6 @@ Regenerate the expected framebuffer with:
 python3 tests/roms/dmg-acid2/generate_reference.py
 ```
 
-Run the automated comparison with `make test`. The test patches the ROM's first three bytes to jump from the current synthetic reset PC (`$0000`) to `$0100`, runs 10 frames, then compares the 160×144 shade-index framebuffer. This redirect is temporary until the system has a real cartridge startup profile.
+Run the automated comparison with `make test`. The test starts at the DMG post-boot profile, runs 10 frames from the cartridge entry point at `$0100`, then compares the 160×144 shade-index framebuffer.
 
 The upstream test documentation says a scanline renderer is sufficient: it changes settings using LY=LYC interrupts between scanlines and does not test mode 3 timing penalties or writes during mode 3. See the [upstream README](https://github.com/mattcurrie/dmg-acid2/blob/master/README.md) for the behaviors covered.
