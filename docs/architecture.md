@@ -6,7 +6,7 @@ This document describes the implemented emulator, not a target design. Update it
 
 LotusGB currently runs ROM-only DMG cartridges up to 32 KiB. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
 
-The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, a partial PPU, OAM DMA, and an initial APU implementation. The APU currently generates audio for pulse channels 1 and 2. Cartridge banking and save persistence, boot-ROM execution, the other APU channels, and more complete PPU/APU timing are not implemented.
+The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, a partial PPU, OAM DMA, and an initial APU implementation. The APU currently generates audio for pulse channels 1 and 2 and wave channel 3. Wave RAM is blocked during active channel 3 playback because the bus model does not yet resolve its narrow access window. Cartridge banking and save persistence, boot-ROM execution, noise channel 4, and more complete PPU/APU timing are not implemented.
 
 ## Runtime flow
 
@@ -25,7 +25,7 @@ flowchart TD
     BUS --> IO[Mapped hardware registers]
     IO --> JOY[Joypad and interrupts]
     IO --> TIMER[Timer]
-    IO --> APU[DMG APU, pulse channels 1 and 2]
+    IO --> APU[DMG APU, pulse channels 1 and 2 plus wave channel 3]
     IO --> PPU[DMG PPU, VRAM and OAM]
     IO --> DMA[OAM DMA]
 

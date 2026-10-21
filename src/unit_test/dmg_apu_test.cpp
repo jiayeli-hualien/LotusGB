@@ -67,6 +67,53 @@ void testChannelTwoProducesAudioOnItsIndependentStereoRoute() {
            "disabling channel 2 DAC clears its NR52 status bit");
 }
 
+void testWaveChannelReadsWaveRamAndRoutesStereoOutput() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    for (uint16_t address = 0xFF30; address <= 0xFF3F; ++address)
+        apu.write(address, 0xF0);
+
+    expect(apu.read(0xFF30) == 0xF0,
+           "wave RAM can be read normally while channel 3 is inactive");
+    apu.write(0xFF1A, 0x80); // Enable channel 3 DAC.
+    apu.write(0xFF1B, 0x00); // Maximum length.
+    apu.write(0xFF1C, 0x20); // Full output level.
+    apu.write(0xFF1D, 0xFE);
+    apu.write(0xFF1E, 0x87); // Trigger at frequency 2046.
+    apu.write(0xFF24, 0x70); // Maximum left, zero right volume.
+    apu.write(0xFF25, 0x40); // Route channel 3 to the left output.
+
+    expect(apu.read(0xFF26) == 0xF4,
+           "NR52 reports channel 3 active");
+    expect(apu.read(0xFF30) == 0xFF,
+           "active channel 3 blocks wave RAM reads at M-cycle granularity");
+    apu.write(0xFF30, 0x00);
+
+    apu.advanceTCycles(50000);
+    const auto samples = apu.takeAudioSamples();
+    bool hasLeftAudio = false;
+    bool changesOverTime = false;
+    int16_t previousLeft = samples.empty() ? 0 : samples[0];
+    for (size_t i = 0; i < samples.size(); i += 2) {
+        hasLeftAudio |= samples[i] != 0;
+        changesOverTime |= samples[i] != previousLeft;
+        previousLeft = samples[i];
+        expect(samples[i + 1] == 0,
+               "channel 3 does not leak into the unrouted right output");
+    }
+    expect(hasLeftAudio, "wave channel produces audio from wave RAM samples");
+    expect(changesOverTime, "wave channel output follows the stored samples");
+
+    apu.write(0xFF1A, 0x00); // Disable channel 3 DAC.
+    expect((apu.read(0xFF26) & 0x04) == 0,
+           "disabling channel 3 DAC clears its NR52 status bit");
+    expect(apu.read(0xFF30) == 0xF0,
+           "blocked wave RAM writes do not alter the stored waveform");
+    apu.write(0xFF30, 0xAA);
+    expect(apu.read(0xFF30) == 0xAA,
+           "wave RAM is accessible again after channel 3 stops");
+}
+
 void testMaximumChannelOutputLeavesHeadroomInPcmSamples() {
     DmgApu apu;
     apu.write(0xFF26, 0x80);
@@ -156,6 +203,7 @@ void testHighPassOutputDecaysToSilenceAfterChannelStops() {
 int main() {
     testChannelOneProducesStereoSamplesAtConfiguredRate();
     testChannelTwoProducesAudioOnItsIndependentStereoRoute();
+    testWaveChannelReadsWaveRamAndRoutesStereoOutput();
     testMaximumChannelOutputLeavesHeadroomInPcmSamples();
     testPowerOffMutesAndIgnoresChannelWrites();
     testDmgPostBootStateHasFadedStartupChannel();
