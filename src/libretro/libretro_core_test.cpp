@@ -27,6 +27,7 @@ bool upPressed = false;
 unsigned audioBatchCallCount = 0;
 size_t audioFrameCount = 0;
 size_t nonzeroAudioSampleCount = 0;
+std::vector<size_t> audioBatchSizes;
 std::array<uint32_t, WIDTH * HEIGHT> observedFrame{};
 
 void expect(bool condition, const char *message) {
@@ -83,6 +84,7 @@ void videoRefreshCallback(const void *data, unsigned width, unsigned height,
 size_t audioSampleBatchCallback(const int16_t *data, size_t frames) {
     ++audioBatchCallCount;
     audioFrameCount += frames;
+    audioBatchSizes.push_back(frames);
     for (size_t i = 0; i < frames * 2; ++i)
         nonzeroAudioSampleCount += data[i] != 0;
     return frames;
@@ -191,6 +193,7 @@ void testLibretroPublishesPulseChannelAudio() {
     audioBatchCallCount = 0;
     audioFrameCount = 0;
     nonzeroAudioSampleCount = 0;
+    audioBatchSizes.clear();
     retro_run();
     retro_run();
 
@@ -198,6 +201,9 @@ void testLibretroPublishesPulseChannelAudio() {
            "core submits one audio batch per video frame");
     expect(audioFrameCount > 0,
            "core submits audio frames to the frontend");
+    expect(audioBatchSizes.size() == 2 && audioBatchSizes[0] == 803 &&
+               audioBatchSizes[1] == 804 && audioFrameCount == 1607,
+           "audio sample batches follow the 48 kHz clock across video frames");
     expect(nonzeroAudioSampleCount > 0,
            "channel 1 ROM output reaches the frontend as non-silent PCM");
     retro_unload_game();
