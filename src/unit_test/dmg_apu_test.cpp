@@ -39,6 +39,30 @@ void testChannelOneProducesStereoSamplesAtConfiguredRate() {
     expect(hasNonzeroSample, "triggered pulse channel produces audible PCM");
 }
 
+void testMaximumChannelOutputLeavesHeadroomInPcmSamples() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF11, 0x00); // 12.5% duty gives a large DC step between phases
+    apu.write(0xFF12, 0xF0); // DAC on, maximum envelope volume
+    apu.write(0xFF13, 0x00);
+    apu.write(0xFF14, 0x86); // trigger, frequency 1536
+    apu.write(0xFF24, 0x77); // maximum output volume
+    apu.write(0xFF25, 0x11); // route channel 1 to both outputs
+
+    apu.advanceTCycles(50000);
+    const auto samples = apu.takeAudioSamples();
+    int peak = 0;
+    for (int16_t sample : samples) {
+        const int magnitude = sample < 0 ? -static_cast<int>(sample) : sample;
+        if (magnitude > peak)
+            peak = magnitude;
+        expect(sample > -32768 && sample < 32767,
+               "maximum channel output does not clip to the int16 limits");
+    }
+    expect(peak > 1000,
+           "maximum channel output remains at a useful level after headroom scaling");
+}
+
 void testPowerOffMutesAndIgnoresChannelWrites() {
     DmgApu apu;
     apu.initializeDmgPostBootState();
@@ -59,6 +83,7 @@ void testPowerOffMutesAndIgnoresChannelWrites() {
 
 int main() {
     testChannelOneProducesStereoSamplesAtConfiguredRate();
+    testMaximumChannelOutputLeavesHeadroomInPcmSamples();
     testPowerOffMutesAndIgnoresChannelWrites();
     std::cout << "DMG APU tests passed\n";
 }

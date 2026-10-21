@@ -294,7 +294,9 @@ void DmgApu::generateSample() {
     previousLeftOutput = filteredLeft;
     previousRightOutput = filteredRight;
 
-    constexpr int SAMPLE_SCALE = 256;
+    // Leave room for four channels and their largest bipolar transitions
+    // before converting the mixed signal to signed 16-bit PCM.
+    constexpr int SAMPLE_SCALE = 32;
     const int leftSample = std::clamp(filteredLeft * SAMPLE_SCALE, -32768, 32767);
     const int rightSample = std::clamp(filteredRight * SAMPLE_SCALE, -32768, 32767);
     audioSamples.push_back(static_cast<int16_t>(leftSample));
