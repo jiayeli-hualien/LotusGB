@@ -4,8 +4,15 @@
 
 namespace LOTUSGB {
 
+GameBoySystem::GameBoySystem(std::vector<uint8_t> rom)
+    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot) {}
+
+GameBoySystem GameBoySystem::createForTest(std::vector<uint8_t> rom) {
+    return GameBoySystem(std::move(rom), StartupProfile::TestReset);
+}
+
 GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
-                             SystemStartupMode startupMode)
+                             StartupProfile startupProfile)
     : cartridge(std::move(rom)),
       workRam(0xC000, 0x2000),
       highRam(0xFF80, 0x007F),
@@ -32,7 +39,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     systemClock.addClockedComponent(apu);
     systemClock.addClockedComponent(ppu);
     cpu.reset();
-    if (startupMode == SystemStartupMode::DmgPostBoot)
+    if (startupProfile == StartupProfile::DmgPostBoot)
         initializeDmgPostBootState();
 }
 

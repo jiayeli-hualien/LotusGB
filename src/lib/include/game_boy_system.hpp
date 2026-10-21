@@ -19,11 +19,6 @@
 
 namespace LOTUSGB {
 
-enum class SystemStartupMode {
-    TestReset,
-    DmgPostBoot,
-};
-
 struct RetStepFrame {
     bool success = false;
     bool frameCompleted = false;
@@ -36,9 +31,9 @@ class GameBoySystem {
 public:
     static constexpr uint64_t DMG_FRAME_T_CYCLES = 456 * 154;
 
-    explicit GameBoySystem(
-        std::vector<uint8_t> rom,
-        SystemStartupMode startupMode = SystemStartupMode::DmgPostBoot);
+    explicit GameBoySystem(std::vector<uint8_t> rom);
+    // Build a system from the synthetic CPU-reset state for unit tests.
+    static GameBoySystem createForTest(std::vector<uint8_t> rom);
 
     RetStepOneCycle stepOneCycle();
     RetStepFrame stepFrame();
@@ -49,6 +44,12 @@ public:
     void setButtonState(JoypadButton button, bool pressed);
 
 private:
+    enum class StartupProfile {
+        TestReset,
+        DmgPostBoot,
+    };
+
+    GameBoySystem(std::vector<uint8_t> rom, StartupProfile startupProfile);
     void initializeDmgPostBootState();
 
     RomOnlyCartridge cartridge;

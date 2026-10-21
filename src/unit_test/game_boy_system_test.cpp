@@ -21,7 +21,7 @@ void testCpuFetchesAndExecutesFromCartridgeThroughSystemBus() {
     rom[1] = 0xA5;
     rom[2] = 0x00; // NOP
 
-    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
 
     const auto initialFetch = system.stepOneCycle();
     expect(initialFetch.success && initialFetch.fetchedNewInst,
@@ -67,7 +67,7 @@ void testTimerInterruptWakesHaltAndRunsHandler() {
     rom[0x0051] = 0x42;
     rom[0x0052] = 0xD9; // RETI
 
-    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
     bool handlerRan = false;
     for (unsigned step = 0; step < 100; ++step) {
         const auto result = system.stepOneCycle();
@@ -92,7 +92,7 @@ void testGameBoySystemAcceptsButtonInput() {
     for (size_t i = 0; i < sizeof(program); ++i)
         rom[i] = program[i];
 
-    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
     system.setButtonState(JoypadButton::Right, true);
     for (unsigned step = 0; step < 16; ++step)
         expect(system.stepOneCycle().success, "button input program advances successfully");
@@ -114,7 +114,7 @@ void testPpuAdvancesAndExposesScanlineThroughSystemBus() {
     for (size_t i = 0; i < sizeof(program); ++i)
         rom[i] = program[i];
 
-    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
     bool reachedNextLine = false;
     for (unsigned step = 0; step < 1000; ++step) {
         const auto result = system.stepOneCycle();
@@ -146,7 +146,7 @@ void testGameBoySystemExposesRenderedFrameBuffer() {
     for (size_t i = 0; i < sizeof(program); ++i)
         rom[i] = program[i];
 
-    GameBoySystem system(std::move(rom), SystemStartupMode::TestReset);
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
     for (unsigned step = 0; step < 180; ++step)
         expect(system.stepOneCycle().success, "framebuffer integration step succeeds");
 
