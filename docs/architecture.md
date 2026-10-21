@@ -37,7 +37,7 @@ flowchart TD
     LR -->|video and audio callbacks| RA
 ```
 
-`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. The CPU's bus accesses happen synchronously during that step; after the CPU reports elapsed T-cycles, the clock advances the timer, APU, and PPU by that amount. A zero-time CPU step does not advance system time or peripherals.
+`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. The CPU's bus accesses happen synchronously during that step; after the CPU reports elapsed T-cycles, the clock advances the timer, APU, and PPU by that amount. The timer sends the APU a clock event when divider bit 12 falls, including when a DIV write resets that bit from high to low; the APU uses this to clock its frame sequencer. A zero-time CPU step does not advance system time or peripherals.
 
 `GameBoySystem` owns the hardware components. `AddressBus` routes CPU accesses to mapped regions and borrows those regions; the system keeps them alive. RetroArch callbacks and lifecycle handling stay in the libretro adapter, outside CPU and hardware components.
 

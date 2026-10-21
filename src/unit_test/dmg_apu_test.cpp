@@ -175,7 +175,10 @@ void testNoiseChannelLengthExpiresOnFrameSequencerClock() {
 
     expect((apu.read(0xFF26) & 0x08) != 0,
            "channel 4 starts before its length timer expires");
-    apu.advanceTCycles(8192); // first frame-sequencer length clock
+    apu.advanceTCycles(8192);
+    expect((apu.read(0xFF26) & 0x08) != 0,
+           "APU T-cycles alone do not clock the DIV-driven frame sequencer");
+    apu.onDividerApuFallingEdge();
     expect((apu.read(0xFF26) & 0x08) == 0,
            "channel 4 stops when its one-step length counter expires");
 }
@@ -287,13 +290,16 @@ void testHighPassOutputDecaysToSilenceAfterChannelStops() {
     apu.write(0xFF24, 0x77); // full left/right volume
     apu.write(0xFF25, 0x11); // route channel 1 to both outputs
 
-    apu.advanceTCycles(8192); // first length clock leaves the channel active
+    apu.advanceTCycles(8192);
+    apu.onDividerApuFallingEdge(); // first length clock leaves the channel active
     expect(!apu.takeAudioSamples().empty(),
            "channel produces samples before being stopped");
     expect((apu.read(0xFF26) & 0x01) != 0,
            "channel remains active after its first length clock");
 
-    apu.advanceTCycles(16384); // sequencer steps 1 and 2; step 2 stops the channel
+    apu.advanceTCycles(16384);
+    apu.onDividerApuFallingEdge();
+    apu.onDividerApuFallingEdge(); // sequencer steps 1 and 2; step 2 stops the channel
     expect((apu.read(0xFF26) & 0x01) == 0,
            "length counter stops the channel while its DAC remains enabled");
 

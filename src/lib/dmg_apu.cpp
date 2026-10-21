@@ -28,7 +28,6 @@ constexpr uint16_t WAVE_RAM_END = 0xFF3F;
 constexpr uint16_t NR50 = 0xFF24;
 constexpr uint16_t NR51 = 0xFF25;
 constexpr uint16_t NR52 = 0xFF26;
-constexpr uint16_t APU_FRAME_SEQUENCER_PERIOD = 8192;
 constexpr uint32_t DMG_MASTER_CLOCK = 4194304;
 constexpr uint8_t DUTY_PATTERNS[4] = {0x01, 0x81, 0x87, 0x7E};
 }
@@ -201,10 +200,6 @@ void DmgApu::advanceTCycles(uint64_t tCycles) {
             advanceChannel2();
             advanceChannel3();
             advanceChannel4();
-            if (++frameSequencerCycles == APU_FRAME_SEQUENCER_PERIOD) {
-                frameSequencerCycles = 0;
-                clockFrameSequencer();
-            }
         }
 
         sampleAccumulator += SAMPLE_RATE;
@@ -213,6 +208,11 @@ void DmgApu::advanceTCycles(uint64_t tCycles) {
             generateSample();
         }
     }
+}
+
+void DmgApu::onDividerApuFallingEdge() {
+    if (powered)
+        clockFrameSequencer();
 }
 
 void DmgApu::initializeDmgPostBootState() {
@@ -283,7 +283,6 @@ void DmgApu::setPower(bool enabled) {
 
     powered = enabled;
     if (enabled) {
-        frameSequencerCycles = 0;
         frameSequencerStep = 0;
         dutyPosition = 0;
         dutyPosition2 = 0;

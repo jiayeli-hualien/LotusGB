@@ -82,6 +82,46 @@ void testTimerInterruptWakesHaltAndRunsHandler() {
            "timer overflow requests an interrupt that wakes HALT and runs the timer handler");
 }
 
+void testSystemTimerClocksApuFrameSequencer() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x80,       // LD A, $80
+        0xE0, 0x26,       // LDH ($FF26), A (power on APU)
+        0x3E, 0x3F,       // LD A, $3F
+        0xE0, 0x20,       // LDH ($FF20), A (channel 4 length = 1)
+        0x3E, 0xF0,       // LD A, $F0
+        0xE0, 0x21,       // LDH ($FF21), A (enable channel 4 DAC)
+        0x3E, 0x00,       // LD A, $00
+        0xE0, 0x22,       // LDH ($FF22), A
+        0x3E, 0xC0,       // LD A, $C0
+        0xE0, 0x23,       // LDH ($FF23), A (trigger, enable length)
+        0xF0, 0x26,       // loop: LDH A, ($FF26)
+        0x47,             // LD B, A
+        0x18, 0xFB,       // JR loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
+    bool channelStarted = false;
+    bool channelStopped = false;
+    for (unsigned step = 0; step < 4000; ++step) {
+        expect(system.stepOneCycle().success,
+               "DIV-APU system integration step succeeds");
+        const bool active = (system.getCpuRegisters().getRefB() & 0x08) != 0;
+        channelStarted |= active;
+        if (channelStarted && !active) {
+            channelStopped = true;
+            break;
+        }
+    }
+
+    expect(channelStarted,
+           "system bus writes successfully start channel 4 before its first DIV-APU edge");
+    expect(channelStopped,
+           "Timer DIV falling edge reaches the APU and clocks channel length");
+}
+
 void testGameBoySystemAcceptsButtonInput() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -224,6 +264,7 @@ void testFrameSteppingReturnsWhenCpuStops() {
 int main() {
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
     testTimerInterruptWakesHaltAndRunsHandler();
+    testSystemTimerClocksApuFrameSequencer();
     testGameBoySystemAcceptsButtonInput();
     testPpuAdvancesAndExposesScanlineThroughSystemBus();
     testGameBoySystemExposesRenderedFrameBuffer();

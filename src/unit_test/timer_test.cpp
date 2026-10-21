@@ -60,6 +60,32 @@ void testDividerWriteCanCauseTimerEdge() {
     expect(timer.read(0xFF05) == 1, "resetting a high selected divider bit clocks TIMA");
 }
 
+void testDividerApuClockUsesFallingEdgesAndDividerWrites() {
+    InterruptRegisters interrupts;
+    Timer timer(interrupts);
+    unsigned apuClockEdges = 0;
+    timer.setDividerApuClockCallback([&apuClockEdges] { ++apuClockEdges; });
+
+    timer.advanceTCycles(8191);
+    expect(apuClockEdges == 0,
+           "DIV-APU does not clock before divider bit 12 falls");
+    timer.advanceTCycles(1);
+    expect(apuClockEdges == 1,
+           "DIV-APU clocks on the divider bit 12 falling edge");
+
+    timer.advanceTCycles(4096); // Raise divider bit 12 again.
+    timer.write(0xFF04, 0xFF);
+    expect(apuClockEdges == 2,
+           "writing DIV while divider bit 12 is high clocks DIV-APU");
+    timer.write(0xFF04, 0x00);
+    expect(apuClockEdges == 2,
+           "writing DIV while divider bit 12 is low does not clock DIV-APU");
+
+    timer.advanceTCycles(8192);
+    expect(apuClockEdges == 3,
+           "DIV-APU resumes at the natural divider falling edge after reset");
+}
+
 void testOverflowReloadAndInterruptAreDelayed() {
     InterruptRegisters interrupts;
     Timer timer(interrupts);
@@ -118,6 +144,7 @@ int main() {
     testDividerAndTimerClockSelection();
     testAllTacFrequencies();
     testDividerWriteCanCauseTimerEdge();
+    testDividerApuClockUsesFallingEdgesAndDividerWrites();
     testOverflowReloadAndInterruptAreDelayed();
     testTimaWriteCancelsPendingReload();
     testInterruptRegistersMaskAndExposeRequests();

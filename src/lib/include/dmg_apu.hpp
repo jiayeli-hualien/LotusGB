@@ -19,6 +19,7 @@ public:
     void write(uint16_t address, uint8_t value) override;
     void advanceTCycles(uint64_t tCycles) override;
     void initializeDmgPostBootState();
+    void onDividerApuFallingEdge();
 
     // Samples are interleaved left/right signed 16-bit PCM.
     std::vector<int16_t> takeAudioSamples();
@@ -111,7 +112,6 @@ private:
     bool sweepEnabled = false;
     bool sweepNegateUsed = false;
 
-    uint16_t frameSequencerCycles = 0;
     uint8_t frameSequencerStep = 0;
     uint32_t sampleAccumulator = 0;
     int32_t previousLeftInput = 0;

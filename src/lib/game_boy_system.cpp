@@ -22,6 +22,8 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
       oamDma(bus, ppu),
       cpu(bus, decoder, decoderCB, &interruptRegisters),
       systemClock(cpu) {
+    timer.setDividerApuClockCallback([this] { apu.onDividerApuFallingEdge(); });
+
     bus.map(0x0000, 0x7FFF, cartridge);
     bus.map(0x8000, 0x9FFF, ppu);
     bus.map(0xC000, 0xDFFF, workRam);
