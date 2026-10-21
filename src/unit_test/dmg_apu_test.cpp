@@ -280,6 +280,34 @@ void testDmgPostBootStateHasFadedStartupChannel() {
 void testHighPassOutputDecaysToSilenceAfterChannelStops() {
     DmgApu apu;
     apu.write(0xFF26, 0x80);
+    apu.write(0xFF11, 0xBE); // 50% duty, length counter = 2
+    apu.write(0xFF12, 0xF0); // DAC on, volume 15
+    apu.write(0xFF13, 0xFF);
+    apu.write(0xFF14, 0xC7); // trigger, enable length, frequency 2047
+    apu.write(0xFF24, 0x77); // full left/right volume
+    apu.write(0xFF25, 0x11); // route channel 1 to both outputs
+
+    apu.advanceTCycles(8192); // first length clock leaves the channel active
+    expect(!apu.takeAudioSamples().empty(),
+           "channel produces samples before being stopped");
+    expect((apu.read(0xFF26) & 0x01) != 0,
+           "channel remains active after its first length clock");
+
+    apu.advanceTCycles(16384); // sequencer steps 1 and 2; step 2 stops the channel
+    expect((apu.read(0xFF26) & 0x01) == 0,
+           "length counter stops the channel while its DAC remains enabled");
+
+    apu.advanceTCycles(500000);
+    const auto samples = apu.takeAudioSamples();
+    expect(samples.size() >= 64, "enough silent tail samples were generated");
+    for (auto it = samples.end() - 64; it != samples.end(); ++it)
+        expect(*it == 0,
+               "high-pass filter settles to digital silence after channel stops");
+}
+
+void testAllChannelDacsOffMuteOutputImmediately() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
     apu.write(0xFF11, 0x80); // 50% duty
     apu.write(0xFF12, 0xF0); // DAC on, volume 15
     apu.write(0xFF13, 0x00);
@@ -288,16 +316,19 @@ void testHighPassOutputDecaysToSilenceAfterChannelStops() {
     apu.write(0xFF25, 0x11); // route channel 1 to both outputs
 
     apu.advanceTCycles(50000);
-    expect(!apu.takeAudioSamples().empty(),
-           "channel produces samples before being stopped");
+    const auto playingSamples = apu.takeAudioSamples();
+    bool hasSound = false;
+    for (int16_t sample : playingSamples)
+        hasSound |= sample != 0;
+    expect(hasSound, "channel output is audible before its DAC is disabled");
 
-    apu.write(0xFF12, 0x00); // Disable the channel DAC.
-    apu.advanceTCycles(500000);
-    const auto samples = apu.takeAudioSamples();
-    expect(samples.size() >= 64, "enough silent tail samples were generated");
-    for (auto it = samples.end() - 64; it != samples.end(); ++it)
-        expect(*it == 0,
-               "high-pass filter settles to digital silence after channel stops");
+    apu.write(0xFF12, 0x00); // Disable the only enabled DAC.
+    apu.advanceTCycles(50000);
+    const auto mutedSamples = apu.takeAudioSamples();
+    expect(!mutedSamples.empty(), "audio samples continue after DAC shutdown");
+    for (int16_t sample : mutedSamples)
+        expect(sample == 0,
+               "all DACs off disconnects the output without a filter tail");
 }
 
 }
@@ -314,5 +345,6 @@ int main() {
     testPowerOffMutesAndIgnoresChannelWrites();
     testDmgPostBootStateHasFadedStartupChannel();
     testHighPassOutputDecaysToSilenceAfterChannelStops();
+    testAllChannelDacsOffMuteOutputImmediately();
     std::cout << "DMG APU tests passed\n";
 }

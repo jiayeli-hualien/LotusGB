@@ -78,6 +78,9 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 - [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel sequencing, noise LFSR behavior, and output filtering
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior, and observed hardware differences
 - [SameBoy APU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/apu.c) — implementation comparison for channel timing and LFSR behavior
+- [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) — CPU-visible register, length, trigger, and CH3 wave RAM behavior tests
+- [Game Boy Noise Test](https://github.com/not-chciken/gb-noise-test) — interactive CH4 settings and presets with DMG-01 audio reference recordings (Apache-2.0)
+- [SameSuite APU tests](https://github.com/LIJI32/SameSuite/tree/master/apu) — sample-accurate APU tests; most rely on CGB-only PCM registers and do not apply to a DMG core
 - [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr)
 - [Building a Game Boy emulator](https://wwssllabcd.github.io/2021/02/08/how-to-build-a-gameboy-emulator-1/)
 - [Game Boy emulator notes (HackMD)](https://hackmd.io/@sysprog/BJvOWzFqv)

@@ -614,6 +614,16 @@ int DmgApu::channel4Output() const {
 }
 
 void DmgApu::generateSample() {
+    // The DMG disconnects the master output when every channel DAC is off.
+    // Keep the high-pass filter state frozen while disconnected, but do not
+    // let its residual charge leak to the audio output.
+    if (!channel1DacEnabled && !channel2DacEnabled &&
+        !channel3DacEnabled && !channel4DacEnabled) {
+        audioSamples.push_back(0);
+        audioSamples.push_back(0);
+        return;
+    }
+
     const int channel1 = channel1Output();
     const int channel2 = channel2Output();
     const int channel3 = channel3Output();
