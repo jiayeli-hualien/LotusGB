@@ -107,14 +107,16 @@ void DmgApu::initializeDmgPostBootState() {
     nr11 = 0xBF;
     nr12 = 0xF3;
     nr13 = 0xFF;
-    nr14 = 0x47;
+    nr14 = 0x07;
     channel1Enabled = true;
     channel1DacEnabled = true;
-    lengthEnabled = true;
+    lengthEnabled = false;
     lengthCounter = 1;
     dutyPosition = 0;
     frequencyTimer = 4;
-    envelopeVolume = 15;
+    // The DMG boot sound has already faded out by the time execution reaches
+    // $0100, even though channel 1 remains enabled and NR12 still reads $F3.
+    envelopeVolume = 0;
     envelopeTimer = 3;
     sweepShadowFrequency = 2047;
     sweepTimer = 8;

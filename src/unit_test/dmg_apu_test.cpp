@@ -79,6 +79,27 @@ void testPowerOffMutesAndIgnoresChannelWrites() {
         expect(sample == 0, "powered-off APU emits silence");
 }
 
+void testDmgPostBootStateHasFadedStartupChannel() {
+    DmgApu apu;
+    apu.initializeDmgPostBootState();
+
+    expect(apu.read(0xFF12) == 0xF3,
+           "DMG post-boot NR12 retains its hardware register value");
+    expect(apu.read(0xFF14) == 0xBF,
+           "DMG post-boot NR14 has length counting disabled");
+    expect(apu.read(0xFF26) == 0xF1,
+           "DMG post-boot channel 1 remains enabled after its sound fades");
+
+    apu.advanceTCycles(50000);
+    const auto samples = apu.takeAudioSamples();
+    expect(!samples.empty(), "post-boot APU generates its initial PCM samples");
+    for (int16_t sample : samples)
+        expect(sample == 0,
+               "fast post-boot startup does not replay an aliased boot-sound burst");
+    expect((apu.read(0xFF26) & 0x01) != 0,
+           "post-boot channel remains enabled with its length counter disabled");
+}
+
 void testHighPassOutputDecaysToSilenceAfterChannelStops() {
     DmgApu apu;
     apu.write(0xFF26, 0x80);
@@ -108,6 +129,7 @@ int main() {
     testChannelOneProducesStereoSamplesAtConfiguredRate();
     testMaximumChannelOutputLeavesHeadroomInPcmSamples();
     testPowerOffMutesAndIgnoresChannelWrites();
+    testDmgPostBootStateHasFadedStartupChannel();
     testHighPassOutputDecaysToSilenceAfterChannelStops();
     std::cout << "DMG APU tests passed\n";
 }
