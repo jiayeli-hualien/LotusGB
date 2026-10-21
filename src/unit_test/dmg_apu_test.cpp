@@ -114,6 +114,108 @@ void testWaveChannelReadsWaveRamAndRoutesStereoOutput() {
            "wave RAM is accessible again after channel 3 stops");
 }
 
+std::vector<int16_t> renderNoiseChannel(uint8_t widthMode, uint8_t clockShift = 0) {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF21, 0xF0); // DAC on, volume 15
+    apu.write(0xFF22, static_cast<uint8_t>((clockShift << 4) | widthMode));
+    apu.write(0xFF23, 0x80); // trigger channel 4
+    apu.write(0xFF24, 0x70); // maximum left, zero right volume
+    apu.write(0xFF25, 0x80); // route channel 4 to the left output
+    apu.advanceTCycles(50000);
+    return apu.takeAudioSamples();
+}
+
+void testNoiseChannelUsesIndependentStereoRouteAndStatus() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF20, 0x3F); // load length counter with one
+    apu.write(0xFF21, 0xF0); // DAC on, volume 15
+    apu.write(0xFF22, 0x00); // 15-bit mode, fastest divider
+    apu.write(0xFF23, 0x80); // trigger channel 4
+    apu.write(0xFF24, 0x70); // maximum left, zero right volume
+    apu.write(0xFF25, 0x80); // route only channel 4 to the left output
+
+    expect(apu.read(0xFF20) == 0xFF,
+           "channel 4 length register is write-only");
+    expect(apu.read(0xFF21) == 0xF0 && apu.read(0xFF22) == 0x00,
+           "channel 4 envelope and polynomial registers read back their values");
+    expect(apu.read(0xFF23) == 0xBF,
+           "channel 4 trigger is write-only while length enable reads back");
+    expect(apu.read(0xFF26) == 0xF8,
+           "NR52 reports channel 4 active");
+
+    apu.advanceTCycles(50000);
+    const auto samples = apu.takeAudioSamples();
+    bool hasLeftAudio = false;
+    bool changesOverTime = false;
+    int16_t previousLeft = samples.empty() ? 0 : samples[0];
+    for (size_t i = 0; i < samples.size(); i += 2) {
+        hasLeftAudio |= samples[i] != 0;
+        changesOverTime |= samples[i] != previousLeft;
+        previousLeft = samples[i];
+        expect(samples[i + 1] == 0,
+               "channel 4 does not leak into the unrouted right output");
+    }
+    expect(hasLeftAudio, "triggered noise channel produces audible PCM");
+    expect(changesOverTime, "noise channel output changes as its LFSR advances");
+
+    apu.write(0xFF21, 0x00); // Disable channel 4 DAC.
+    expect((apu.read(0xFF26) & 0x08) == 0,
+           "disabling channel 4 DAC clears its NR52 status bit");
+}
+
+void testNoiseChannelLengthExpiresOnFrameSequencerClock() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF20, 0x3F); // length counter = 1
+    apu.write(0xFF21, 0xF0); // DAC on, volume 15
+    apu.write(0xFF22, 0x00);
+    apu.write(0xFF23, 0xC0); // trigger with length counting enabled
+
+    expect((apu.read(0xFF26) & 0x08) != 0,
+           "channel 4 starts before its length timer expires");
+    apu.advanceTCycles(8192); // first frame-sequencer length clock
+    expect((apu.read(0xFF26) & 0x08) == 0,
+           "channel 4 stops when its one-step length counter expires");
+}
+
+void testNoiseChannelWidthModeChangesItsLfsrSequence() {
+    const auto longSequence = renderNoiseChannel(0x00);
+    const auto shortSequence = renderNoiseChannel(0x08);
+    expect(longSequence.size() == shortSequence.size() && !longSequence.empty(),
+           "both noise LFSR width modes produce equally timed PCM output");
+
+    bool sequencesDiffer = false;
+    for (size_t i = 0; i < longSequence.size(); ++i)
+        sequencesDiffer |= longSequence[i] != shortSequence[i];
+    expect(sequencesDiffer,
+           "7-bit mode feeds back into bit 6 and differs from 15-bit mode");
+}
+
+void testNoiseChannelStopsClockingAtMaximumShift() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF21, 0xF0); // DAC on, volume 15
+    apu.write(0xFF22, 0xE0); // shift 14 stops LFSR clocks
+    apu.write(0xFF23, 0x80); // trigger channel 4
+    apu.write(0xFF24, 0x70);
+    apu.write(0xFF25, 0x80);
+
+    apu.advanceTCycles(500000);
+    const auto samples = apu.takeAudioSamples();
+    expect((apu.read(0xFF26) & 0x08) != 0,
+           "a stopped LFSR clock does not disable channel 4");
+    expect(samples.size() > 64, "stopped noise channel still produces PCM samples");
+    const size_t tailStart = samples.size() - 64;
+    for (size_t i = tailStart; i < samples.size(); i += 2) {
+        expect(samples[i] == 0,
+               "constant noise output decays through the output high-pass filter");
+        expect(samples[i + 1] == 0,
+               "unrouted right output remains silent for stopped noise");
+    }
+}
+
 void testMaximumChannelOutputLeavesHeadroomInPcmSamples() {
     DmgApu apu;
     apu.write(0xFF26, 0x80);
@@ -204,6 +306,10 @@ int main() {
     testChannelOneProducesStereoSamplesAtConfiguredRate();
     testChannelTwoProducesAudioOnItsIndependentStereoRoute();
     testWaveChannelReadsWaveRamAndRoutesStereoOutput();
+    testNoiseChannelUsesIndependentStereoRouteAndStatus();
+    testNoiseChannelLengthExpiresOnFrameSequencerClock();
+    testNoiseChannelWidthModeChangesItsLfsrSequence();
+    testNoiseChannelStopsClockingAtMaximumShift();
     testMaximumChannelOutputLeavesHeadroomInPcmSamples();
     testPowerOffMutesAndIgnoresChannelWrites();
     testDmgPostBootStateHasFadedStartupChannel();

@@ -10,7 +10,7 @@
 
 namespace LOTUSGB {
 
-// Initial DMG APU slice: pulse channels 1 and 2 plus wave channel 3.
+// Initial DMG APU slice: all four DMG sound channels.
 class DmgApu final : public IAddressRegion, public IClockedComponent {
 public:
     static constexpr unsigned SAMPLE_RATE = 48000;
@@ -28,9 +28,11 @@ private:
     void triggerChannel1();
     void triggerChannel2();
     void triggerChannel3();
+    void triggerChannel4();
     void advanceChannel1();
     void advanceChannel2();
     void advanceChannel3();
+    void advanceChannel4();
     void clockFrameSequencer();
     void clockLength();
     void clockSweep();
@@ -39,9 +41,12 @@ private:
     uint16_t channel1Frequency() const;
     uint16_t channel2Frequency() const;
     uint16_t channel3Frequency() const;
+    uint32_t channel4Period() const;
     int channel1Output() const;
     int channel2Output() const;
     int channel3Output() const;
+    int channel4Output() const;
+    void clockChannel4Lfsr();
     void generateSample();
 
     uint8_t nr10 = 0;
@@ -57,6 +62,9 @@ private:
     uint8_t nr32 = 0;
     uint8_t nr33 = 0;
     uint8_t nr34 = 0;
+    uint8_t nr42 = 0;
+    uint8_t nr43 = 0;
+    uint8_t nr44 = 0;
     uint8_t nr50 = 0;
     uint8_t nr51 = 0;
 
@@ -88,6 +96,15 @@ private:
     uint8_t waveSampleBuffer = 0;
     uint16_t frequencyTimer3 = 0;
     std::array<uint8_t, 16> waveRam{};
+
+    bool channel4Enabled = false;
+    bool channel4DacEnabled = false;
+    bool lengthEnabled4 = false;
+    uint8_t lengthCounter4 = 0;
+    uint8_t envelopeVolume4 = 0;
+    uint8_t envelopeTimer4 = 0;
+    uint16_t channel4Lfsr = 0;
+    uint32_t frequencyTimer4 = 0;
 
     uint16_t sweepShadowFrequency = 0;
     uint8_t sweepTimer = 0;

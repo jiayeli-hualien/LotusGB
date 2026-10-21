@@ -19,6 +19,10 @@ constexpr uint16_t NR31 = 0xFF1B;
 constexpr uint16_t NR32 = 0xFF1C;
 constexpr uint16_t NR33 = 0xFF1D;
 constexpr uint16_t NR34 = 0xFF1E;
+constexpr uint16_t NR41 = 0xFF20;
+constexpr uint16_t NR42 = 0xFF21;
+constexpr uint16_t NR43 = 0xFF22;
+constexpr uint16_t NR44 = 0xFF23;
 constexpr uint16_t WAVE_RAM_START = 0xFF30;
 constexpr uint16_t WAVE_RAM_END = 0xFF3F;
 constexpr uint16_t NR50 = 0xFF24;
@@ -53,13 +57,18 @@ uint8_t DmgApu::read(uint16_t address) {
         case NR32: return static_cast<uint8_t>(0x9F | (nr32 & 0x60));
         case NR33: return 0xFF;
         case NR34: return static_cast<uint8_t>(0xBF | (nr34 & 0x40));
+        case NR41: return 0xFF;
+        case NR42: return nr42;
+        case NR43: return nr43;
+        case NR44: return static_cast<uint8_t>(0xBF | (nr44 & 0x40));
         case NR50: return nr50;
         case NR51: return nr51;
         case NR52:
             return static_cast<uint8_t>(0x70 | (powered ? 0x80 : 0) |
                                        (channel1Enabled ? 0x01 : 0) |
                                        (channel2Enabled ? 0x02 : 0) |
-                                       (channel3Enabled ? 0x04 : 0));
+                                       (channel3Enabled ? 0x04 : 0) |
+                                       (channel4Enabled ? 0x08 : 0));
         default: return 0xFF;
     }
 }
@@ -85,6 +94,8 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             lengthCounter2 = static_cast<uint8_t>(64 - (value & 0x3F));
         } else if (address == NR31) {
             lengthCounter3 = static_cast<uint16_t>(256 - value);
+        } else if (address == NR41) {
+            lengthCounter4 = static_cast<uint8_t>(64 - (value & 0x3F));
         }
         return;
     }
@@ -154,6 +165,24 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             if (value & 0x80)
                 triggerChannel3();
             break;
+        case NR41:
+            lengthCounter4 = static_cast<uint8_t>(64 - (value & 0x3F));
+            break;
+        case NR42:
+            nr42 = value;
+            channel4DacEnabled = (value & 0xF8) != 0;
+            if (!channel4DacEnabled)
+                channel4Enabled = false;
+            break;
+        case NR43:
+            nr43 = value;
+            break;
+        case NR44:
+            nr44 = value & 0x40;
+            lengthEnabled4 = (value & 0x40) != 0;
+            if (value & 0x80)
+                triggerChannel4();
+            break;
         case NR50:
             nr50 = value;
             break;
@@ -171,6 +200,7 @@ void DmgApu::advanceTCycles(uint64_t tCycles) {
             advanceChannel1();
             advanceChannel2();
             advanceChannel3();
+            advanceChannel4();
             if (++frameSequencerCycles == APU_FRAME_SEQUENCER_PERIOD) {
                 frameSequencerCycles = 0;
                 clockFrameSequencer();
@@ -199,6 +229,9 @@ void DmgApu::initializeDmgPostBootState() {
     nr32 = 0;
     nr33 = 0;
     nr34 = 0;
+    nr42 = 0;
+    nr43 = 0;
+    nr44 = 0;
     channel1Enabled = true;
     channel1DacEnabled = true;
     lengthEnabled = false;
@@ -220,6 +253,14 @@ void DmgApu::initializeDmgPostBootState() {
     waveSampleIndex = 0;
     waveSampleBuffer = 0;
     frequencyTimer3 = 0;
+    channel4Enabled = false;
+    channel4DacEnabled = false;
+    lengthEnabled4 = false;
+    lengthCounter4 = 0;
+    envelopeVolume4 = 0;
+    envelopeTimer4 = 0;
+    channel4Lfsr = 0;
+    frequencyTimer4 = 0;
     // The DMG boot sound has already faded out by the time execution reaches
     // $0100, even though channel 1 remains enabled and NR12 still reads $F3.
     envelopeVolume = 0;
@@ -264,6 +305,9 @@ void DmgApu::setPower(bool enabled) {
     nr32 = 0;
     nr33 = 0;
     nr34 = 0;
+    nr42 = 0;
+    nr43 = 0;
+    nr44 = 0;
     nr50 = 0;
     nr51 = 0;
     channel1Enabled = false;
@@ -272,13 +316,20 @@ void DmgApu::setPower(bool enabled) {
     channel2DacEnabled = false;
     channel3Enabled = false;
     channel3DacEnabled = false;
+    channel4Enabled = false;
+    channel4DacEnabled = false;
     lengthEnabled = false;
     lengthEnabled2 = false;
     lengthEnabled3 = false;
+    lengthEnabled4 = false;
     envelopeVolume = 0;
     envelopeTimer = 0;
     envelopeVolume2 = 0;
     envelopeTimer2 = 0;
+    envelopeVolume4 = 0;
+    envelopeTimer4 = 0;
+    channel4Lfsr = 0;
+    frequencyTimer4 = 0;
     sweepTimer = 0;
     sweepEnabled = false;
     sweepNegateUsed = false;
@@ -320,6 +371,17 @@ void DmgApu::triggerChannel3() {
     waveSampleIndex = 0;
 }
 
+void DmgApu::triggerChannel4() {
+    channel4Enabled = channel4DacEnabled;
+    if (lengthCounter4 == 0)
+        lengthCounter4 = 64;
+    const uint8_t envelopePeriod = nr42 & 0x07;
+    envelopeVolume4 = nr42 >> 4;
+    envelopeTimer4 = envelopePeriod == 0 ? 8 : envelopePeriod;
+    channel4Lfsr = 0;
+    frequencyTimer4 = channel4Period();
+}
+
 void DmgApu::advanceChannel1() {
     if (!channel1Enabled)
         return;
@@ -357,6 +419,27 @@ void DmgApu::advanceChannel3() {
     }
 }
 
+void DmgApu::advanceChannel4() {
+    if (!channel4Enabled || (nr43 >> 4) >= 14)
+        return;
+    if (frequencyTimer4 > 0)
+        --frequencyTimer4;
+    if (frequencyTimer4 == 0) {
+        frequencyTimer4 = channel4Period();
+        clockChannel4Lfsr();
+    }
+}
+
+void DmgApu::clockChannel4Lfsr() {
+    const uint16_t bit0 = channel4Lfsr & 0x01;
+    const uint16_t bit1 = (channel4Lfsr >> 1) & 0x01;
+    const uint16_t feedback = bit0 == bit1 ? 1 : 0;
+    channel4Lfsr = static_cast<uint16_t>((channel4Lfsr >> 1) | (feedback << 14));
+    if (nr43 & 0x08)
+        channel4Lfsr = static_cast<uint16_t>((channel4Lfsr & ~(1 << 6)) |
+                                             (feedback << 6));
+}
+
 void DmgApu::clockFrameSequencer() {
     if ((frameSequencerStep & 1) == 0)
         clockLength();
@@ -382,6 +465,11 @@ void DmgApu::clockLength() {
         --lengthCounter3;
         if (lengthCounter3 == 0)
             channel3Enabled = false;
+    }
+    if (lengthEnabled4 && lengthCounter4 > 0) {
+        --lengthCounter4;
+        if (lengthCounter4 == 0)
+            channel4Enabled = false;
     }
 }
 
@@ -428,17 +516,31 @@ void DmgApu::clockEnvelope() {
     }
 
     const uint8_t period2 = nr22 & 0x07;
-    if (!channel2Enabled || period2 == 0)
-        return;
-    if (envelopeTimer2 > 0)
-        --envelopeTimer2;
-    if (envelopeTimer2 == 0) {
-        envelopeTimer2 = period2;
-        const bool increase = (nr22 & 0x08) != 0;
-        if (increase && envelopeVolume2 < 15)
-            ++envelopeVolume2;
-        else if (!increase && envelopeVolume2 > 0)
-            --envelopeVolume2;
+    if (channel2Enabled && period2 != 0) {
+        if (envelopeTimer2 > 0)
+            --envelopeTimer2;
+        if (envelopeTimer2 == 0) {
+            envelopeTimer2 = period2;
+            const bool increase = (nr22 & 0x08) != 0;
+            if (increase && envelopeVolume2 < 15)
+                ++envelopeVolume2;
+            else if (!increase && envelopeVolume2 > 0)
+                --envelopeVolume2;
+        }
+    }
+
+    const uint8_t period4 = nr42 & 0x07;
+    if (channel4Enabled && period4 != 0) {
+        if (envelopeTimer4 > 0)
+            --envelopeTimer4;
+        if (envelopeTimer4 == 0) {
+            envelopeTimer4 = period4;
+            const bool increase = (nr42 & 0x08) != 0;
+            if (increase && envelopeVolume4 < 15)
+                ++envelopeVolume4;
+            else if (!increase && envelopeVolume4 > 0)
+                --envelopeVolume4;
+        }
     }
 }
 
@@ -462,6 +564,15 @@ uint16_t DmgApu::channel2Frequency() const {
 
 uint16_t DmgApu::channel3Frequency() const {
     return static_cast<uint16_t>(nr33 | ((nr34 & 0x07) << 8));
+}
+
+uint32_t DmgApu::channel4Period() const {
+    const uint8_t clockShift = nr43 >> 4;
+    if (clockShift >= 14)
+        return 0;
+    const uint8_t dividerCode = nr43 & 0x07;
+    const uint32_t period = dividerCode == 0 ? 8 : 16 * dividerCode;
+    return period << clockShift;
 }
 
 int DmgApu::channel1Output() const {
@@ -493,10 +604,20 @@ int DmgApu::channel3Output() const {
     return static_cast<int>(sample) * 2 - 15;
 }
 
+int DmgApu::channel4Output() const {
+    if (!channel4Enabled || !channel4DacEnabled || envelopeVolume4 == 0)
+        return 0;
+
+    // Center the two NR42 DAC levels around zero for the existing high-pass mixer.
+    return (channel4Lfsr & 0x01) ? envelopeVolume4
+                                 : -static_cast<int>(envelopeVolume4);
+}
+
 void DmgApu::generateSample() {
     const int channel1 = channel1Output();
     const int channel2 = channel2Output();
     const int channel3 = channel3Output();
+    const int channel4 = channel4Output();
     int left = 0;
     int right = 0;
     if (powered) {
@@ -506,12 +627,16 @@ void DmgApu::generateSample() {
             left += channel2;
         if (nr51 & 0x40)
             left += channel3;
+        if (nr51 & 0x80)
+            left += channel4;
         if (nr51 & 0x01)
             right += channel1;
         if (nr51 & 0x02)
             right += channel2;
         if (nr51 & 0x04)
             right += channel3;
+        if (nr51 & 0x08)
+            right += channel4;
         left *= ((nr50 >> 4) & 0x07) + 1;
         right *= (nr50 & 0x07) + 1;
     }

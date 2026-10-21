@@ -4,15 +4,15 @@ LotusGB is a learning project to build a Nintendo Game Boy emulator in C++.
 
 ## Project status
 
-The repository currently contains a CPU implementation and an adapter used to
-run it against [GBIT](https://github.com/koenk/gbit), a Game Boy instruction
-test harness. It is not yet a complete Game Boy emulator: memory mapping,
-cartridge support, graphics, audio, timers, and input are not implemented as a
-full system.
+The repository contains a CPU implementation, a headless DMG system, and a
+libretro adapter for RetroArch. It currently supports ROM-only cartridges up to
+32 KiB, joypad input, a partial DMG PPU, and all four DMG APU channels. The
+default startup profile skips the boot ROM. Cartridge banking and save files,
+boot-ROM execution, and more exact PPU/APU timing remain future work.
 
-CPU behavior and timing still need review. The CPU currently advances in
-memory-cycle-sized steps; system components will need to share a consistent
-clock as they are added.
+CPU behavior and timing are covered by focused tests and GBIT integration
+checks. The CPU advances in M-cycle steps, and the system clock distributes
+elapsed T-cycles to the hardware components.
 
 ## Roadmap
 
@@ -43,15 +43,14 @@ decoder tables. The build converts their fields into typed C++ tables in a
 generated header; the program does not parse CSV or open CSV files at runtime.
 Python 3 is needed to regenerate that header when a CSV changes.
 
-Run the CPU interface unit tests with:
+Run the in-repository unit tests with:
 
 ```sh
 make test
 ```
 
-These tests use fake memory, decoder, and instruction implementations and do
-not require GBIT. They check the CPU's cycle-stepping contract at its public
-boundary.
+These tests cover CPU interfaces and instructions, hardware components, and
+the libretro adapter. They do not require GBIT.
 
 The `gbit_test` target expects your [GBIT fork](https://github.com/jiayeli-hualien/gbit)
 to be checked out as a sibling directory next to `lotus-gbemu`. The current
@@ -76,7 +75,9 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
 - [Pan Docs: Audio Registers](https://gbdev.io/pandocs/Audio_Registers.html) — APU register behavior and wave RAM access
-- [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel 3 sample sequencing and output behavior
+- [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel sequencing, noise LFSR behavior, and output filtering
+- [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior, and observed hardware differences
+- [SameBoy APU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/apu.c) — implementation comparison for channel timing and LFSR behavior
 - [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr)
 - [Building a Game Boy emulator](https://wwssllabcd.github.io/2021/02/08/how-to-build-a-gameboy-emulator-1/)
 - [Game Boy emulator notes (HackMD)](https://hackmd.io/@sysprog/BJvOWzFqv)
