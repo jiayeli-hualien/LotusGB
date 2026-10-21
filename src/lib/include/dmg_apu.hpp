@@ -9,7 +9,7 @@
 
 namespace LOTUSGB {
 
-// Initial DMG APU slice: channel 1 pulse generation and stereo sample output.
+// Initial DMG APU slice: pulse channels 1 and 2 with stereo sample output.
 class DmgApu final : public IAddressRegion, public IClockedComponent {
 public:
     static constexpr unsigned SAMPLE_RATE = 48000;
@@ -25,14 +25,18 @@ public:
 private:
     void setPower(bool enabled);
     void triggerChannel1();
+    void triggerChannel2();
     void advanceChannel1();
+    void advanceChannel2();
     void clockFrameSequencer();
     void clockLength();
     void clockSweep();
     void clockEnvelope();
     int calculateSweepFrequency();
     uint16_t channel1Frequency() const;
+    uint16_t channel2Frequency() const;
     int channel1Output() const;
+    int channel2Output() const;
     void generateSample();
 
     uint8_t nr10 = 0;
@@ -40,6 +44,10 @@ private:
     uint8_t nr12 = 0;
     uint8_t nr13 = 0;
     uint8_t nr14 = 0;
+    uint8_t nr21 = 0;
+    uint8_t nr22 = 0;
+    uint8_t nr23 = 0;
+    uint8_t nr24 = 0;
     uint8_t nr50 = 0;
     uint8_t nr51 = 0;
 
@@ -51,8 +59,17 @@ private:
     uint8_t dutyPosition = 0;
     uint16_t frequencyTimer = 0;
 
+    bool channel2Enabled = false;
+    bool channel2DacEnabled = false;
+    bool lengthEnabled2 = false;
+    uint8_t lengthCounter2 = 0;
+    uint8_t dutyPosition2 = 0;
+    uint16_t frequencyTimer2 = 0;
+
     uint8_t envelopeVolume = 0;
     uint8_t envelopeTimer = 0;
+    uint8_t envelopeVolume2 = 0;
+    uint8_t envelopeTimer2 = 0;
 
     uint16_t sweepShadowFrequency = 0;
     uint8_t sweepTimer = 0;

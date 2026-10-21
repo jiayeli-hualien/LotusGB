@@ -39,6 +39,34 @@ void testChannelOneProducesStereoSamplesAtConfiguredRate() {
     expect(hasNonzeroSample, "triggered pulse channel produces audible PCM");
 }
 
+void testChannelTwoProducesAudioOnItsIndependentStereoRoute() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF16, 0x40); // 50% duty
+    apu.write(0xFF17, 0xF0); // DAC on, volume 15
+    apu.write(0xFF18, 0x00);
+    apu.write(0xFF19, 0x86); // trigger, frequency 1536
+    apu.write(0xFF24, 0x70); // maximum left, zero right volume
+    apu.write(0xFF25, 0x20); // route channel 2 to the left output
+
+    expect(apu.read(0xFF26) == 0xF2,
+           "NR52 reports channel 2 active without enabling channel 1");
+    apu.advanceTCycles(50000);
+    const auto samples = apu.takeAudioSamples();
+
+    bool hasLeftAudio = false;
+    for (size_t i = 0; i < samples.size(); i += 2) {
+        hasLeftAudio |= samples[i] != 0;
+        expect(samples[i + 1] == 0,
+               "channel 2 does not leak into the unrouted right output");
+    }
+    expect(hasLeftAudio, "triggered channel 2 produces audible PCM");
+
+    apu.write(0xFF17, 0x00); // Disable channel 2 DAC.
+    expect((apu.read(0xFF26) & 0x02) == 0,
+           "disabling channel 2 DAC clears its NR52 status bit");
+}
+
 void testMaximumChannelOutputLeavesHeadroomInPcmSamples() {
     DmgApu apu;
     apu.write(0xFF26, 0x80);
@@ -127,6 +155,7 @@ void testHighPassOutputDecaysToSilenceAfterChannelStops() {
 
 int main() {
     testChannelOneProducesStereoSamplesAtConfiguredRate();
+    testChannelTwoProducesAudioOnItsIndependentStereoRoute();
     testMaximumChannelOutputLeavesHeadroomInPcmSamples();
     testPowerOffMutesAndIgnoresChannelWrites();
     testDmgPostBootStateHasFadedStartupChannel();
