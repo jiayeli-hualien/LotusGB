@@ -74,6 +74,7 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 
 ### Game Boy development and hardware
 
+- [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
 - [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr)
 - [Building a Game Boy emulator](https://wwssllabcd.github.io/2021/02/08/how-to-build-a-gameboy-emulator-1/)
 - [Game Boy emulator notes (HackMD)](https://hackmd.io/@sysprog/BJvOWzFqv)
