@@ -282,17 +282,22 @@ void DmgApu::generateSample() {
         right = channel * ((nr50 & 0x07) + 1);
 
     // Approximate the DMG output coupling capacitor, which removes DC offset.
-    constexpr int32_t HIGH_PASS_COEFFICIENT = 65296;
-    const int32_t filteredLeft = left - previousLeftInput +
-        static_cast<int32_t>((static_cast<int64_t>(previousLeftOutput) *
-                              HIGH_PASS_COEFFICIENT) >> 16);
-    const int32_t filteredRight = right - previousRightInput +
-        static_cast<int32_t>((static_cast<int64_t>(previousRightOutput) *
-                              HIGH_PASS_COEFFICIENT) >> 16);
+    // Keep fractional filter state so negative feedback can decay to zero
+    // instead of sticking at a DC offset due to signed integer rounding.
+    constexpr int64_t Q16_ONE = 1LL << 16;
+    constexpr int64_t HIGH_PASS_COEFFICIENT = 65296;
+    const int64_t filteredLeftQ16 =
+        (static_cast<int64_t>(left - previousLeftInput) * Q16_ONE) +
+        (previousLeftOutputQ16 * HIGH_PASS_COEFFICIENT) / Q16_ONE;
+    const int64_t filteredRightQ16 =
+        (static_cast<int64_t>(right - previousRightInput) * Q16_ONE) +
+        (previousRightOutputQ16 * HIGH_PASS_COEFFICIENT) / Q16_ONE;
+    const int32_t filteredLeft = static_cast<int32_t>(filteredLeftQ16 / Q16_ONE);
+    const int32_t filteredRight = static_cast<int32_t>(filteredRightQ16 / Q16_ONE);
     previousLeftInput = left;
     previousRightInput = right;
-    previousLeftOutput = filteredLeft;
-    previousRightOutput = filteredRight;
+    previousLeftOutputQ16 = filteredLeftQ16;
+    previousRightOutputQ16 = filteredRightQ16;
 
     // Leave room for four channels and their largest bipolar transitions
     // before converting the mixed signal to signed 16-bit PCM.

@@ -64,8 +64,8 @@ private:
     uint32_t sampleAccumulator = 0;
     int32_t previousLeftInput = 0;
     int32_t previousRightInput = 0;
-    int32_t previousLeftOutput = 0;
-    int32_t previousRightOutput = 0;
+    int64_t previousLeftOutputQ16 = 0;
+    int64_t previousRightOutputQ16 = 0;
     std::vector<int16_t> audioSamples;
 };
 

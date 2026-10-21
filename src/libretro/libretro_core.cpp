@@ -2,8 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstdint>
+#include <fstream>
 #include <memory>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -31,6 +35,71 @@ std::unique_ptr<GameBoySystem> emulatorSystem;
 bool useXrgb8888 = false;
 std::array<uint32_t, VIDEO_PIXEL_COUNT> xrgb8888Frame{};
 std::array<uint16_t, VIDEO_PIXEL_COUNT> rgb1555Frame{};
+
+class AudioDiagnostics {
+public:
+    void capture(const std::vector<int16_t> &samples, size_t submittedFrames,
+                 size_t processedFrames) {
+        initializeIfNeeded();
+        if (outputPath.empty() || pcmSamples.size() >= MAX_CAPTURE_SAMPLES)
+            return;
+
+        const size_t remainingSamples = MAX_CAPTURE_SAMPLES - pcmSamples.size();
+        const size_t capturedSamples = std::min(remainingSamples, samples.size());
+        pcmSamples.insert(pcmSamples.end(), samples.begin(),
+                          samples.begin() + capturedSamples);
+        batches.emplace_back(submittedFrames, processedFrames,
+                             capturedSamples / 2);
+    }
+
+    void flush() {
+        if (outputPath.empty() || pcmSamples.empty()) {
+            reset();
+            return;
+        }
+
+        std::ofstream pcmFile(outputPath, std::ios::binary | std::ios::trunc);
+        for (int16_t sample : pcmSamples) {
+            const uint16_t bits = static_cast<uint16_t>(sample);
+            pcmFile.put(static_cast<char>(bits & 0xff));
+            pcmFile.put(static_cast<char>((bits >> 8) & 0xff));
+        }
+
+        std::ofstream batchFile(outputPath + ".frames.csv",
+                                std::ios::trunc);
+        batchFile << "submitted_frames,processed_frames,captured_frames\n";
+        for (const auto &[submitted, processed, captured] : batches)
+            batchFile << submitted << ',' << processed << ',' << captured << '\n';
+
+        reset();
+    }
+
+private:
+    static constexpr size_t MAX_CAPTURE_SAMPLES = 48000 * 2 * 30;
+
+    void initializeIfNeeded() {
+        if (initialized)
+            return;
+        initialized = true;
+        const char *configuredPath = std::getenv("LOTUSGB_AUDIO_DUMP");
+        if (configuredPath)
+            outputPath = configuredPath;
+    }
+
+    void reset() {
+        initialized = false;
+        outputPath.clear();
+        pcmSamples.clear();
+        batches.clear();
+    }
+
+    bool initialized = false;
+    std::string outputPath;
+    std::vector<int16_t> pcmSamples;
+    std::vector<std::tuple<size_t, size_t, size_t>> batches;
+};
+
+AudioDiagnostics audioDiagnostics;
 
 struct ButtonBinding {
     unsigned retroButton;
@@ -120,10 +189,13 @@ void submitAudio() {
         return;
 
     if (audioSampleBatchCallback) {
-        audioSampleBatchCallback(samples.data(), frameCount);
+        const size_t processedFrames =
+            audioSampleBatchCallback(samples.data(), frameCount);
+        audioDiagnostics.capture(samples, frameCount, processedFrames);
     } else if (audioSampleCallback) {
         for (size_t frame = 0; frame < frameCount; ++frame)
             audioSampleCallback(samples[frame * 2], samples[frame * 2 + 1]);
+        audioDiagnostics.capture(samples, frameCount, frameCount);
     }
 }
 
@@ -171,6 +243,7 @@ void retro_init(void) {
 }
 
 void retro_deinit(void) {
+    audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
 }
@@ -266,6 +339,7 @@ bool retro_load_game_special(unsigned, const retro_game_info *, size_t) {
 }
 
 void retro_unload_game(void) {
+    audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
 }

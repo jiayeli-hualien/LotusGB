@@ -79,11 +79,35 @@ void testPowerOffMutesAndIgnoresChannelWrites() {
         expect(sample == 0, "powered-off APU emits silence");
 }
 
+void testHighPassOutputDecaysToSilenceAfterChannelStops() {
+    DmgApu apu;
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF11, 0x80); // 50% duty
+    apu.write(0xFF12, 0xF0); // DAC on, volume 15
+    apu.write(0xFF13, 0x00);
+    apu.write(0xFF14, 0x86); // trigger, frequency 1536
+    apu.write(0xFF24, 0x77); // full left/right volume
+    apu.write(0xFF25, 0x11); // route channel 1 to both outputs
+
+    apu.advanceTCycles(50000);
+    expect(!apu.takeAudioSamples().empty(),
+           "channel produces samples before being stopped");
+
+    apu.write(0xFF12, 0x00); // Disable the channel DAC.
+    apu.advanceTCycles(500000);
+    const auto samples = apu.takeAudioSamples();
+    expect(samples.size() >= 64, "enough silent tail samples were generated");
+    for (auto it = samples.end() - 64; it != samples.end(); ++it)
+        expect(*it == 0,
+               "high-pass filter settles to digital silence after channel stops");
+}
+
 }
 
 int main() {
     testChannelOneProducesStereoSamplesAtConfiguredRate();
     testMaximumChannelOutputLeavesHeadroomInPcmSamples();
     testPowerOffMutesAndIgnoresChannelWrites();
+    testHighPassOutputDecaysToSilenceAfterChannelStops();
     std::cout << "DMG APU tests passed\n";
 }
