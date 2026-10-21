@@ -75,6 +75,8 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 ### Game Boy development and hardware
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
+- [Pan Docs: Audio Registers](https://gbdev.io/pandocs/Audio_Registers.html) — APU register behavior and wave RAM access
+- [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel 3 sample sequencing and output behavior
 - [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr)
 - [Building a Game Boy emulator](https://wwssllabcd.github.io/2021/02/08/how-to-build-a-gameboy-emulator-1/)
 - [Game Boy emulator notes (HackMD)](https://hackmd.io/@sysprog/BJvOWzFqv)
