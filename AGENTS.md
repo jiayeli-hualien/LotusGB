@@ -10,6 +10,11 @@ From the repository root:
 
 - `make build` builds the project.
 - `make test` runs the CPU interface and instruction unit tests. These tests do not require GBIT.
+- `make test-roms` optionally runs available Blargg CH3 ROMs from
+  `../test-roms/dmg_sound` through the built libretro core. It writes adapted
+  copies, screenshots, logs, and a report under `build/test-roms/`; check the
+  screenshots manually for the on-screen result. This local workflow is not
+  part of GitHub CI.
 - The GBIT integration executable expects the `gbit` repository beside this repository. Build it with `make -C ../gbit`, then run the test executable from `build/`:
 
   ```sh

@@ -52,6 +52,24 @@ make test
 These tests cover CPU interfaces and instructions, hardware components, and
 the libretro adapter. They do not require GBIT.
 
+### Optional Blargg APU ROM checks
+
+Blargg ROMs stay outside the repository. If `../test-roms/dmg_sound` contains
+the DMG sound ROMs, run the selected CH3 checks with:
+
+```sh
+make test-roms
+```
+
+Set `TEST_ROM_DIR=/path/to/dmg_sound` to use another directory, or change the
+run length with `TEST_ROM_FRAMES=1200`. The command checks each adapted ROM's
+MD5, changes only cartridge header byte `$0147` in a copy under `build/`, runs
+the built libretro core for a fixed number of frames, and saves screenshots,
+logs, and a Markdown report under `build/test-roms/`. Missing ROMs are reported
+as skipped. Review each screenshot for the ROM's on-screen `Passed` result and
+record it in the report; this is not part of GitHub CI yet because the core does
+not expose the ROM's `$A000` result channel without cartridge RAM support.
+
 The `gbit_test` target expects your [GBIT fork](https://github.com/jiayeli-hualien/gbit)
 to be checked out as a sibling directory next to `lotus-gbemu`. The current
 `application` target is still a placeholder. After building, run the GBIT
