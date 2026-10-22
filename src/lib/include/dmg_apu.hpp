@@ -30,6 +30,7 @@ private:
     void triggerChannel2();
     void triggerChannel3();
     void triggerChannel4();
+    void corruptWaveRamOnChannel3Retrigger();
     void advanceChannel1();
     void advanceChannel2();
     void advanceChannel3();

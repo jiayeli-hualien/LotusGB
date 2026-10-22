@@ -371,6 +371,9 @@ void DmgApu::triggerChannel2() {
 }
 
 void DmgApu::triggerChannel3() {
+    if (channel3Enabled)
+        corruptWaveRamOnChannel3Retrigger();
+
     channel3Enabled = channel3DacEnabled;
     if (lengthCounter3 == 0)
         lengthCounter3 = 256;
@@ -380,6 +383,33 @@ void DmgApu::triggerChannel3() {
                                              CH3_TRIGGER_STARTUP_APU_TICKS));
     waveSampleIndex = 0;
     hasWaveRamFetch = false;
+}
+
+void DmgApu::corruptWaveRamOnChannel3Retrigger() {
+    const bool fetchedThisCycle = hasWaveRamFetch &&
+                                  elapsedTCycles == lastWaveRamFetchTCycle;
+    const bool fetchImminent = frequencyTimer3 > 0 && frequencyTimer3 <= 2;
+    if (!fetchedThisCycle && !fetchImminent)
+        return;
+
+    const uint8_t sampleIndex = fetchedThisCycle
+                                    ? waveSampleIndex
+                                    : static_cast<uint8_t>((waveSampleIndex + 1) & 0x1F);
+    const uint8_t byteIndex = sampleIndex / 2;
+    if (byteIndex < 4) {
+        waveRam[0] = waveRam[byteIndex];
+        return;
+    }
+
+    // On DMG, a CH3 retrigger colliding with a wave RAM read copies the
+    // selected four-byte RAM row into the start of wave RAM.
+    const uint8_t rowStart = byteIndex & 0x0C;
+    const std::array<uint8_t, 4> row = {
+        waveRam[rowStart], waveRam[rowStart + 1],
+        waveRam[rowStart + 2], waveRam[rowStart + 3]
+    };
+    for (size_t i = 0; i < row.size(); ++i)
+        waveRam[i] = row[i];
 }
 
 void DmgApu::triggerChannel4() {
