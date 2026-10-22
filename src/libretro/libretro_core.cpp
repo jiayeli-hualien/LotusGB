@@ -131,11 +131,17 @@ retro_input_descriptor INPUT_DESCRIPTORS[] = {
 
 bool isSupportedRom(const std::vector<uint8_t> &rom) {
     constexpr size_t MINIMUM_HEADER_SIZE = 0x150;
-    constexpr size_t MAX_ROM_ONLY_SIZE = 0x8000;
+    constexpr size_t MAX_MBC1_SIZE = 0x200000;
     constexpr size_t CARTRIDGE_TYPE_OFFSET = 0x0147;
-    return rom.size() >= MINIMUM_HEADER_SIZE &&
-           rom.size() <= MAX_ROM_ONLY_SIZE &&
-           rom[CARTRIDGE_TYPE_OFFSET] == 0x00;
+    if (rom.size() < MINIMUM_HEADER_SIZE)
+        return false;
+
+    const uint8_t type = rom[CARTRIDGE_TYPE_OFFSET];
+    if (type == 0x00)
+        return rom.size() <= 0x8000;
+    return (type == 0x01 || type == 0x02 || type == 0x03) &&
+           rom.size() >= 0x8000 && rom.size() <= MAX_MBC1_SIZE &&
+           rom.size() % 0x4000 == 0;
 }
 
 void pollInput() {
@@ -276,7 +282,11 @@ void retro_reset(void) {
     if (loadedRom.empty())
         return;
     try {
-        emulatorSystem = std::make_unique<GameBoySystem>(loadedRom);
+        const auto saveRam = emulatorSystem
+                                 ? emulatorSystem->getSaveRamStorage()
+                                 : nullptr;
+        auto newSystem = std::make_unique<GameBoySystem>(loadedRom, saveRam);
+        emulatorSystem = std::move(newSystem);
     } catch (...) {
         emulatorSystem.reset();
     }
@@ -310,16 +320,11 @@ void retro_cheat_set(unsigned, bool, const char *) {}
 
 bool retro_load_game(const retro_game_info *game) {
     constexpr size_t MINIMUM_ROM_SIZE = 0x150;
-    constexpr size_t MAXIMUM_ROM_SIZE = 0x8000;
-    constexpr size_t CARTRIDGE_TYPE_OFFSET = 0x0147;
     if (!game || !game->data || game->size < MINIMUM_ROM_SIZE ||
-        game->size > MAXIMUM_ROM_SIZE)
+        game->size > 0x200000)
         return false;
 
     const auto *data = static_cast<const uint8_t *>(game->data);
-    if (data[CARTRIDGE_TYPE_OFFSET] != 0x00)
-        return false;
-
     try {
         std::vector<uint8_t> rom(data, data + game->size);
         if (!isSupportedRom(rom))
@@ -348,12 +353,16 @@ unsigned retro_get_region(void) {
     return RETRO_REGION_NTSC;
 }
 
-void *retro_get_memory_data(unsigned) {
-    return nullptr;
+void *retro_get_memory_data(unsigned id) {
+    if (!emulatorSystem || id != RETRO_MEMORY_SAVE_RAM)
+        return nullptr;
+    return emulatorSystem->getSaveRamData();
 }
 
-size_t retro_get_memory_size(unsigned) {
-    return 0;
+size_t retro_get_memory_size(unsigned id) {
+    if (!emulatorSystem || id != RETRO_MEMORY_SAVE_RAM)
+        return 0;
+    return emulatorSystem->getSaveRamSize();
 }
 
 } // extern "C"

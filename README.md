@@ -5,10 +5,13 @@ LotusGB is a learning project to build a Nintendo Game Boy emulator in C++.
 ## Project status
 
 The repository contains a CPU implementation, a headless DMG system, and a
-libretro adapter for RetroArch. It currently supports ROM-only cartridges up to
-32 KiB, joypad input, a partial DMG PPU, and all four DMG APU channels. The
-default startup profile skips the boot ROM. Cartridge banking and save files,
-boot-ROM execution, and more exact PPU/APU timing remain future work.
+libretro adapter for RetroArch. It supports ROM-only games up to 32 KiB and
+MBC1 cartridge types `$01`–`$03` with ROM banking up to 2 MiB and up to 32 KiB
+of external RAM. Battery-backed RAM is exposed through libretro's save RAM
+interface for RetroArch to persist. The core also supports joypad input, a
+partial DMG PPU, and all four DMG APU channels. The default startup profile
+skips the boot ROM. Other cartridge mappers, boot-ROM execution, and more exact
+PPU/APU timing remain future work.
 
 CPU behavior and timing are covered by focused tests and GBIT integration
 checks. The CPU advances in M-cycle steps, and the system clock distributes
@@ -62,13 +65,12 @@ make test-roms
 ```
 
 Set `TEST_ROM_DIR=/path/to/dmg_sound` to use another directory, or change the
-run length with `TEST_ROM_FRAMES=1200`. The command checks each adapted ROM's
-MD5, changes only cartridge header byte `$0147` in a copy under `build/`, runs
-the built libretro core for a fixed number of frames, and saves screenshots,
-logs, and a Markdown report under `build/test-roms/`. Missing ROMs are reported
-as skipped. Review each screenshot for the ROM's on-screen `Passed` result and
-record it in the report; this is not part of GitHub CI yet because the core does
-not expose the ROM's `$A000` result channel without cartridge RAM support.
+run length with `TEST_ROM_FRAMES=1200`. The command checks each original ROM's
+SHA-256, preserves its MBC1 header, and runs the built libretro core for a fixed
+number of frames. It saves screenshots, SRAM dumps, logs, and an automatically
+checked pass/fail report under `build/test-roms/`. Missing ROMs are reported as
+skipped. The ROM binaries remain outside the repository; these checks are not
+part of GitHub CI.
 
 The `gbit_test` target expects your [GBIT fork](https://github.com/jiayeli-hualien/gbit)
 to be checked out as a sibling directory next to `lotus-gbemu`. The current
@@ -94,6 +96,8 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
 - [Pan Docs: Audio Registers](https://gbdev.io/pandocs/Audio_Registers.html) — APU register behavior and wave RAM access
 - [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel sequencing, noise LFSR behavior, and output filtering
+- [Pan Docs: MBCs](https://gbdev.io/pandocs/MBCs.html) — cartridge banking and mapper behavior
+- [Pan Docs: The Cartridge Header](https://gbdev.io/pandocs/The_Cartridge_Header.html) — cartridge types and ROM/RAM size codes
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior, and observed hardware differences
 - [SameBoy APU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/apu.c) — implementation comparison for channel timing and LFSR behavior
 - [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) — CPU-visible register, length, trigger, and CH3 wave RAM behavior tests

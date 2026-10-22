@@ -17,13 +17,12 @@ from pathlib import Path
 WIDTH = 160
 HEIGHT = 144
 CARTRIDGE_TYPE_OFFSET = 0x0147
-ROM_ONLY_CARTRIDGE = 0x00
 MBC1_RAM_BATTERY_CARTRIDGE = 0x03
 
 CASES = (
-    ("09", "wave read while on", "1fa89975fc72747329f9f7519766d7b7"),
-    ("10", "wave trigger while on", "4687b94450614a425a42b27205ac7d45"),
-    ("12", "wave write while on", "9b86837757914cae1b54d8514576f11c"),
+    ("09", "wave read while on", "378b86f6a25daa16855260d7ef0c24e48146ba05df434a0b5413983a1447e875"),
+    ("10", "wave trigger while on", "fa63c8ed7473411e54285d318e33bf23ff6d637ed2caa7555ddeaf80578e3279"),
+    ("12", "wave write while on", "2efbecd2c6d40928d44f45da4f634626bcd2790165b3949aedfe377c73913774"),
 )
 
 
@@ -35,16 +34,17 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def md5_bytes(data: bytes) -> str:
-    return hashlib.md5(data, usedforsecurity=False).hexdigest()
+def get_test_result(save_ram: bytes) -> str:
+    passed = save_ram.rfind(b"\nPassed\n")
+    failed = save_ram.rfind(b"\nFailed\n")
+    if passed < 0 and failed < 0:
+        return "NO RESULT"
+    return "Passed" if passed > failed else "Failed"
 
 
 def find_rom(rom_dir: Path, test_id: str, title: str) -> Path | None:
-    candidates = (
-        rom_dir / f"{test_id}-{title}.gb",
-        rom_dir / f"{test_id}-{title}-romonly.gb",
-    )
-    return next((path for path in candidates if path.is_file()), None)
+    path = rom_dir / f"{test_id}-{title}.gb"
+    return path if path.is_file() else None
 
 
 def png_chunk(kind: bytes, data: bytes) -> bytes:
@@ -103,18 +103,20 @@ def main() -> int:
         )
 
     run_dir = unique_run_dir(args.output_root)
-    patched_dir = run_dir / "roms"
+    rom_output_dir = run_dir / "roms"
     screenshot_dir = run_dir / "screenshots"
     log_dir = run_dir / "logs"
-    patched_dir.mkdir()
+    save_ram_dir = run_dir / "save_ram"
+    rom_output_dir.mkdir()
     screenshot_dir.mkdir()
     log_dir.mkdir()
+    save_ram_dir.mkdir()
 
     rows: list[dict[str, str]] = []
     executed = 0
     failed = 0
 
-    for test_id, title, expected_md5 in CASES:
+    for test_id, title, expected_sha256 in CASES:
         source = find_rom(args.rom_dir, test_id, title)
         if source is None:
             rows.append(
@@ -123,35 +125,29 @@ def main() -> int:
                     "status": "SKIPPED",
                     "source": "ROM file not present",
                     "source_sha256": "—",
-                    "patched_md5": "—",
+                    "cartridge_type": "—",
+                    "save_ram": "—",
                     "screenshot": "—",
                     "log": "—",
                     "manual_result": "—",
-                    "detail": f"Expected {test_id}-{title}.gb or -romonly.gb",
+                    "detail": f"Expected original {test_id}-{title}.gb",
                 }
             )
             continue
 
         source_digest = sha256(source)
         try:
-            data = bytearray(source.read_bytes())
+            data = source.read_bytes()
             if len(data) != 0x8000:
                 raise ValueError(f"ROM size is {len(data)} bytes; expected 32768")
             cartridge_type = data[CARTRIDGE_TYPE_OFFSET]
-            if cartridge_type not in (ROM_ONLY_CARTRIDGE, MBC1_RAM_BATTERY_CARTRIDGE):
+            if cartridge_type != MBC1_RAM_BATTERY_CARTRIDGE:
                 raise ValueError(
-                    f"unexpected cartridge type ${cartridge_type:02X}; expected $00 or $03"
+                    f"unexpected cartridge type ${cartridge_type:02X}; expected $03"
                 )
-
-            # The core currently supports ROM-only cartridges. Adapt a copy only;
-            # the source ROM stays untouched. This header-only adaptation is pinned
-            # by the expected MD5 recorded for each test ROM.
-            data[CARTRIDGE_TYPE_OFFSET] = ROM_ONLY_CARTRIDGE
-            patched = bytes(data)
-            actual_md5 = md5_bytes(patched)
-            if actual_md5 != expected_md5:
+            if source_digest != expected_sha256:
                 raise ValueError(
-                    f"patched ROM MD5 is {actual_md5}; expected {expected_md5}"
+                    f"source ROM SHA-256 is {source_digest}; expected {expected_sha256}"
                 )
         except (OSError, ValueError) as error:
             failed += 1
@@ -161,7 +157,8 @@ def main() -> int:
                     "status": "FAILED checksum/input validation",
                     "source": str(source),
                     "source_sha256": source_digest,
-                    "patched_md5": "—",
+                    "cartridge_type": "—",
+                    "save_ram": "—",
                     "screenshot": "—",
                     "log": "—",
                     "manual_result": "—",
@@ -170,17 +167,19 @@ def main() -> int:
             )
             continue
 
-        rom_path = patched_dir / f"{test_id}.gb"
+        rom_path = rom_output_dir / f"{test_id}.gb"
         raw_frame_path = run_dir / f"{test_id}.rgb"
         screenshot_path = screenshot_dir / f"{test_id}.png"
+        save_ram_path = save_ram_dir / f"{test_id}.srm"
         log_path = log_dir / f"{test_id}.log"
-        rom_path.write_bytes(patched)
+        rom_path.write_bytes(data)
         command = [
             str(args.runner.resolve()),
             str(args.core.resolve()),
             str(rom_path.resolve()),
             str(args.frames),
             str(raw_frame_path.resolve()),
+            str(save_ram_path.resolve()),
         ]
 
         completed = subprocess.run(command, text=True, capture_output=True, check=False)
@@ -199,7 +198,8 @@ def main() -> int:
                     "status": f"FAILED runner exit {completed.returncode}",
                     "source": str(source),
                     "source_sha256": source_digest,
-                    "patched_md5": actual_md5,
+                    "cartridge_type": f"`${cartridge_type:02X}`",
+                    "save_ram": "—",
                     "screenshot": "—",
                     "log": f"[runner log]({log_path.relative_to(run_dir)})",
                     "manual_result": "—",
@@ -210,6 +210,7 @@ def main() -> int:
 
         try:
             write_png(raw_frame_path.read_bytes(), screenshot_path)
+            save_ram = save_ram_path.read_bytes()
         except (OSError, ValueError) as error:
             failed += 1
             rows.append(
@@ -218,7 +219,8 @@ def main() -> int:
                     "status": "FAILED screenshot capture",
                     "source": str(source),
                     "source_sha256": source_digest,
-                    "patched_md5": actual_md5,
+                    "cartridge_type": f"`${cartridge_type:02X}`",
+                    "save_ram": f"[{save_ram_path.stat().st_size} bytes]({save_ram_path.relative_to(run_dir)})",
                     "screenshot": "—",
                     "log": f"[runner log]({log_path.relative_to(run_dir)})",
                     "manual_result": "—",
@@ -228,17 +230,21 @@ def main() -> int:
             continue
 
         raw_frame_path.unlink()
+        result = get_test_result(save_ram)
+        if result != "Passed":
+            failed += 1
         executed += 1
         rows.append(
             {
                 "test": f"{test_id} {title}",
-                "status": "CAPTURED — review screenshot",
+                "status": "PASSED" if result == "Passed" else result,
                 "source": str(source),
                 "source_sha256": source_digest,
-                "patched_md5": actual_md5,
+                "cartridge_type": f"`${cartridge_type:02X}`",
+                "save_ram": f"[{save_ram_path.stat().st_size} bytes]({save_ram_path.relative_to(run_dir)})",
                 "screenshot": f"[PNG]({screenshot_path.relative_to(run_dir)})",
                 "log": f"[runner log]({log_path.relative_to(run_dir)})",
-                "manual_result": "pending",
+                "manual_result": result,
                 "detail": completed.stdout.strip().replace("|", "\\|") or "—",
             }
         )
@@ -252,17 +258,17 @@ def main() -> int:
         f"- ROM directory: `{args.rom_dir}`",
         f"- Frames per ROM: {args.frames}",
         "- Frontend: headless harness calling the built libretro shared core",
-        "- Startup: LotusGB DMG post-boot profile; test ROM copies use cartridge type `$00`.",
-        "- ROM adaptation: only header byte `$0147` is set to `$00`; the source files are read-only.",
-        "- Result check: screenshots need manual review. The current core has no cartridge RAM, so these ROMs' `$A000` result protocol is unavailable.",
+        "- Startup: LotusGB DMG post-boot profile; original ROM header and bytes are preserved.",
+        "- Mapper: MBC1 with 8 KiB battery-backed external RAM, exposed as libretro save RAM.",
+        "- Result check: review the on-screen result and the captured save RAM dump.",
         "",
-        "| Test | Run status | Source ROM SHA-256 | Adapted ROM MD5 | Screenshot | Log | Manual result | Details |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Test | Run status | Source ROM SHA-256 | Cart type | Screenshot | Save RAM | Log | Manual result | Details |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
         values = [row[key].replace("|", "\\|").replace("\n", " ") for key in (
-            "test", "status", "source_sha256", "patched_md5", "screenshot",
-            "log", "manual_result", "detail"
+            "test", "status", "source_sha256", "cartridge_type", "screenshot",
+            "save_ram", "log", "manual_result", "detail"
         )]
         report.append("| " + " | ".join(values) + " |")
     report.extend(
@@ -271,7 +277,7 @@ def main() -> int:
             f"Summary: {executed} ROM(s) captured, {failed} failure(s), "
             f"{sum(row['status'] == 'SKIPPED' for row in rows)} skipped.",
             "",
-            "Update the `Manual result` column after checking each screenshot for the ROM's on-screen `Passed`/`Failed` result.",
+            "The runner reads the final `Passed` or `Failed` line from the captured external RAM; screenshots are retained for visual inspection.",
             "",
         ]
     )

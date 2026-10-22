@@ -5,15 +5,22 @@
 namespace LOTUSGB {
 
 GameBoySystem::GameBoySystem(std::vector<uint8_t> rom)
-    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot) {}
+    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot, nullptr) {}
+
+GameBoySystem::GameBoySystem(
+    std::vector<uint8_t> rom,
+    std::shared_ptr<std::vector<uint8_t>> saveRam)
+    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot,
+                    std::move(saveRam)) {}
 
 GameBoySystem GameBoySystem::createForTest(std::vector<uint8_t> rom) {
-    return GameBoySystem(std::move(rom), StartupProfile::TestReset);
+    return GameBoySystem(std::move(rom), StartupProfile::TestReset, nullptr);
 }
 
 GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
-                             StartupProfile startupProfile)
-    : cartridge(std::move(rom)),
+                             StartupProfile startupProfile,
+                             std::shared_ptr<std::vector<uint8_t>> saveRam)
+    : cartridge(std::move(rom), std::move(saveRam)),
       workRam(0xC000, 0x2000),
       highRam(0xFF80, 0x007F),
       joypad(interruptRegisters),
@@ -27,6 +34,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     timer.setDividerApuClockCallback([this] { apu.onDividerApuFallingEdge(); });
 
     bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
     bus.map(0x8000, 0x9FFF, ppu);
     bus.map(0xC000, 0xDFFF, workRam);
     bus.map(0xFE00, 0xFE9F, ppu);
@@ -90,6 +98,21 @@ std::vector<int16_t> GameBoySystem::takeAudioSamples() {
 
 void GameBoySystem::setButtonState(JoypadButton button, bool pressed) {
     joypad.setButtonState(button, pressed);
+}
+
+uint8_t *GameBoySystem::getSaveRamData() {
+    if (!cartridge.hasBattery())
+        return nullptr;
+    return cartridge.getExternalRamData();
+}
+
+size_t GameBoySystem::getSaveRamSize() const {
+    return cartridge.hasBattery() ? cartridge.getExternalRamSize() : 0;
+}
+
+std::shared_ptr<std::vector<uint8_t>>
+GameBoySystem::getSaveRamStorage() const {
+    return cartridge.getBatteryRamStorage();
 }
 
 void GameBoySystem::initializeDmgPostBootState() {

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -88,11 +89,12 @@ void testRomOnlyCartridgeAndRamRegions() {
     std::vector<uint8_t> rom(0x8000, 0);
     rom[0] = 0xC3;
     rom[0x7FFF] = 0x42;
-    RomOnlyCartridge cartridge(std::move(rom));
+    Cartridge cartridge(std::move(rom));
     RamRegion workRam(0xC000, 0x2000);
 
     AddressBus bus;
     bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
     bus.map(0xC000, 0xDFFF, workRam);
 
     expect(bus.read(0x0000) == 0xC3, "cartridge exposes the first ROM byte");
@@ -106,12 +108,14 @@ void testRomOnlyCartridgeAndRamRegions() {
     expect(bus.read(0xC000) == 0xA5, "work RAM stores data at its first address");
     expect(bus.read(0xDFFF) == 0x5A, "work RAM stores data at its final address");
     expect(bus.read(0xE000) == 0xFF, "unmapped echo RAM remains unmapped for now");
+    expect(bus.read(0xA000) == 0xFF,
+           "ROM-only cartridge does not expose external RAM");
 }
 
-void testRomOnlyCartridgeRejectsUnsupportedSizes() {
+void testCartridgeRejectsUnsupportedSizesAndTypes() {
     bool emptyRejected = false;
     try {
-        RomOnlyCartridge cartridge({});
+        Cartridge cartridge({});
     } catch (const std::invalid_argument &) {
         emptyRejected = true;
     }
@@ -119,11 +123,80 @@ void testRomOnlyCartridgeRejectsUnsupportedSizes() {
 
     bool bankedSizeRejected = false;
     try {
-        RomOnlyCartridge cartridge(std::vector<uint8_t>(0x10000, 0));
+        Cartridge cartridge(std::vector<uint8_t>(0x10000, 0));
     } catch (const std::invalid_argument &) {
         bankedSizeRejected = true;
     }
     expect(bankedSizeRejected, "ROM-only cartridge rejects ROMs requiring banking");
+
+    std::vector<uint8_t> unsupportedRom(0x8000, 0);
+    unsupportedRom[0x0147] = 0x05;
+    bool unsupportedTypeRejected = false;
+    try {
+        Cartridge cartridge(std::move(unsupportedRom));
+    } catch (const std::invalid_argument &) {
+        unsupportedTypeRejected = true;
+    }
+    expect(unsupportedTypeRejected, "cartridge rejects unsupported mapper types");
+}
+
+void testMbc1RomAndRamBanking() {
+    constexpr size_t ROM_BANKS = 64;
+    std::vector<uint8_t> rom(ROM_BANKS * 0x4000, 0);
+    for (size_t bank = 0; bank < ROM_BANKS; ++bank)
+        std::fill(rom.begin() + bank * 0x4000,
+                  rom.begin() + (bank + 1) * 0x4000,
+                  static_cast<uint8_t>(bank));
+    rom[0x0147] = 0x03; // MBC1 + RAM + battery
+    rom[0x0148] = 0x05; // 1 MiB, 64 banks
+    rom[0x0149] = 0x03; // 32 KiB, four RAM banks
+
+    Cartridge cartridge(std::move(rom));
+    AddressBus bus;
+    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
+
+    expect(bus.read(0x4000) == 1,
+           "MBC1 starts with ROM bank 1 in the switchable window");
+    bus.write(0x2000, 0x02);
+    expect(bus.read(0x4000) == 2,
+           "MBC1 selects a lower ROM bank through the $2000 register");
+    bus.write(0x2000, 0x00);
+    expect(bus.read(0x4000) == 1,
+           "MBC1 maps a selected lower bank of zero to bank 1");
+    bus.write(0x2000, 0x01);
+    bus.write(0x4000, 0x01);
+    expect(bus.read(0x4000) == 33,
+           "MBC1 combines the high and low ROM bank registers");
+
+    bus.write(0x6000, 0x01);
+    expect(bus.read(0x0000) == 32,
+           "MBC1 RAM banking mode switches the lower ROM window");
+    expect(bus.read(0x4000) == 33,
+           "MBC1 RAM banking mode keeps the upper ROM bank selection");
+
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC1 external RAM reads are disabled after startup");
+    bus.write(0x4000, 0x00);
+    bus.write(0x0000, 0x1A);
+    bus.write(0xA000, 0xA2);
+    expect(bus.read(0xA000) == 0xA2,
+           "MBC1 enables external RAM when the low nibble is $A");
+    bus.write(0x4000, 0x01);
+    bus.write(0xA000, 0xB1);
+    bus.write(0x4000, 0x02);
+    bus.write(0xA000, 0xC2);
+    bus.write(0x4000, 0x01);
+    expect(bus.read(0xA000) == 0xB1,
+           "MBC1 selects an independent external RAM bank");
+    bus.write(0x6000, 0x00);
+    expect(bus.read(0xA000) == 0xA2,
+           "MBC1 ROM banking mode selects external RAM bank zero");
+
+    expect(cartridge.hasBattery() && cartridge.getExternalRamSize() == 0x8000,
+           "MBC1 battery cartridge exposes its declared save RAM");
+    expect(cartridge.getExternalRamData() != nullptr,
+           "MBC1 battery cartridge provides stable save RAM storage");
 }
 
 }
@@ -132,6 +205,7 @@ int main() {
     testAddressBusRoutesMappedRanges();
     testAddressBusRejectsInvalidMappings();
     testRomOnlyCartridgeAndRamRegions();
-    testRomOnlyCartridgeRejectsUnsupportedSizes();
+    testCartridgeRejectsUnsupportedSizesAndTypes();
+    testMbc1RomAndRamBanking();
     std::cout << "Address bus tests passed\n";
 }

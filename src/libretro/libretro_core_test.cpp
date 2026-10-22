@@ -102,7 +102,7 @@ void testLibretroLoadsAcid2AndPublishesReferenceFrame() {
     expect(!retro_load_game(nullptr), "core rejects missing game content");
 
     std::vector<uint8_t> unsupported = rom;
-    unsupported[0x0147] = 0x01; // MBC1 is outside the current system scope.
+    unsupported[0x0147] = 0x05; // MBC2 is not implemented yet.
     retro_game_info unsupportedGame{};
     unsupportedGame.data = unsupported.data();
     unsupportedGame.size = unsupported.size();
@@ -209,6 +209,47 @@ void testLibretroPublishesPulseChannelAudio() {
     retro_unload_game();
 }
 
+void testLibretroExposesMbc1BatteryRam() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x0A,             // LD A, $0A
+        0xEA, 0x00, 0x00,       // LD ($0000), A (enable cartridge RAM)
+        0x3E, 0x5A,             // LD A, $5A
+        0xEA, 0x00, 0xA0,       // LD ($A000), A
+        0x18, 0xFE,             // loop forever
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x0100);
+    rom[0x0147] = 0x03; // MBC1 + RAM + battery
+    rom[0x0148] = 0x00; // 32 KiB ROM
+    rom[0x0149] = 0x02; // 8 KiB external RAM
+
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game),
+           "core loads an original-header MBC1 battery cartridge");
+    for (unsigned frame = 0; frame < 2; ++frame)
+        retro_run();
+
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x2000,
+           "libretro reports the cartridge's declared external RAM size");
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr && saveRam[0] == 0x5A,
+           "CPU writes to MBC1 RAM reach the libretro save RAM buffer");
+    uint8_t *stableSaveRamPointer = saveRam;
+    saveRam[0] = 0xA5;
+    retro_reset();
+    saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam == stableSaveRamPointer && saveRam[0] == 0xA5,
+           "system reset keeps the frontend-owned save RAM buffer stable");
+    expect(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM) == nullptr &&
+               retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM) == 0,
+           "core does not report an unsupported memory type");
+    retro_unload_game();
+}
+
 void testLibretroReportsApiAndVideoTiming() {
     expect(retro_api_version() == RETRO_API_VERSION,
            "core reports the libretro API version");
@@ -246,6 +287,7 @@ int main() {
     testLibretroLoadsAcid2AndPublishesReferenceFrame();
     testLibretroInputChangesPongGameplayFrame();
     testLibretroPublishesPulseChannelAudio();
+    testLibretroExposesMbc1BatteryRam();
 
     retro_unload_game();
     retro_deinit();

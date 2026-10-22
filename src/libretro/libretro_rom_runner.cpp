@@ -86,6 +86,8 @@ struct CoreApi {
     using LoadGame = bool (*)(const retro_game_info *);
     using Run = void (*)(void);
     using UnloadGame = void (*)(void);
+    using GetMemoryData = void *(*)(unsigned);
+    using GetMemorySize = size_t (*)(unsigned);
 
     explicit CoreApi(const char *path) {
         library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
@@ -105,6 +107,8 @@ struct CoreApi {
         loadGame = loadFunction<LoadGame>(library, "retro_load_game");
         run = loadFunction<Run>(library, "retro_run");
         unloadGame = loadFunction<UnloadGame>(library, "retro_unload_game");
+        getMemoryData = loadFunction<GetMemoryData>(library, "retro_get_memory_data");
+        getMemorySize = loadFunction<GetMemorySize>(library, "retro_get_memory_size");
     }
 
     ~CoreApi() {
@@ -124,6 +128,8 @@ struct CoreApi {
     LoadGame loadGame = nullptr;
     Run run = nullptr;
     UnloadGame unloadGame = nullptr;
+    GetMemoryData getMemoryData = nullptr;
+    GetMemorySize getMemorySize = nullptr;
 };
 
 std::vector<uint8_t> readBinary(const std::string &path) {
@@ -151,6 +157,16 @@ void writeRgb(const std::string &path) {
         throw std::runtime_error("failed writing frame output: " + path);
 }
 
+void writeSaveRam(const std::string &path, const uint8_t *data, size_t size) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file)
+        throw std::runtime_error("cannot create save RAM output: " + path);
+    if (data && size > 0)
+        file.write(reinterpret_cast<const char *>(data), size);
+    if (!file)
+        throw std::runtime_error("failed writing save RAM output: " + path);
+}
+
 unsigned parseFrames(const char *value) {
     size_t consumed = 0;
     const unsigned long frames = std::stoul(value, &consumed);
@@ -162,9 +178,9 @@ unsigned parseFrames(const char *value) {
 } // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 5) {
+    if (argc != 6) {
         std::cerr << "Usage: " << argv[0]
-                  << " CORE.so ROM.gb FRAMES OUTPUT.rgb\n";
+                  << " CORE.so ROM.gb FRAMES OUTPUT.rgb OUTPUT.srm\n";
         return 2;
     }
 
@@ -197,9 +213,16 @@ int main(int argc, char **argv) {
             throw std::runtime_error("core did not publish one video frame per run");
 
         writeRgb(argv[4]);
+        const size_t saveRamSize = core.getMemorySize(RETRO_MEMORY_SAVE_RAM);
+        const auto *saveRam = static_cast<const uint8_t *>(
+            core.getMemoryData(RETRO_MEMORY_SAVE_RAM));
+        if (saveRamSize > 0 && !saveRam)
+            throw std::runtime_error("core reported save RAM size without a buffer");
+        writeSaveRam(argv[5], saveRam, saveRamSize);
         std::cout << "frames_requested=" << frames
                   << " video_frames=" << videoFrameCount
                   << " audio_frames=" << audioFrameCount
+                  << " save_ram_bytes=" << saveRamSize
                   << " width=" << WIDTH << " height=" << HEIGHT << '\n';
 
         core.unloadGame();

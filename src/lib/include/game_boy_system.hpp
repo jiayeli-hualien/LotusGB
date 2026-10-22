@@ -1,7 +1,9 @@
 #ifndef LOTUSGB_GAME_BOY_SYSTEM_HPP
 #define LOTUSGB_GAME_BOY_SYSTEM_HPP
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "GBCPU.hpp"
@@ -25,13 +27,15 @@ struct RetStepFrame {
     uint64_t tCyclesElapsed = 0;
 };
 
-// Initial headless DMG composition: ROM-only cartridge, basic RAM regions,
+// Initial headless DMG composition: cartridge, basic RAM regions,
 // CPU, address bus, timer, PPU timing/rendering, joypad input, and shared clock.
 class GameBoySystem {
 public:
     static constexpr uint64_t DMG_FRAME_T_CYCLES = 456 * 154;
 
     explicit GameBoySystem(std::vector<uint8_t> rom);
+    GameBoySystem(std::vector<uint8_t> rom,
+                  std::shared_ptr<std::vector<uint8_t>> saveRam);
     // Build a system from the synthetic CPU-reset state for unit tests.
     static GameBoySystem createForTest(std::vector<uint8_t> rom);
 
@@ -42,6 +46,9 @@ public:
     const DmgPpu::FrameBuffer &getFrameBuffer() const;
     std::vector<int16_t> takeAudioSamples();
     void setButtonState(JoypadButton button, bool pressed);
+    uint8_t *getSaveRamData();
+    size_t getSaveRamSize() const;
+    std::shared_ptr<std::vector<uint8_t>> getSaveRamStorage() const;
 
 private:
     enum class StartupProfile {
@@ -49,10 +56,11 @@ private:
         DmgPostBoot,
     };
 
-    GameBoySystem(std::vector<uint8_t> rom, StartupProfile startupProfile);
+    GameBoySystem(std::vector<uint8_t> rom, StartupProfile startupProfile,
+                  std::shared_ptr<std::vector<uint8_t>> saveRam);
     void initializeDmgPostBootState();
 
-    RomOnlyCartridge cartridge;
+    Cartridge cartridge;
     RamRegion workRam;
     RamRegion highRam;
     InterruptRegisters interruptRegisters;
