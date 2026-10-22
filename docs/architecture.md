@@ -4,7 +4,7 @@ This document describes the implemented emulator, not a target design. Update it
 
 ## Current scope
 
-LotusGB currently runs ROM-only DMG cartridges up to 32 KiB, MBC1 types `$01`–`$03`, MBC2 types `$05`–`$06` with up to 256 KiB of ROM and built-in 512×4-bit RAM, MBC3 types `$11`–`$13` with up to 2 MiB of ROM and 32 KiB of external RAM, and MBC5 types `$19`–`$1E` with up to 8 MiB of ROM and 128 KiB of external RAM. MBC2 battery RAM is exposed as 512 bytes, one nibble per byte; reads return `$F` in the unspecified upper nibble as a deterministic model choice. MBC5 rumble cartridges are supported for banking, but the motor output is not exposed. MBC3 timer variants and MBC30-sized RAM are not supported. Battery-backed RAM is exposed through libretro's save RAM memory interface, and the frontend owns disk persistence. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
+LotusGB currently runs ROM-only DMG cartridges up to 32 KiB, MBC1 types `$01`–`$03`, MBC2 types `$05`–`$06` with up to 256 KiB of ROM and built-in 512×4-bit RAM, MBC3 types `$0F`–`$13` with up to 2 MiB of ROM and 32 KiB of external RAM, and MBC5 types `$19`–`$1E` with up to 8 MiB of ROM and 128 KiB of external RAM. MBC2 battery RAM is exposed as 512 bytes, one nibble per byte; reads return `$F` in the unspecified upper nibble as a deterministic model choice. MBC3 timer types `$0F` and `$10` implement the five RTC registers, latch behavior, HALT, and the 9-bit day counter. The clock catches up against host wall time on RTC access, including time while the frontend is paused or closed. Its versioned 24-byte state is exposed through libretro's RTC memory interface; the frontend owns disk persistence. MBC5 rumble cartridges are supported for banking, but the motor output is not exposed. MBC30-sized RAM and other mapper types are not supported. Battery-backed cartridge RAM uses libretro's save RAM memory interface. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
 
 The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, a partial PPU, OAM DMA, and an initial APU implementation. The APU generates audio for pulse channels 1 and 2, wave channel 3, and noise channel 4. LotusGB schedules CPU bus transactions after three T-cycles of each four-T-cycle M-cycle. Clocked devices advance to that point before the transaction, then advance the remaining T-cycle. This lets DMG CH3 expose wave RAM only on its sample-fetch T-cycle. Other cartridge mappers, boot-ROM execution, and more complete PPU/APU timing are not implemented.
 
@@ -20,7 +20,7 @@ flowchart TD
     CLOCK -->|one M-cycle| CPU[CPU and opcode decoder]
     CPU <-->|synchronous reads and writes| BUS[AddressBus]
 
-    BUS --> CART[ROM-only or MBC1/MBC2/MBC3/MBC5 cartridge and cartridge RAM]
+    BUS --> CART[ROM-only or MBC1/MBC2/MBC3/MBC5 cartridge, RAM and RTC]
     BUS --> RAM[WRAM and HRAM]
     BUS --> IO[Mapped hardware registers]
     IO --> JOY[Joypad and interrupts]
@@ -34,7 +34,7 @@ flowchart TD
     CLOCK -->|elapsed T-cycles| PPU
 
     SYS -->|framebuffer and PCM samples| LR
-    RA <-->|save RAM memory interface| LR
+    RA <-->|save RAM and RTC memory interfaces| LR
     LR -->|video and audio callbacks| RA
 ```
 

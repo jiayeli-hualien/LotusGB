@@ -147,6 +147,7 @@ bool isSupportedRom(const std::vector<uint8_t> &rom) {
                rom.size() % 0x4000 == 0;
     const bool supportedBankedType =
         type == 0x01 || type == 0x02 || type == 0x03 ||
+        type == 0x0F || type == 0x10 ||
         type == 0x11 || type == 0x12 || type == 0x13;
     return supportedBankedType && rom.size() >= 0x8000 &&
            rom.size() <= MAX_BANKED_ROM_SIZE &&
@@ -294,7 +295,11 @@ void retro_reset(void) {
         const auto saveRam = emulatorSystem
                                  ? emulatorSystem->getSaveRamStorage()
                                  : nullptr;
-        auto newSystem = std::make_unique<GameBoySystem>(loadedRom, saveRam);
+        const auto saveRtc = emulatorSystem
+                                 ? emulatorSystem->getRtcStorage()
+                                 : nullptr;
+        auto newSystem =
+            std::make_unique<GameBoySystem>(loadedRom, saveRam, saveRtc);
         emulatorSystem = std::move(newSystem);
     } catch (...) {
         emulatorSystem.reset();
@@ -364,15 +369,23 @@ unsigned retro_get_region(void) {
 }
 
 void *retro_get_memory_data(unsigned id) {
-    if (!emulatorSystem || id != RETRO_MEMORY_SAVE_RAM)
+    if (!emulatorSystem)
         return nullptr;
-    return emulatorSystem->getSaveRamData();
+    if (id == RETRO_MEMORY_SAVE_RAM)
+        return emulatorSystem->getSaveRamData();
+    if (id == RETRO_MEMORY_RTC)
+        return emulatorSystem->getRtcData();
+    return nullptr;
 }
 
 size_t retro_get_memory_size(unsigned id) {
-    if (!emulatorSystem || id != RETRO_MEMORY_SAVE_RAM)
+    if (!emulatorSystem)
         return 0;
-    return emulatorSystem->getSaveRamSize();
+    if (id == RETRO_MEMORY_SAVE_RAM)
+        return emulatorSystem->getSaveRamSize();
+    if (id == RETRO_MEMORY_RTC)
+        return emulatorSystem->getRtcSize();
+    return 0;
 }
 
 } // extern "C"

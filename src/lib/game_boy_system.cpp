@@ -5,22 +5,32 @@
 namespace LOTUSGB {
 
 GameBoySystem::GameBoySystem(std::vector<uint8_t> rom)
-    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot, nullptr) {}
+    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot, nullptr,
+                    nullptr) {}
 
 GameBoySystem::GameBoySystem(
     std::vector<uint8_t> rom,
     std::shared_ptr<std::vector<uint8_t>> saveRam)
     : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot,
-                    std::move(saveRam)) {}
+                    std::move(saveRam), nullptr) {}
+
+GameBoySystem::GameBoySystem(
+    std::vector<uint8_t> rom,
+    std::shared_ptr<std::vector<uint8_t>> saveRam,
+    std::shared_ptr<std::vector<uint8_t>> saveRtc)
+    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot,
+                    std::move(saveRam), std::move(saveRtc)) {}
 
 GameBoySystem GameBoySystem::createForTest(std::vector<uint8_t> rom) {
-    return GameBoySystem(std::move(rom), StartupProfile::TestReset, nullptr);
+    return GameBoySystem(std::move(rom), StartupProfile::TestReset, nullptr,
+                         nullptr);
 }
 
 GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
                              StartupProfile startupProfile,
-                             std::shared_ptr<std::vector<uint8_t>> saveRam)
-    : cartridge(std::move(rom), std::move(saveRam)),
+                             std::shared_ptr<std::vector<uint8_t>> saveRam,
+                             std::shared_ptr<std::vector<uint8_t>> saveRtc)
+    : cartridge(std::move(rom), std::move(saveRam), std::move(saveRtc)),
       workRam(0xC000, 0x2000),
       highRam(0xFF80, 0x007F),
       joypad(interruptRegisters),
@@ -113,6 +123,20 @@ size_t GameBoySystem::getSaveRamSize() const {
 std::shared_ptr<std::vector<uint8_t>>
 GameBoySystem::getSaveRamStorage() const {
     return cartridge.getBatteryRamStorage();
+}
+
+uint8_t *GameBoySystem::getRtcData() {
+    const auto rtc = cartridge.getBatteryRtcStorage();
+    return rtc && !rtc->empty() ? rtc->data() : nullptr;
+}
+
+size_t GameBoySystem::getRtcSize() const {
+    const auto rtc = cartridge.getBatteryRtcStorage();
+    return rtc ? rtc->size() : 0;
+}
+
+std::shared_ptr<std::vector<uint8_t>> GameBoySystem::getRtcStorage() const {
+    return cartridge.getBatteryRtcStorage();
 }
 
 void GameBoySystem::initializeDmgPostBootState() {

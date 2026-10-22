@@ -36,6 +36,9 @@ public:
     explicit GameBoySystem(std::vector<uint8_t> rom);
     GameBoySystem(std::vector<uint8_t> rom,
                   std::shared_ptr<std::vector<uint8_t>> saveRam);
+    GameBoySystem(std::vector<uint8_t> rom,
+                  std::shared_ptr<std::vector<uint8_t>> saveRam,
+                  std::shared_ptr<std::vector<uint8_t>> saveRtc);
     // Build a system from the synthetic CPU-reset state for unit tests.
     static GameBoySystem createForTest(std::vector<uint8_t> rom);
 
@@ -49,6 +52,9 @@ public:
     uint8_t *getSaveRamData();
     size_t getSaveRamSize() const;
     std::shared_ptr<std::vector<uint8_t>> getSaveRamStorage() const;
+    uint8_t *getRtcData();
+    size_t getRtcSize() const;
+    std::shared_ptr<std::vector<uint8_t>> getRtcStorage() const;
 
 private:
     enum class StartupProfile {
@@ -57,7 +63,8 @@ private:
     };
 
     GameBoySystem(std::vector<uint8_t> rom, StartupProfile startupProfile,
-                  std::shared_ptr<std::vector<uint8_t>> saveRam);
+                  std::shared_ptr<std::vector<uint8_t>> saveRam,
+                  std::shared_ptr<std::vector<uint8_t>> saveRtc);
     void initializeDmgPostBootState();
 
     Cartridge cartridge;

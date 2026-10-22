@@ -7,13 +7,14 @@ LotusGB is a learning project to build a Nintendo Game Boy emulator in C++.
 The repository contains a CPU implementation, a headless DMG system, and a
 libretro adapter for RetroArch. It supports ROM-only games up to 32 KiB,
 MBC1 types `$01`–`$03`, MBC2 types `$05`–`$06` with up to 256 KiB of ROM and
-built-in 512×4-bit RAM, MBC3 types `$11`–`$13` with ROM banking up to 2 MiB and
+built-in 512×4-bit RAM, MBC3 types `$0F`–`$13` with ROM banking up to 2 MiB and
 up to 32 KiB of external RAM, and MBC5 types `$19`–`$1E` with ROM banking up to
-8 MiB and up to 128 KiB of external RAM. MBC3 timer variants are not supported;
+8 MiB and up to 128 KiB of external RAM. MBC3 timer types `$0F` and `$10`
+support the RTC and expose its state through libretro's RTC memory interface.
 MBC5 rumble cartridges can run, but their motor output is not exposed yet.
-Battery-backed RAM is exposed through libretro's save RAM interface for
-RetroArch to persist. The core also supports joypad input, a partial DMG PPU,
-and all four DMG APU channels. The default startup profile skips the boot ROM.
+Battery-backed RAM and RTC state are exposed through libretro memory interfaces
+for RetroArch to persist. The core also supports joypad input, a partial DMG
+PPU, and all four DMG APU channels. The default startup profile skips the boot ROM.
 Other cartridge mappers, boot-ROM execution, and more exact PPU/APU timing
 remain future work.
 
@@ -27,9 +28,8 @@ elapsed T-cycles to the hardware components.
 
 - Refine DMG audio and visual compatibility with focused tests and reference
   games; F-1 Race is a PPU visual target.
-- Broaden cartridge support. The libretro test simulates restoring MBC3 save
-  RAM and a game reading and updating that progress; verify disk persistence
-  with a legally available MBC3 game that stores progress.
+- Verify MBC3 RTC `.rtc` disk persistence in RetroArch, alongside the existing
+  automated checks for restored MBC3 save RAM and RTC memory.
 - Maintain GitHub Actions CI for the build, unit tests, and GBIT instruction
   tests.
 

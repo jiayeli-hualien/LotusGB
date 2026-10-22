@@ -430,6 +430,51 @@ void testLibretroPersistsMbc3BatteryRamAcrossFrontendReload() {
     retro_unload_game();
 }
 
+void testLibretroExposesAndPreservesMbc3RtcMemory() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x0147] = 0x0F; // MBC3 + timer + battery
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+
+    expect(retro_load_game(&game), "core loads an MBC3 timer cartridge");
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0 &&
+               retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == nullptr,
+           "timer-only MBC3 cartridge has no save RAM block");
+    expect(retro_get_memory_size(RETRO_MEMORY_RTC) == 24,
+           "core exposes its versioned MBC3 RTC persistence block");
+    auto *rtc = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_RTC));
+    expect(rtc != nullptr, "MBC3 timer cartridge exposes RTC data");
+    std::vector<uint8_t> savedRtc(rtc, rtc + 24);
+    uint8_t *stableRtcPointer = rtc;
+
+    retro_reset();
+    rtc = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_RTC));
+    expect(rtc == stableRtcPointer &&
+               std::equal(savedRtc.begin(), savedRtc.end(), rtc),
+           "system reset retains the frontend-owned RTC memory block");
+
+    retro_unload_game();
+    expect(retro_load_game(&game),
+           "core reloads the MBC3 timer cartridge after unloading it");
+    rtc = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_RTC));
+    expect(rtc != nullptr, "reloaded MBC3 timer cartridge exposes RTC data");
+    std::copy(savedRtc.begin(), savedRtc.end(), rtc);
+    expect(std::equal(savedRtc.begin(), savedRtc.end(), rtc),
+           "frontend can restore a saved MBC3 RTC block after load");
+    retro_unload_game();
+
+    rom[0x0147] = 0x10; // MBC3 + timer + RAM + battery
+    rom[0x0149] = 0x02; // 8 KiB RAM
+    expect(retro_load_game(&game),
+           "core loads an MBC3 timer and RAM cartridge");
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x2000 &&
+               retro_get_memory_size(RETRO_MEMORY_RTC) == 24,
+           "MBC3 timer and RAM cartridge exposes separate save blocks");
+    retro_unload_game();
+}
+
 void testLibretroReportsApiAndVideoTiming() {
     expect(retro_api_version() == RETRO_API_VERSION,
            "core reports the libretro API version");
@@ -472,6 +517,7 @@ int main() {
     testLibretroExposesMbc2BatteryRam();
     testLibretroPersistsMbc5BatteryRamAcrossFrontendReload();
     testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();
+    testLibretroExposesAndPreservesMbc3RtcMemory();
 
     retro_unload_game();
     retro_deinit();

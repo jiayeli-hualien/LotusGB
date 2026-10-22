@@ -348,6 +348,116 @@ void testMbc3RomAndRamBanking() {
            "MBC3 battery cartridge provides save RAM storage");
 }
 
+void testMbc3RtcLatchingAndTimekeeping() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x0147] = 0x0F; // MBC3 + timer + battery
+    int64_t now = 1000;
+    Cartridge cartridge(std::move(rom), nullptr, nullptr,
+                        [&now] { return now; });
+    AddressBus bus;
+    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
+
+    const auto rtc = cartridge.getBatteryRtcStorage();
+    expect(cartridge.hasBattery() && cartridge.getExternalRamSize() == 0 &&
+               rtc && rtc->size() == 24,
+           "MBC3 timer-only cartridges expose persistent RTC storage");
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC3 RTC access is disabled until the RAM enable gate is opened");
+
+    bus.write(0x0000, 0x0A);
+    bus.write(0x4000, 0x08); // Seconds register
+    bus.write(0x6000, 0x00);
+    bus.write(0x6000, 0x01);
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC starts at zero and latches on the 0-to-1 sequence");
+
+    now += 59;
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC reads remain stable until the next latch");
+    bus.write(0x6000, 0x00);
+    bus.write(0x6000, 0x01);
+    expect(bus.read(0xA000) == 59,
+           "MBC3 RTC advances by elapsed wall-clock seconds after latching");
+
+    now += 1;
+    bus.write(0x6000, 0x00);
+    bus.write(0x6000, 0x01);
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC seconds roll over after 59");
+    bus.write(0x4000, 0x09);
+    expect(bus.read(0xA000) == 1,
+           "MBC3 RTC seconds rollover increments minutes");
+
+    auto restoredRtc =
+        std::make_shared<std::vector<uint8_t>>(*rtc);
+    now += 2;
+    std::vector<uint8_t> restoredRom(0x8000, 0);
+    restoredRom[0x0147] = 0x0F;
+    Cartridge restored(std::move(restoredRom), nullptr, restoredRtc,
+                       [&now] { return now; });
+    AddressBus restoredBus;
+    restoredBus.map(0x0000, 0x7FFF, restored);
+    restoredBus.map(0xA000, 0xBFFF, restored);
+    restoredBus.write(0x0000, 0x0A);
+    restoredBus.write(0x4000, 0x08);
+    restoredBus.write(0x6000, 0x00);
+    restoredBus.write(0x6000, 0x01);
+    expect(restoredBus.read(0xA000) == 2,
+           "restored MBC3 RTC data resumes from its saved wall-clock time");
+}
+
+void testMbc3RtcHaltAndDayCounterOverflow() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x0147] = 0x0F; // MBC3 + timer + battery
+    int64_t now = 2000;
+    Cartridge cartridge(std::move(rom), nullptr, nullptr,
+                        [&now] { return now; });
+    AddressBus bus;
+    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
+    bus.write(0x0000, 0x0A);
+
+    bus.write(0x4000, 0x0C);
+    bus.write(0xA000, 0x40); // Halt the RTC.
+    now += 120;
+    bus.write(0x4000, 0x08);
+    bus.write(0x6000, 0x00);
+    bus.write(0x6000, 0x01);
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC HALT freezes time while the host clock advances");
+
+    bus.write(0x4000, 0x0C);
+    bus.write(0xA000, 0x01); // Resume at day 511; clear HALT and carry.
+    bus.write(0x4000, 0x0B);
+    bus.write(0xA000, 0xFF);
+    bus.write(0x4000, 0x0A);
+    bus.write(0xA000, 23);
+    bus.write(0x4000, 0x09);
+    bus.write(0xA000, 59);
+    bus.write(0x4000, 0x08);
+    bus.write(0xA000, 59);
+    now += 1;
+    bus.write(0x6000, 0x00);
+    bus.write(0x6000, 0x01);
+
+    bus.write(0x4000, 0x08);
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC wraps seconds at the end of day 511");
+    bus.write(0x4000, 0x09);
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC wraps minutes at the end of day 511");
+    bus.write(0x4000, 0x0A);
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC wraps hours at the end of day 511");
+    bus.write(0x4000, 0x0B);
+    expect(bus.read(0xA000) == 0,
+           "MBC3 RTC day counter wraps after 511");
+    bus.write(0x4000, 0x0C);
+    expect(bus.read(0xA000) == 0x80,
+           "MBC3 RTC sets the sticky carry flag on day counter overflow");
+}
+
 void testMbc5RomAndRamBanking() {
     constexpr size_t ROM_BANKS = 512;
     std::vector<uint8_t> rom(ROM_BANKS * 0x4000, 0);
@@ -443,19 +553,35 @@ void testMbc5RomAndRamBanking() {
            "MBC5 rumble cartridges reject RAM sizes that overlap the motor bit");
 }
 
-void testMbc3RejectsUnsupportedRtcAndRamSizes() {
-    for (uint8_t type : {uint8_t{0x0F}, uint8_t{0x10}}) {
-        std::vector<uint8_t> rom(0x8000, 0);
-        rom[0x0147] = type;
-        rom[0x0149] = 0x02;
-        bool rejected = false;
-        try {
-            Cartridge cartridge(std::move(rom));
-        } catch (const std::invalid_argument &) {
-            rejected = true;
-        }
-        expect(rejected, "MBC3 RTC cartridges are rejected until RTC is implemented");
+void testMbc3SupportsRtcCartridgesAndRejectsUnsupportedRam() {
+    std::vector<uint8_t> timerOnlyRom(0x8000, 0);
+    timerOnlyRom[0x0147] = 0x0F; // MBC3 + timer + battery
+    Cartridge timerOnly(std::move(timerOnlyRom));
+    expect(timerOnly.hasBattery() && timerOnly.getExternalRamSize() == 0 &&
+               timerOnly.getBatteryRtcStorage() &&
+               timerOnly.getBatteryRtcStorage()->size() == 24,
+           "MBC3 timer-only cartridge has RTC battery storage but no RAM");
+
+    std::vector<uint8_t> timerAndRamRom(0x8000, 0);
+    timerAndRamRom[0x0147] = 0x10; // MBC3 + timer + RAM + battery
+    timerAndRamRom[0x0149] = 0x02; // 8 KiB RAM
+    Cartridge timerAndRam(std::move(timerAndRamRom));
+    expect(timerAndRam.hasBattery() &&
+               timerAndRam.getExternalRamSize() == 0x2000 &&
+               timerAndRam.getBatteryRtcStorage(),
+           "MBC3 timer and RAM battery cartridges expose both save blocks");
+
+    std::vector<uint8_t> unsupportedRtcRamRom(0x8000, 0);
+    unsupportedRtcRamRom[0x0147] = 0x10;
+    unsupportedRtcRamRom[0x0149] = 0x04; // MBC30-sized RAM
+    bool unsupportedRtcRamRejected = false;
+    try {
+        Cartridge cartridge(std::move(unsupportedRtcRamRom));
+    } catch (const std::invalid_argument &) {
+        unsupportedRtcRamRejected = true;
     }
+    expect(unsupportedRtcRamRejected,
+           "MBC3 RTC cartridges reject the larger MBC30 RAM size");
 
     std::vector<uint8_t> unsupportedRamRom(0x8000, 0);
     unsupportedRamRom[0x0147] = 0x13;
@@ -495,8 +621,10 @@ int main() {
     testMbc1RomAndRamBanking();
     testMbc2RomAndNibbleRam();
     testMbc3RomAndRamBanking();
+    testMbc3RtcLatchingAndTimekeeping();
+    testMbc3RtcHaltAndDayCounterOverflow();
     testMbc5RomAndRamBanking();
-    testMbc3RejectsUnsupportedRtcAndRamSizes();
+    testMbc3SupportsRtcCartridgesAndRejectsUnsupportedRam();
     testMbc3SupportsSmallExternalRamSizes();
     std::cout << "Address bus tests passed\n";
 }
