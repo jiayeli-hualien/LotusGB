@@ -250,15 +250,16 @@ void testLibretroExposesMbc1BatteryRam() {
     retro_unload_game();
 }
 
-void testLibretroExposesMbc3BatteryRam() {
+void testLibretroPersistsMbc3BatteryRamAcrossFrontendReload() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
         0x3E, 0x0A,             // LD A, $0A
         0xEA, 0x00, 0x00,       // LD ($0000), A (enable cartridge RAM)
         0x3E, 0x02,             // LD A, $02
         0xEA, 0x00, 0x40,       // LD ($4000), A (select RAM bank 2)
-        0x3E, 0x5A,             // LD A, $5A
-        0xEA, 0x00, 0xA0,       // LD ($A000), A
+        0xFA, 0x00, 0xA0,       // LD A, ($A000) (read loaded progress)
+        0x3C,                   // INC A
+        0xEA, 0x00, 0xA0,       // LD ($A000), A (update saved progress)
         0x18, 0xFE,             // loop forever
     };
     std::copy(std::begin(program), std::end(program), rom.begin() + 0x0100);
@@ -271,21 +272,43 @@ void testLibretroExposesMbc3BatteryRam() {
     game.size = rom.size();
     expect(retro_load_game(&game),
            "core loads an original-header MBC3 battery cartridge");
-    for (unsigned frame = 0; frame < 2; ++frame)
-        retro_run();
 
-    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x8000,
+    const size_t saveRamSize = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    expect(saveRamSize == 0x8000,
            "libretro reports the MBC3 cartridge's declared external RAM size");
     auto *saveRam = static_cast<uint8_t *>(
         retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
-    expect(saveRam != nullptr && saveRam[0x4000] == 0x5A,
-           "CPU writes to MBC3 RAM reach the selected libretro save RAM bank");
+    expect(saveRam != nullptr, "MBC3 battery cartridge exposes save RAM data");
+    saveRam[0x4000] = 0x19;
+    saveRam[0] = 0x44;
+    retro_run();
+    expect(saveRam[0x4000] == 0x1A,
+           "MBC3 game reads restored progress and writes the updated value");
+    expect(saveRam[0] == 0x44,
+           "MBC3 game updates only the selected external RAM bank");
+
+    const std::vector<uint8_t> frontendSave(saveRam, saveRam + saveRamSize);
     uint8_t *stableSaveRamPointer = saveRam;
     retro_reset();
     saveRam = static_cast<uint8_t *>(
         retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
-    expect(saveRam == stableSaveRamPointer && saveRam[0x4000] == 0x5A,
+    expect(saveRam == stableSaveRamPointer && saveRam[0x4000] == 0x1A,
            "MBC3 system reset preserves the frontend-owned save RAM buffer");
+
+    retro_unload_game();
+    expect(retro_load_game(&game),
+           "core reloads the MBC3 battery cartridge after unloading it");
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == saveRamSize,
+           "reloaded MBC3 cartridge exposes the same save RAM size");
+    saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr, "reloaded MBC3 cartridge exposes save RAM data");
+    std::copy(frontendSave.begin(), frontendSave.end(), saveRam);
+    expect(saveRam[0x4000] == 0x1A,
+           "frontend can restore a saved MBC3 RAM bank before execution");
+    retro_run();
+    expect(saveRam[0x4000] == 0x1B,
+           "reloaded MBC3 game reads and advances its restored progress");
     retro_unload_game();
 }
 
@@ -327,7 +350,7 @@ int main() {
     testLibretroInputChangesPongGameplayFrame();
     testLibretroPublishesPulseChannelAudio();
     testLibretroExposesMbc1BatteryRam();
-    testLibretroExposesMbc3BatteryRam();
+    testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();
 
     retro_unload_game();
     retro_deinit();

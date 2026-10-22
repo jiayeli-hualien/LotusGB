@@ -24,8 +24,9 @@ elapsed T-cycles to the hardware components.
 
 - Refine DMG audio and visual compatibility with focused tests and reference
   games; F-1 Race is a PPU visual target.
-- Broaden cartridge support and validate battery-backed save behavior with
-  games that store progress.
+- Broaden cartridge support. The libretro test simulates restoring MBC3 save
+  RAM and a game reading and updating that progress; verify disk persistence
+  with a legally available MBC3 game that stores progress.
 - Maintain GitHub Actions CI for the build, unit tests, and GBIT instruction
   tests.
 
