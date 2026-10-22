@@ -209,6 +209,22 @@ void testLibretroPublishesPulseChannelAudio() {
     retro_unload_game();
 }
 
+void testLibretroLoadsMaximumMbc5RomSize() {
+    std::vector<uint8_t> rom(0x800000, 0x00);
+    rom[0x0147] = 0x19; // MBC5
+    rom[0x0148] = 0x08; // 8 MiB ROM
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+
+    expect(retro_load_game(&game), "core loads an 8 MiB MBC5 ROM");
+    retro_unload_game();
+
+    rom.resize(0x804000);
+    game.size = rom.size();
+    expect(!retro_load_game(&game), "core rejects ROMs larger than 8 MiB");
+}
+
 void testLibretroExposesMbc1BatteryRam() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -449,6 +465,7 @@ int main() {
 
     testLibretroReportsApiAndVideoTiming();
     testLibretroLoadsAcid2AndPublishesReferenceFrame();
+    testLibretroLoadsMaximumMbc5RomSize();
     testLibretroInputChangesPongGameplayFrame();
     testLibretroPublishesPulseChannelAudio();
     testLibretroExposesMbc1BatteryRam();

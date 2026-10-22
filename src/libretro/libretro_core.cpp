@@ -329,8 +329,9 @@ void retro_cheat_set(unsigned, bool, const char *) {}
 
 bool retro_load_game(const retro_game_info *game) {
     constexpr size_t MINIMUM_ROM_SIZE = 0x150;
+    constexpr size_t MAXIMUM_ROM_SIZE = 0x800000;
     if (!game || !game->data || game->size < MINIMUM_ROM_SIZE ||
-        game->size > 0x200000)
+        game->size > MAXIMUM_ROM_SIZE)
         return false;
 
     const auto *data = static_cast<const uint8_t *>(game->data);
