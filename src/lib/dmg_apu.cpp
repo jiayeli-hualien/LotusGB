@@ -386,15 +386,12 @@ void DmgApu::triggerChannel3() {
 }
 
 void DmgApu::corruptWaveRamOnChannel3Retrigger() {
-    const bool fetchedThisCycle = hasWaveRamFetch &&
-                                  elapsedTCycles == lastWaveRamFetchTCycle;
-    const bool fetchImminent = frequencyTimer3 > 0 && frequencyTimer3 <= 2;
-    if (!fetchedThisCycle && !fetchImminent)
+    // The wave RAM read is on the 2 MHz APU clock. The DMG collision window
+    // is the APU cycle immediately before that read, two CPU T-cycles later.
+    if (frequencyTimer3 != 2)
         return;
 
-    const uint8_t sampleIndex = fetchedThisCycle
-                                    ? waveSampleIndex
-                                    : static_cast<uint8_t>((waveSampleIndex + 1) & 0x1F);
+    const uint8_t sampleIndex = static_cast<uint8_t>((waveSampleIndex + 1) & 0x1F);
     const uint8_t byteIndex = sampleIndex / 2;
     if (byteIndex < 4) {
         waveRam[0] = waveRam[byteIndex];

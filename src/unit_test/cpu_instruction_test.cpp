@@ -386,6 +386,21 @@ void testMemoryAccessesOccurWithinTheirMCycle() {
            "the data read is committed to A by the end of the instruction");
 }
 
+void testLdhReadThroughCUsesTheHighMemoryPage() {
+    CpuFixture f{{0x0000, 0xF2}, {0x0001, 0x00}}; // LDH A, (C)
+    Reg reg = f.cpu.getReg();
+    reg.getRefC() = 0x30;
+    f.cpu.setReg(reg);
+    f.memory.bytes[0xFF30] = 0xA5;
+
+    expect(f.runUntilNextOpcode() == 2, "LDH A,(C) takes two M-cycles");
+    reg = f.cpu.getReg();
+    expect(reg.getRefA() == 0xA5,
+           "LDH A,(C) reads from FF00 plus C");
+    expect(!f.memory.reads.empty() && f.memory.reads.front() == 0xFF30,
+           "LDH A,(C) presents the full high-memory address to the bus");
+}
+
 void testEiDelay() {
     CpuFixture f{{0x0000, 0xFB}, {0x0001, 0x01}, {0x0002, 0x34},
                  {0x0003, 0x12}, {0x0004, 0x00}};
@@ -495,6 +510,7 @@ int main() {
     testConditionalBranchAndCallBusTiming();
     testStopDecodeAndHaltIdle();
     testMemoryAccessesOccurWithinTheirMCycle();
+    testLdhReadThroughCUsesTheHighMemoryPage();
     testEiDelay();
     testInterruptEntryPriorityStackAndVector();
     testHaltWakeAndHaltBug();

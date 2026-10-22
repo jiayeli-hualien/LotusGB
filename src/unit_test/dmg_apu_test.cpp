@@ -148,11 +148,11 @@ std::array<uint8_t, 16> stopWaveChannelAndReadRam(DmgApu &apu) {
     return result;
 }
 
-void testWaveRamRetriggerCorruptsFirstByteWhenFetchHitsFirstRow() {
+void testWaveRamRetriggerCorruptsFirstByteTwoTCyclesBeforeFetchInFirstRow() {
     DmgApu apu;
     setupWaveChannelForRetriggerTest(apu);
-    apu.advanceTCycles(22); // Sample index 4 reads wave RAM byte 2.
-    apu.write(0xFF1E, 0x87); // Retrigger on the same T-cycle as that fetch.
+    apu.advanceTCycles(24); // Next sample index 5 reads wave RAM byte 2 at cycle 26.
+    apu.write(0xFF1E, 0x87); // Retrigger one 2 MHz APU cycle before the read.
 
     const auto waveRam = stopWaveChannelAndReadRam(apu);
     expect(waveRam[0] == 0x22,
@@ -164,8 +164,8 @@ void testWaveRamRetriggerCorruptsFirstByteWhenFetchHitsFirstRow() {
 void testWaveRamRetriggerCopiesSelectedAlignedRowToFirstFourBytes() {
     DmgApu apu;
     setupWaveChannelForRetriggerTest(apu);
-    apu.advanceTCycles(78); // Sample index 18 reads byte 9 (the 8–11 row).
-    apu.write(0xFF1E, 0x87); // Retrigger on the same T-cycle as that fetch.
+    apu.advanceTCycles(76); // Sample index 18 reads byte 9 at cycle 78.
+    apu.write(0xFF1E, 0x87); // Retrigger one 2 MHz APU cycle before the read.
 
     const auto waveRam = stopWaveChannelAndReadRam(apu);
     expect(waveRam[0] == 0x88 && waveRam[1] == 0x99 &&
@@ -176,16 +176,18 @@ void testWaveRamRetriggerCopiesSelectedAlignedRowToFirstFourBytes() {
            "the source row remains unchanged by wave RAM corruption");
 }
 
-void testWaveRamRetriggerWithinTwoTCyclesBeforeFetchCopiesUpcomingRow() {
+void testWaveRamRetriggerOneTCycleBeforeFetchDoesNotCorruptRam() {
     DmgApu apu;
     setupWaveChannelForRetriggerTest(apu);
-    apu.advanceTCycles(44); // Two T-cycles before the sample at index 10 / byte 5.
+    apu.advanceTCycles(45); // One T-cycle before the sample at index 10 / byte 5.
     apu.write(0xFF1E, 0x87);
 
     const auto waveRam = stopWaveChannelAndReadRam(apu);
-    expect(waveRam[0] == 0x44 && waveRam[1] == 0x55 &&
-               waveRam[2] == 0x66 && waveRam[3] == 0x77,
-           "a retrigger in the two-T-cycle read window copies the upcoming aligned row");
+    for (uint8_t i = 0; i < waveRam.size(); ++i) {
+        const uint8_t nibble = i;
+        expect(waveRam[i] == static_cast<uint8_t>((nibble << 4) | nibble),
+               "a retrigger one T-cycle before the read preserves wave RAM");
+    }
 }
 
 void testWaveRamRetriggerOutsideReadWindowDoesNotCorruptRam() {
@@ -199,6 +201,20 @@ void testWaveRamRetriggerOutsideReadWindowDoesNotCorruptRam() {
         const uint8_t nibble = i;
         expect(waveRam[i] == static_cast<uint8_t>((nibble << 4) | nibble),
                "a retrigger outside the wave RAM read window preserves wave RAM");
+    }
+}
+
+void testWaveRamRetriggerOnFetchCycleDoesNotCorruptRam() {
+    DmgApu apu;
+    setupWaveChannelForRetriggerTest(apu);
+    apu.advanceTCycles(46); // Sample index 10 has just read wave RAM byte 5.
+    apu.write(0xFF1E, 0x87);
+
+    const auto waveRam = stopWaveChannelAndReadRam(apu);
+    for (uint8_t i = 0; i < waveRam.size(); ++i) {
+        const uint8_t nibble = i;
+        expect(waveRam[i] == static_cast<uint8_t>((nibble << 4) | nibble),
+               "a retrigger on the just-completed read cycle preserves wave RAM");
     }
 }
 
@@ -431,10 +447,11 @@ int main() {
     testChannelOneProducesStereoSamplesAtConfiguredRate();
     testChannelTwoProducesAudioOnItsIndependentStereoRoute();
     testWaveChannelReadsWaveRamAndRoutesStereoOutput();
-    testWaveRamRetriggerCorruptsFirstByteWhenFetchHitsFirstRow();
+    testWaveRamRetriggerCorruptsFirstByteTwoTCyclesBeforeFetchInFirstRow();
     testWaveRamRetriggerCopiesSelectedAlignedRowToFirstFourBytes();
-    testWaveRamRetriggerWithinTwoTCyclesBeforeFetchCopiesUpcomingRow();
+    testWaveRamRetriggerOneTCycleBeforeFetchDoesNotCorruptRam();
     testWaveRamRetriggerOutsideReadWindowDoesNotCorruptRam();
+    testWaveRamRetriggerOnFetchCycleDoesNotCorruptRam();
     testNoiseChannelUsesIndependentStereoRouteAndStatus();
     testNoiseChannelLengthExpiresOnFrameSequencerClock();
     testNoiseChannelWidthModeChangesItsLfsrSequence();

@@ -79,6 +79,7 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior, and observed hardware differences
 - [SameBoy APU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/apu.c) — implementation comparison for channel timing and LFSR behavior
 - [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) — CPU-visible register, length, trigger, and CH3 wave RAM behavior tests
+- [Blargg test ROM archive](https://gbdev.gg8.se/files/roms/blargg-gb-tests/) — public downloadable test packs, including `dmg_sound.zip`
 - [Blargg DMG sound test sources (reproducible mirror)](https://github.com/crzysdrs/blarggs-test-roms/tree/master/dmg_sound) — assembly sources and expected checksums for individual tests
 - [Game Boy Noise Test](https://github.com/not-chciken/gb-noise-test) — interactive CH4 settings and presets with DMG-01 audio reference recordings (Apache-2.0)
 - [SameSuite APU tests](https://github.com/LIJI32/SameSuite/tree/master/apu) — sample-accurate APU tests; most rely on CGB-only PCM registers and do not apply to a DMG core

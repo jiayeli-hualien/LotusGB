@@ -115,7 +115,7 @@ SUB_FUNC_IMPL(MemReadIndirectA16) {
 
 SUB_FUNC_IMPL(ReadHighC) {
     pInstState->memMode = MEM_MODE_READ;
-    pInstState->memAddr = 0xF0 | pReg->getRefC();
+    pInstState->memAddr = HIGH_MEM_ADDR | pReg->getRefC();
 }
 
 SUB_FUNC_IMPL(ReadA16LSB) {
