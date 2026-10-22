@@ -6,13 +6,14 @@ LotusGB is a learning project to build a Nintendo Game Boy emulator in C++.
 
 The repository contains a CPU implementation, a headless DMG system, and a
 libretro adapter for RetroArch. It supports ROM-only games up to 32 KiB,
-MBC1 cartridge types `$01`–`$03`, and MBC3 types `$11`–`$13` with ROM banking
-up to 2 MiB and up to 32 KiB of external RAM. MBC3 timer variants are not
-supported yet. Battery-backed RAM is exposed through libretro's save RAM
-interface for RetroArch to persist. The core also supports joypad input, a
-partial DMG PPU, and all four DMG APU channels. The default startup profile
-skips the boot ROM. Other cartridge mappers, boot-ROM execution, and more exact
-PPU/APU timing remain future work.
+MBC1 types `$01`–`$03`, MBC2 types `$05`–`$06` with up to 256 KiB of ROM and
+built-in 512×4-bit RAM, and MBC3 types `$11`–`$13` with ROM banking up to 2 MiB
+and up to 32 KiB of external RAM. MBC3 timer variants are not supported yet.
+Battery-backed RAM is exposed through libretro's save RAM interface for
+RetroArch to persist. The core also supports joypad input, a partial DMG PPU,
+and all four DMG APU channels. The default startup profile skips the boot ROM.
+Other cartridge mappers, boot-ROM execution, and more exact PPU/APU timing
+remain future work.
 
 CPU behavior and timing are covered by focused tests and GBIT integration
 checks. The CPU advances in M-cycle steps, and the system clock distributes
@@ -99,6 +100,7 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 - [Pan Docs: Audio Registers](https://gbdev.io/pandocs/Audio_Registers.html) — APU register behavior and wave RAM access
 - [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel sequencing, noise LFSR behavior, and output filtering
 - [Pan Docs: MBCs](https://gbdev.io/pandocs/MBCs.html) — cartridge banking and mapper behavior
+- [Pan Docs: MBC2](https://gbdev.io/pandocs/MBC2.html) — MBC2 address-bit control, ROM banks, and built-in nibble RAM
 - [Pan Docs: The Cartridge Header](https://gbdev.io/pandocs/The_Cartridge_Header.html) — cartridge types and ROM/RAM size codes
 - [MBC3 Bank Tester](https://github.com/EricKirschenmann/MBC3-Tester-gb) — mapper bank diagnostic; its 4 MiB ROM and screenshot-based result check do not cover frontend save-file persistence ([test procedure](https://github.com/c-sp/game-boy-test-roms/blob/master/src/howto/mbc3-tester.md))
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior, and observed hardware differences

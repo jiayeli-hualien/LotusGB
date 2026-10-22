@@ -130,7 +130,7 @@ void testCartridgeRejectsUnsupportedSizesAndTypes() {
     expect(bankedSizeRejected, "ROM-only cartridge rejects ROMs requiring banking");
 
     std::vector<uint8_t> unsupportedRom(0x8000, 0);
-    unsupportedRom[0x0147] = 0x05;
+    unsupportedRom[0x0147] = 0x19; // MBC5 is not implemented yet.
     bool unsupportedTypeRejected = false;
     try {
         Cartridge cartridge(std::move(unsupportedRom));
@@ -138,6 +138,17 @@ void testCartridgeRejectsUnsupportedSizesAndTypes() {
         unsupportedTypeRejected = true;
     }
     expect(unsupportedTypeRejected, "cartridge rejects unsupported mapper types");
+
+    std::vector<uint8_t> oversizedMbc2(0x80000, 0);
+    oversizedMbc2[0x0147] = 0x06;
+    bool oversizedMbc2Rejected = false;
+    try {
+        Cartridge cartridge(std::move(oversizedMbc2));
+    } catch (const std::invalid_argument &) {
+        oversizedMbc2Rejected = true;
+    }
+    expect(oversizedMbc2Rejected,
+           "MBC2 rejects ROMs larger than its 16 selectable banks");
 }
 
 void testMbc1RomAndRamBanking() {
@@ -197,6 +208,79 @@ void testMbc1RomAndRamBanking() {
            "MBC1 battery cartridge exposes its declared save RAM");
     expect(cartridge.getExternalRamData() != nullptr,
            "MBC1 battery cartridge provides stable save RAM storage");
+}
+
+void testMbc2RomAndNibbleRam() {
+    constexpr size_t ROM_BANKS = 16;
+    std::vector<uint8_t> rom(ROM_BANKS * 0x4000, 0);
+    for (size_t bank = 0; bank < ROM_BANKS; ++bank)
+        std::fill(rom.begin() + bank * 0x4000,
+                  rom.begin() + (bank + 1) * 0x4000,
+                  static_cast<uint8_t>(bank));
+    rom[0x0147] = 0x06; // MBC2 + battery
+    rom[0x0148] = 0x03; // 256 KiB, 16 banks
+    rom[0x0149] = 0x00; // MBC2 RAM is built into the mapper
+
+    Cartridge cartridge(std::move(rom));
+    AddressBus bus;
+    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
+
+    expect(bus.read(0x0000) == 0,
+           "MBC2 keeps ROM bank zero in the lower ROM window");
+    expect(bus.read(0x4000) == 1,
+           "MBC2 starts with ROM bank one in the switchable window");
+    bus.write(0x2100, 0x0F);
+    expect(bus.read(0x4000) == 15,
+           "MBC2 selects the highest ROM bank through an A8-set address");
+    bus.write(0x0100, 0x00);
+    expect(bus.read(0x4000) == 1,
+           "MBC2 maps selected ROM bank zero to bank one");
+
+    expect(cartridge.hasBattery() &&
+               cartridge.getExternalRamSize() == 0x0200,
+           "MBC2 battery RAM is exposed as a 512-byte nibble buffer");
+    auto batteryRam = cartridge.getBatteryRamStorage();
+    expect(batteryRam && batteryRam->size() == 0x0200,
+           "MBC2 battery cartridge provides 512 bytes of save RAM");
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC2 RAM reads are disabled after startup");
+    bus.write(0xA000, 0xAB);
+    bus.write(0x0000, 0x0A);
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC2 ignores RAM writes while RAM is disabled");
+
+    bus.write(0xA000, 0xAB);
+    expect(bus.read(0xA000) == 0xFB,
+           "MBC2 stores the low nibble and returns high data bits set");
+    expect(cartridge.getExternalRamData()[0] == 0x0B,
+           "MBC2 save RAM stores one nibble per byte");
+    expect(bus.read(0xA200) == 0xFB,
+           "MBC2 RAM mirrors every 512 bytes across its address window");
+
+    bus.write(0xA200, 0x04);
+    expect(bus.read(0xA000) == 0xF4,
+           "writes through an MBC2 RAM echo update the same nibble");
+    bus.write(0xBFFF, 0x19);
+    expect(bus.read(0xA1FF) == 0xF9 && bus.read(0xBFFF) == 0xF9,
+           "MBC2 wraps the final RAM nibble through its address mask");
+    expect(cartridge.getExternalRamData()[0x01FF] == 0x09,
+           "MBC2 mirrors map to the matching nibble in save RAM");
+
+    bus.write(0x2100, 0x0F);
+    bus.write(0x2000, 0x0A);
+    expect(bus.read(0x4000) == 15,
+           "MBC2 address bit A8 distinguishes RAM control from ROM banking");
+    expect(bus.read(0xA000) == 0xF4,
+           "MBC2 ROM bank writes do not change enabled RAM contents");
+
+    std::vector<uint8_t> volatileRom(0x8000, 0);
+    volatileRom[0x0147] = 0x05; // MBC2 without battery
+    Cartridge volatileCartridge(std::move(volatileRom));
+    expect(!volatileCartridge.hasBattery() &&
+               volatileCartridge.getExternalRamSize() == 0x0200 &&
+               !volatileCartridge.getBatteryRamStorage(),
+           "MBC2 without a battery has temporary RAM but no save block");
 }
 
 void testMbc3RomAndRamBanking() {
@@ -303,6 +387,7 @@ int main() {
     testRomOnlyCartridgeAndRamRegions();
     testCartridgeRejectsUnsupportedSizesAndTypes();
     testMbc1RomAndRamBanking();
+    testMbc2RomAndNibbleRam();
     testMbc3RomAndRamBanking();
     testMbc3RejectsUnsupportedRtcAndRamSizes();
     testMbc3SupportsSmallExternalRamSizes();

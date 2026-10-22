@@ -9,7 +9,9 @@ namespace {
 constexpr size_t ROM_BANK_SIZE = 0x4000;
 constexpr size_t RAM_BANK_SIZE = 0x2000;
 constexpr size_t MINIMUM_BANKED_ROM_SIZE = 2 * ROM_BANK_SIZE;
+constexpr size_t MAXIMUM_MBC2_ROM_SIZE = 16 * ROM_BANK_SIZE;
 constexpr size_t MAXIMUM_MBC_ROM_SIZE = 2 * 1024 * 1024;
+constexpr size_t MBC2_RAM_SIZE = 0x0200;
 constexpr size_t CARTRIDGE_TYPE_OFFSET = 0x0147;
 constexpr size_t RAM_SIZE_OFFSET = 0x0149;
 
@@ -56,6 +58,23 @@ Cartridge::Cartridge(std::vector<uint8_t> rom,
     case 0x00:
         if (this->rom.size() > 0x8000)
             throw std::invalid_argument("ROM-only cartridge exceeds 32 KiB");
+        return;
+    case 0x05:
+    case 0x06:
+        if (this->rom.size() < MINIMUM_BANKED_ROM_SIZE ||
+            this->rom.size() > MAXIMUM_MBC2_ROM_SIZE ||
+            this->rom.size() % ROM_BANK_SIZE != 0)
+            throw std::invalid_argument("MBC2 cartridge must contain 32 KiB to 256 KiB of banked ROM");
+        mapper = Mapper::Mbc2;
+        battery = type == 0x06;
+        if (battery && saveRam) {
+            if (saveRam->size() != MBC2_RAM_SIZE)
+                throw std::invalid_argument("MBC2 save RAM size must be 512 bytes");
+            externalRam = std::move(saveRam);
+        } else {
+            externalRam = std::make_shared<std::vector<uint8_t>>(
+                MBC2_RAM_SIZE, 0xFF);
+        }
         return;
     case 0x01:
     case 0x02:
@@ -122,7 +141,15 @@ void Cartridge::write(uint16_t address, uint8_t value) {
     if (mapper == Mapper::RomOnly)
         return;
 
-    if (address <= 0x1FFF) {
+    if (mapper == Mapper::Mbc2 && address <= 0x3FFF) {
+        if ((address & 0x0100) == 0) {
+            ramEnabled = (value & 0x0F) == 0x0A;
+        } else {
+            mbc2RomBank = value & 0x0F;
+            if (mbc2RomBank == 0)
+                mbc2RomBank = 1;
+        }
+    } else if (address <= 0x1FFF) {
         ramEnabled = externalRam && !externalRam->empty() &&
                      (value & 0x0F) == 0x0A;
     } else if (address <= 0x3FFF) {
@@ -130,7 +157,7 @@ void Cartridge::write(uint16_t address, uint8_t value) {
             romBankLow = value & 0x1F;
             if (romBankLow == 0)
                 romBankLow = 1;
-        } else {
+        } else if (mapper == Mapper::Mbc3) {
             mbc3RomBank = value & 0x7F;
             if (mbc3RomBank == 0)
                 mbc3RomBank = 1;
@@ -138,7 +165,7 @@ void Cartridge::write(uint16_t address, uint8_t value) {
     } else if (address <= 0x5FFF) {
         if (mapper == Mapper::Mbc1)
             bankHigh = value & 0x03;
-        else
+        else if (mapper == Mapper::Mbc3)
             mbc3RamBank = value;
     } else if (address <= 0x7FFF) {
         if (mapper == Mapper::Mbc1)
@@ -185,6 +212,11 @@ uint8_t Cartridge::readExternalRam(uint16_t address) const {
     if (mapper == Mapper::Mbc3 && mbc3RamBank > 0x03)
         return 0xFF;
 
+    if (mapper == Mapper::Mbc2) {
+        const size_t offset = (address - 0xA000) & 0x01FF;
+        return 0xF0 | ((*externalRam)[offset] & 0x0F);
+    }
+
     const size_t offset = getSelectedRamBank() * RAM_BANK_SIZE +
                           (address - 0xA000);
     return (*externalRam)[offset % externalRam->size()];
@@ -195,6 +227,12 @@ void Cartridge::writeExternalRam(uint16_t address, uint8_t value) {
         return;
     if (mapper == Mapper::Mbc3 && mbc3RamBank > 0x03)
         return;
+
+    if (mapper == Mapper::Mbc2) {
+        const size_t offset = (address - 0xA000) & 0x01FF;
+        (*externalRam)[offset] = value & 0x0F;
+        return;
+    }
 
     const size_t offset = getSelectedRamBank() * RAM_BANK_SIZE +
                           (address - 0xA000);
@@ -208,6 +246,9 @@ size_t Cartridge::getRomBankCount() const {
 size_t Cartridge::getSelectedRomBank(uint16_t address) const {
     if (mapper == Mapper::RomOnly)
         return 0;
+
+    if (mapper == Mapper::Mbc2)
+        return address < 0x4000 ? 0 : mbc2RomBank % getRomBankCount();
 
     if (mapper == Mapper::Mbc3)
         return address < 0x4000 ? 0 : mbc3RomBank % getRomBankCount();

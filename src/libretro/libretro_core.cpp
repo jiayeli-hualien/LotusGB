@@ -139,6 +139,9 @@ bool isSupportedRom(const std::vector<uint8_t> &rom) {
     const uint8_t type = rom[CARTRIDGE_TYPE_OFFSET];
     if (type == 0x00)
         return rom.size() <= 0x8000;
+    if (type == 0x05 || type == 0x06)
+        return rom.size() >= 0x8000 && rom.size() <= 0x40000 &&
+               rom.size() % 0x4000 == 0;
     const bool supportedBankedType =
         type == 0x01 || type == 0x02 || type == 0x03 ||
         type == 0x11 || type == 0x12 || type == 0x13;

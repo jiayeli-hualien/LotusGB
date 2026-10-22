@@ -10,8 +10,8 @@
 
 namespace LOTUSGB {
 
-// Initial cartridge support: ROM-only, MBC1 ($01-$03), and MBC3 ($11-$13).
-// MBC3 timer variants are not supported yet.
+// Cartridge support: ROM-only, MBC1 ($01-$03), MBC2 ($05-$06), and MBC3
+// ($11-$13). MBC3 timer variants are not supported yet.
 class Cartridge final : public IAddressRegion {
 public:
     explicit Cartridge(
@@ -31,6 +31,7 @@ private:
     enum class Mapper {
         RomOnly,
         Mbc1,
+        Mbc2,
         Mbc3,
     };
 
@@ -50,6 +51,7 @@ private:
     uint8_t bankHigh = 0;
     uint8_t mbc3RomBank = 1;
     uint8_t mbc3RamBank = 0;
+    uint8_t mbc2RomBank = 1;
     bool ramBankingMode = false;
 };
 
