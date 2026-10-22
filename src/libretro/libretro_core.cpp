@@ -142,6 +142,9 @@ bool isSupportedRom(const std::vector<uint8_t> &rom) {
     if (type == 0x05 || type == 0x06)
         return rom.size() >= 0x8000 && rom.size() <= 0x40000 &&
                rom.size() % 0x4000 == 0;
+    if (type >= 0x19 && type <= 0x1E)
+        return rom.size() >= 0x8000 && rom.size() <= 0x800000 &&
+               rom.size() % 0x4000 == 0;
     const bool supportedBankedType =
         type == 0x01 || type == 0x02 || type == 0x03 ||
         type == 0x11 || type == 0x12 || type == 0x13;

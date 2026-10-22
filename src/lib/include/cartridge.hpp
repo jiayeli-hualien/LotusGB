@@ -10,8 +10,9 @@
 
 namespace LOTUSGB {
 
-// Cartridge support: ROM-only, MBC1 ($01-$03), MBC2 ($05-$06), and MBC3
-// ($11-$13). MBC3 timer variants are not supported yet.
+// Cartridge support: ROM-only, MBC1 ($01-$03), MBC2 ($05-$06), MBC3
+// ($11-$13), and MBC5 ($19-$1E). MBC3 timer variants are not supported yet;
+// MBC5 rumble motor output is not exposed.
 class Cartridge final : public IAddressRegion {
 public:
     explicit Cartridge(
@@ -33,6 +34,7 @@ private:
         Mbc1,
         Mbc2,
         Mbc3,
+        Mbc5,
     };
 
     uint8_t readRom(uint16_t address) const;
@@ -52,6 +54,9 @@ private:
     uint8_t mbc3RomBank = 1;
     uint8_t mbc3RamBank = 0;
     uint8_t mbc2RomBank = 1;
+    uint16_t mbc5RomBank = 1;
+    uint8_t mbc5RamBank = 0;
+    bool mbc5HasRumble = false;
     bool ramBankingMode = false;
 };
 

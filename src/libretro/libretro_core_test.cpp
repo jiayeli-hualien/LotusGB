@@ -102,7 +102,7 @@ void testLibretroLoadsAcid2AndPublishesReferenceFrame() {
     expect(!retro_load_game(nullptr), "core rejects missing game content");
 
     std::vector<uint8_t> unsupported = rom;
-    unsupported[0x0147] = 0x19; // MBC5 is not implemented yet.
+    unsupported[0x0147] = 0x22; // MBC7 is not implemented yet.
     retro_game_info unsupportedGame{};
     unsupportedGame.data = unsupported.data();
     unsupportedGame.size = unsupported.size();
@@ -306,6 +306,52 @@ void testLibretroExposesMbc2BatteryRam() {
     retro_unload_game();
 }
 
+void testLibretroPersistsMbc5BatteryRamAcrossFrontendReload() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x0A,             // LD A, $0A
+        0xEA, 0x00, 0x00,       // LD ($0000), A (enable cartridge RAM)
+        0xFA, 0x00, 0xA0,       // LD A, ($A000) (read loaded progress)
+        0x3C,                   // INC A
+        0xEA, 0x00, 0xA0,       // LD ($A000), A (update saved progress)
+        0x18, 0xFE,             // loop forever
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x0100);
+    rom[0x0147] = 0x1B; // MBC5 + RAM + battery
+    rom[0x0148] = 0x00; // 32 KiB ROM
+    rom[0x0149] = 0x02; // 8 KiB external RAM
+
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game),
+           "core loads an original-header MBC5 battery cartridge");
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x2000,
+           "libretro reports the MBC5 cartridge's declared RAM size");
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr, "MBC5 battery cartridge exposes save RAM data");
+    saveRam[0] = 0x04; // Simulate a frontend restoring an existing .srm.
+    retro_run();
+    expect(saveRam[0] == 0x05,
+           "MBC5 game reads restored progress and writes the updated value");
+
+    const std::vector<uint8_t> frontendSave(saveRam, saveRam + 0x2000);
+    retro_unload_game();
+    expect(retro_load_game(&game),
+           "core reloads the MBC5 battery cartridge after unloading it");
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x2000,
+           "reloaded MBC5 cartridge exposes the same save RAM size");
+    saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr, "reloaded MBC5 cartridge exposes save RAM data");
+    std::copy(frontendSave.begin(), frontendSave.end(), saveRam);
+    retro_run();
+    expect(saveRam[0] == 0x06,
+           "reloaded MBC5 game reads and advances its restored progress");
+    retro_unload_game();
+}
+
 void testLibretroPersistsMbc3BatteryRamAcrossFrontendReload() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -407,6 +453,7 @@ int main() {
     testLibretroPublishesPulseChannelAudio();
     testLibretroExposesMbc1BatteryRam();
     testLibretroExposesMbc2BatteryRam();
+    testLibretroPersistsMbc5BatteryRamAcrossFrontendReload();
     testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();
 
     retro_unload_game();

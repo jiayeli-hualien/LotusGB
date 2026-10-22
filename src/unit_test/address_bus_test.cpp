@@ -130,7 +130,7 @@ void testCartridgeRejectsUnsupportedSizesAndTypes() {
     expect(bankedSizeRejected, "ROM-only cartridge rejects ROMs requiring banking");
 
     std::vector<uint8_t> unsupportedRom(0x8000, 0);
-    unsupportedRom[0x0147] = 0x19; // MBC5 is not implemented yet.
+    unsupportedRom[0x0147] = 0x22; // MBC7 is not implemented yet.
     bool unsupportedTypeRejected = false;
     try {
         Cartridge cartridge(std::move(unsupportedRom));
@@ -149,6 +149,17 @@ void testCartridgeRejectsUnsupportedSizesAndTypes() {
     }
     expect(oversizedMbc2Rejected,
            "MBC2 rejects ROMs larger than its 16 selectable banks");
+
+    std::vector<uint8_t> oversizedMbc5(0x900000, 0);
+    oversizedMbc5[0x0147] = 0x1B;
+    bool oversizedMbc5Rejected = false;
+    try {
+        Cartridge cartridge(std::move(oversizedMbc5));
+    } catch (const std::invalid_argument &) {
+        oversizedMbc5Rejected = true;
+    }
+    expect(oversizedMbc5Rejected,
+           "MBC5 rejects ROMs larger than its 512 selectable banks");
 }
 
 void testMbc1RomAndRamBanking() {
@@ -337,6 +348,101 @@ void testMbc3RomAndRamBanking() {
            "MBC3 battery cartridge provides save RAM storage");
 }
 
+void testMbc5RomAndRamBanking() {
+    constexpr size_t ROM_BANKS = 512;
+    std::vector<uint8_t> rom(ROM_BANKS * 0x4000, 0);
+    for (size_t bank = 0; bank < ROM_BANKS; ++bank)
+        std::fill(rom.begin() + bank * 0x4000,
+                  rom.begin() + (bank + 1) * 0x4000,
+                  static_cast<uint8_t>(bank));
+    rom[0x100 * 0x4000 + 0x0100] = 0xA6;
+    rom[0x1FF * 0x4000 + 0x0100] = 0xB7;
+    rom[0x0147] = 0x1B; // MBC5 + RAM + battery
+    rom[0x0148] = 0x08; // 8 MiB, 512 banks
+    rom[0x0149] = 0x04; // 128 KiB, 16 RAM banks
+
+    Cartridge cartridge(std::move(rom));
+    AddressBus bus;
+    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
+
+    expect(bus.read(0x0000) == 0,
+           "MBC5 keeps ROM bank zero in the lower ROM window");
+    expect(bus.read(0x4000) == 1,
+           "MBC5 starts with ROM bank one in the switchable window");
+    bus.write(0x2000, 0x00);
+    expect(bus.read(0x4000) == 0,
+           "MBC5 permits ROM bank zero in the switchable window");
+    bus.write(0x2FFF, 0xFF);
+    expect(bus.read(0x4000) == 255,
+           "MBC5 selects the low eight bits of the ROM bank");
+    bus.write(0x3000, 0x01);
+    expect(bus.read(0x4100) == 0xB7,
+           "MBC5 combines the high bank bit with the low eight bits");
+    bus.write(0x2000, 0x00);
+    expect(bus.read(0x4100) == 0xA6,
+           "MBC5 low bank writes preserve the high bit and select bank 256");
+    bus.write(0x2FFF, 0xFF);
+    expect(bus.read(0x4100) == 0xB7,
+           "MBC5 restores low bank bits without losing high bank selection");
+
+    expect(cartridge.hasBattery() &&
+               cartridge.getExternalRamSize() == 0x20000,
+           "MBC5 battery RAM follows the 128 KiB header size");
+    expect(cartridge.getBatteryRamStorage() &&
+               cartridge.getBatteryRamStorage()->size() == 0x20000,
+           "MBC5 battery cartridge provides the declared save RAM block");
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC5 RAM reads are disabled after startup");
+    bus.write(0x0000, 0x0A);
+    bus.write(0x4000, 0x0F);
+    bus.write(0xA000, 0x5A);
+    expect(bus.read(0xA000) == 0x5A,
+           "MBC5 reads and writes the selected external RAM bank");
+    bus.write(0x4000, 0x00);
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC5 RAM banks keep independent contents");
+    bus.write(0xA000, 0xA5);
+    bus.write(0x4000, 0x0F);
+    expect(bus.read(0xA000) == 0x5A,
+           "MBC5 restores data from the selected high RAM bank");
+
+    std::vector<uint8_t> rumbleRom(0x8000, 0);
+    rumbleRom[0x0147] = 0x1E; // MBC5 + rumble + RAM + battery
+    rumbleRom[0x0148] = 0x00;
+    rumbleRom[0x0149] = 0x03; // 32 KiB, four RAM banks
+    Cartridge rumbleCartridge(std::move(rumbleRom));
+    expect(rumbleCartridge.hasBattery() &&
+               rumbleCartridge.getExternalRamSize() == 0x8000,
+           "MBC5 rumble cartridges use the supported 32 KiB RAM header size");
+    rumbleCartridge.write(0x0000, 0x0A);
+    rumbleCartridge.write(0x4000, 0x0B); // Motor bit set, RAM bank 3.
+    rumbleCartridge.write(0xA000, 0x6C);
+    expect(rumbleCartridge.read(0xA000) == 0x6C,
+           "MBC5 rumble control bit does not become part of the RAM bank");
+
+    std::vector<uint8_t> volatileRom(0x8000, 0);
+    volatileRom[0x0147] = 0x1A; // MBC5 + RAM, without battery
+    volatileRom[0x0149] = 0x02; // 8 KiB
+    Cartridge volatileCartridge(std::move(volatileRom));
+    expect(!volatileCartridge.hasBattery() &&
+               volatileCartridge.getExternalRamSize() == 0x2000 &&
+               !volatileCartridge.getBatteryRamStorage(),
+           "MBC5 RAM without a battery has no libretro save block");
+
+    std::vector<uint8_t> unsupportedRumbleRom(0x8000, 0);
+    unsupportedRumbleRom[0x0147] = 0x1E;
+    unsupportedRumbleRom[0x0149] = 0x05; // 64 KiB is unavailable with rumble.
+    bool rumbleRamSizeRejected = false;
+    try {
+        Cartridge unsupportedRumble(std::move(unsupportedRumbleRom));
+    } catch (const std::invalid_argument &) {
+        rumbleRamSizeRejected = true;
+    }
+    expect(rumbleRamSizeRejected,
+           "MBC5 rumble cartridges reject RAM sizes that overlap the motor bit");
+}
+
 void testMbc3RejectsUnsupportedRtcAndRamSizes() {
     for (uint8_t type : {uint8_t{0x0F}, uint8_t{0x10}}) {
         std::vector<uint8_t> rom(0x8000, 0);
@@ -389,6 +495,7 @@ int main() {
     testMbc1RomAndRamBanking();
     testMbc2RomAndNibbleRam();
     testMbc3RomAndRamBanking();
+    testMbc5RomAndRamBanking();
     testMbc3RejectsUnsupportedRtcAndRamSizes();
     testMbc3SupportsSmallExternalRamSizes();
     std::cout << "Address bus tests passed\n";

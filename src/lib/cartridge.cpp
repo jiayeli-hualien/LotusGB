@@ -11,6 +11,7 @@ constexpr size_t RAM_BANK_SIZE = 0x2000;
 constexpr size_t MINIMUM_BANKED_ROM_SIZE = 2 * ROM_BANK_SIZE;
 constexpr size_t MAXIMUM_MBC2_ROM_SIZE = 16 * ROM_BANK_SIZE;
 constexpr size_t MAXIMUM_MBC_ROM_SIZE = 2 * 1024 * 1024;
+constexpr size_t MAXIMUM_MBC5_ROM_SIZE = 8 * 1024 * 1024;
 constexpr size_t MBC2_RAM_SIZE = 0x0200;
 constexpr size_t CARTRIDGE_TYPE_OFFSET = 0x0147;
 constexpr size_t RAM_SIZE_OFFSET = 0x0149;
@@ -41,6 +42,28 @@ size_t getMbc3RamSize(uint8_t sizeCode) {
     default:
         throw std::invalid_argument("unsupported MBC3 RAM size");
     }
+}
+
+size_t getMbc5RamSize(uint8_t sizeCode, bool rumble) {
+    switch (sizeCode) {
+    case 0x00:
+        return 0;
+    case 0x02:
+        return 0x2000;
+    case 0x03:
+        return 0x8000;
+    case 0x04:
+        if (!rumble)
+            return 0x20000;
+        break;
+    case 0x05:
+        if (!rumble)
+            return 0x10000;
+        break;
+    default:
+        break;
+    }
+    throw std::invalid_argument("unsupported MBC5 RAM size");
 }
 
 }
@@ -124,6 +147,37 @@ Cartridge::Cartridge(std::vector<uint8_t> rom,
             }
         }
         return;
+    case 0x19:
+    case 0x1A:
+    case 0x1B:
+    case 0x1C:
+    case 0x1D:
+    case 0x1E: {
+        if (this->rom.size() < MINIMUM_BANKED_ROM_SIZE ||
+            this->rom.size() > MAXIMUM_MBC5_ROM_SIZE ||
+            this->rom.size() % ROM_BANK_SIZE != 0)
+            throw std::invalid_argument("MBC5 cartridge must contain 32 KiB to 8 MiB of banked ROM");
+        mapper = Mapper::Mbc5;
+        mbc5HasRumble = type >= 0x1C;
+        battery = type == 0x1B || type == 0x1E;
+        const bool hasRam = type == 0x1A || type == 0x1B ||
+                            type == 0x1D || type == 0x1E;
+        if (hasRam) {
+            const uint8_t sizeCode = this->rom.size() > RAM_SIZE_OFFSET
+                                         ? this->rom[RAM_SIZE_OFFSET]
+                                         : 0x00;
+            const size_t ramSize = getMbc5RamSize(sizeCode, mbc5HasRumble);
+            if (battery && saveRam) {
+                if (saveRam->size() != ramSize)
+                    throw std::invalid_argument("MBC5 save RAM size does not match the cartridge header");
+                externalRam = std::move(saveRam);
+            } else {
+                externalRam = std::make_shared<std::vector<uint8_t>>(
+                    ramSize, 0xFF);
+            }
+        }
+        return;
+    }
     default:
         throw std::invalid_argument("unsupported Game Boy cartridge type");
     }
@@ -141,7 +195,23 @@ void Cartridge::write(uint16_t address, uint8_t value) {
     if (mapper == Mapper::RomOnly)
         return;
 
-    if (mapper == Mapper::Mbc2 && address <= 0x3FFF) {
+    if (mapper == Mapper::Mbc5) {
+        if (address <= 0x1FFF) {
+            ramEnabled = externalRam && !externalRam->empty() &&
+                         (value & 0x0F) == 0x0A;
+        } else if (address <= 0x2FFF) {
+            mbc5RomBank = (mbc5RomBank & 0x0100) | value;
+        } else if (address <= 0x3FFF) {
+            mbc5RomBank = (mbc5RomBank & 0x00FF) |
+                          ((value & 0x01) << 8);
+        } else if (address <= 0x5FFF) {
+            // Rumble cartridges use bit 3 for the motor and only bits 0-2
+            // for RAM banking. The motor signal is not exposed by this core.
+            mbc5RamBank = value & (mbc5HasRumble ? 0x07 : 0x0F);
+        } else if (address >= 0xA000 && address <= 0xBFFF) {
+            writeExternalRam(address, value);
+        }
+    } else if (mapper == Mapper::Mbc2 && address <= 0x3FFF) {
         if ((address & 0x0100) == 0) {
             ramEnabled = (value & 0x0F) == 0x0A;
         } else {
@@ -253,6 +323,9 @@ size_t Cartridge::getSelectedRomBank(uint16_t address) const {
     if (mapper == Mapper::Mbc3)
         return address < 0x4000 ? 0 : mbc3RomBank % getRomBankCount();
 
+    if (mapper == Mapper::Mbc5)
+        return address < 0x4000 ? 0 : mbc5RomBank % getRomBankCount();
+
     size_t bank = 0;
     if (address < 0x4000) {
         if (ramBankingMode)
@@ -266,6 +339,8 @@ size_t Cartridge::getSelectedRomBank(uint16_t address) const {
 size_t Cartridge::getSelectedRamBank() const {
     if (mapper == Mapper::Mbc3)
         return mbc3RamBank;
+    if (mapper == Mapper::Mbc5)
+        return mbc5RamBank;
     if (!ramBankingMode || !externalRam ||
         externalRam->size() <= RAM_BANK_SIZE)
         return 0;
