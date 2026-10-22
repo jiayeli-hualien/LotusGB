@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "IMemoryAccess.hpp"
@@ -20,6 +21,8 @@ class AddressBus final : public IMemoryAccess {
 public:
     // Mapped regions are borrowed and must outlive this bus.
     void map(uint16_t start, uint16_t end, IAddressRegion &region);
+    // Called at the CPU bus phase, before dispatching a read or write.
+    void setCpuBusAccessCallback(std::function<void()> callback);
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
     void resize(size_t) override {}
@@ -31,7 +34,10 @@ private:
         IAddressRegion *region;
     };
 
+    void onCpuBusAccess();
+
     std::vector<Mapping> mappings;
+    std::function<void()> cpuBusAccessCallback;
 };
 
 }

@@ -97,6 +97,9 @@ private:
     uint8_t waveSampleBuffer = 0;
     uint16_t frequencyTimer3 = 0;
     std::array<uint8_t, 16> waveRam{};
+    uint64_t elapsedTCycles = 0;
+    uint64_t lastWaveRamFetchTCycle = 0;
+    bool hasWaveRamFetch = false;
 
     bool channel4Enabled = false;
     bool channel4DacEnabled = false;

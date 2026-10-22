@@ -86,8 +86,20 @@ void testWaveChannelReadsWaveRamAndRoutesStereoOutput() {
     expect(apu.read(0xFF26) == 0xF4,
            "NR52 reports channel 3 active");
     expect(apu.read(0xFF30) == 0xFF,
-           "active channel 3 blocks wave RAM reads at M-cycle granularity");
-    apu.write(0xFF30, 0x00);
+           "wave RAM reads are blocked until channel 3 fetches a sample");
+
+    apu.advanceTCycles(9);
+    expect(apu.read(0xFF3F) == 0xFF,
+           "wave RAM remains blocked until the trigger startup delay expires");
+    apu.advanceTCycles(1);
+    expect(apu.read(0xFF3F) == 0xF0,
+           "a wave RAM read on the channel 3 fetch cycle aliases the fetched byte");
+    apu.write(0xFF3F, 0x00);
+    expect(apu.read(0xFF30) == 0x00,
+           "a wave RAM write on the fetch cycle targets the byte selected by channel 3");
+    apu.advanceTCycles(1);
+    expect(apu.read(0xFF30) == 0xFF,
+           "wave RAM access is blocked after the channel 3 fetch cycle");
 
     apu.advanceTCycles(50000);
     const auto samples = apu.takeAudioSamples();
@@ -107,8 +119,10 @@ void testWaveChannelReadsWaveRamAndRoutesStereoOutput() {
     apu.write(0xFF1A, 0x00); // Disable channel 3 DAC.
     expect((apu.read(0xFF26) & 0x04) == 0,
            "disabling channel 3 DAC clears its NR52 status bit");
-    expect(apu.read(0xFF30) == 0xF0,
-           "blocked wave RAM writes do not alter the stored waveform");
+    expect(apu.read(0xFF30) == 0x00,
+           "a same-cycle write updates the channel-selected wave RAM byte");
+    expect(apu.read(0xFF31) == 0xF0,
+           "the same-cycle write does not use the CPU-requested address");
     apu.write(0xFF30, 0xAA);
     expect(apu.read(0xFF30) == 0xAA,
            "wave RAM is accessible again after channel 3 stops");

@@ -28,16 +28,20 @@ constexpr uint16_t WAVE_RAM_END = 0xFF3F;
 constexpr uint16_t NR50 = 0xFF24;
 constexpr uint16_t NR51 = 0xFF25;
 constexpr uint16_t NR52 = 0xFF26;
+constexpr uint16_t T_CYCLES_PER_APU_TICK = 2;
+constexpr uint16_t CH3_TRIGGER_STARTUP_APU_TICKS = 3;
 constexpr uint32_t DMG_MASTER_CLOCK = 4194304;
 constexpr uint8_t DUTY_PATTERNS[4] = {0x01, 0x81, 0x87, 0x7E};
 }
 
 uint8_t DmgApu::read(uint16_t address) {
     if (address >= WAVE_RAM_START && address <= WAVE_RAM_END) {
-        // The M-cycle bus model cannot expose DMG's narrow active-channel
-        // access window, so active playback blocks wave RAM access.
-        if (channel3Enabled)
-            return 0xFF;
+        if (channel3Enabled) {
+            const bool fetchCycle = hasWaveRamFetch &&
+                                    elapsedTCycles == lastWaveRamFetchTCycle;
+            const uint8_t value = fetchCycle ? waveRam[waveSampleIndex / 2] : 0xFF;
+            return value;
+        }
         return waveRam[address - WAVE_RAM_START];
     }
 
@@ -79,9 +83,12 @@ void DmgApu::write(uint16_t address, uint8_t value) {
     }
 
     if (address >= WAVE_RAM_START && address <= WAVE_RAM_END) {
-        // See read(): precise access requires bus timing finer than one M-cycle.
-        if (!channel3Enabled)
+        if (!channel3Enabled) {
             waveRam[address - WAVE_RAM_START] = value;
+        } else if (hasWaveRamFetch &&
+                   elapsedTCycles == lastWaveRamFetchTCycle) {
+            waveRam[waveSampleIndex / 2] = value;
+        }
         return;
     }
 
@@ -195,6 +202,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
 
 void DmgApu::advanceTCycles(uint64_t tCycles) {
     for (uint64_t cycle = 0; cycle < tCycles; ++cycle) {
+        ++elapsedTCycles;
         if (powered) {
             advanceChannel1();
             advanceChannel2();
@@ -366,8 +374,12 @@ void DmgApu::triggerChannel3() {
     channel3Enabled = channel3DacEnabled;
     if (lengthCounter3 == 0)
         lengthCounter3 = 256;
-    frequencyTimer3 = static_cast<uint16_t>(2 * (2048 - channel3Frequency()));
+    // The first wave fetch follows the trigger by three additional APU ticks.
+    frequencyTimer3 = static_cast<uint16_t>(T_CYCLES_PER_APU_TICK *
+                                            (2048 - channel3Frequency() +
+                                             CH3_TRIGGER_STARTUP_APU_TICKS));
     waveSampleIndex = 0;
+    hasWaveRamFetch = false;
 }
 
 void DmgApu::triggerChannel4() {
@@ -409,9 +421,12 @@ void DmgApu::advanceChannel3() {
     if (frequencyTimer3 > 0)
         --frequencyTimer3;
     if (frequencyTimer3 == 0) {
-        frequencyTimer3 = static_cast<uint16_t>(2 * (2048 - channel3Frequency()));
+        frequencyTimer3 = static_cast<uint16_t>(T_CYCLES_PER_APU_TICK *
+                                                (2048 - channel3Frequency()));
         waveSampleIndex = static_cast<uint8_t>((waveSampleIndex + 1) & 0x1F);
         const uint8_t waveByte = waveRam[waveSampleIndex / 2];
+        lastWaveRamFetchTCycle = elapsedTCycles;
+        hasWaveRamFetch = true;
         waveSampleBuffer = (waveSampleIndex & 1) == 0
                                ? static_cast<uint8_t>(waveByte >> 4)
                                : static_cast<uint8_t>(waveByte & 0x0F);

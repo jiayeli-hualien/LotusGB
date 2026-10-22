@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <vector>
 
@@ -22,6 +23,8 @@ public:
     RetStepOneCycle stepOneCycle() override {
         if (nextResult >= results.size())
             return {};
+        if (duringStep)
+            duringStep();
         return results[nextResult++];
     }
     Reg getReg() override { return {}; }
@@ -35,6 +38,7 @@ public:
 
     std::vector<RetStepOneCycle> results;
     size_t nextResult = 0;
+    std::function<void()> duringStep;
 };
 
 class ClockedSpy final : public IClockedComponent {
@@ -82,9 +86,25 @@ void testSystemClockDistributesSuccessfulCpuTime() {
     expect(timer.advances.size() == 2, "failed CPU step does not tick peripherals");
 }
 
+void testSystemClockAdvancesDevicesToCpuBusPhaseBeforeTransaction() {
+    ScriptedCpu cpu;
+    cpu.results = {{true, false, T_CYCLES_PER_M_CYCLE}};
+    ClockedSpy apu;
+    SystemClock clock(cpu);
+    clock.addClockedComponent(apu);
+    cpu.duringStep = [&clock] { clock.advanceToCpuBusAccess(); };
+
+    expect(clock.step().success, "system clock accepts a CPU bus transaction");
+    expect(apu.advances == std::vector<uint64_t>{T_CYCLES_PER_M_CYCLE - 1, 1},
+           "devices advance to the bus phase, then through the M-cycle remainder");
+    expect(clock.getElapsedTCycles() == T_CYCLES_PER_M_CYCLE,
+           "bus-phase splitting preserves total elapsed time");
+}
+
 }
 
 int main() {
     testSystemClockDistributesSuccessfulCpuTime();
+    testSystemClockAdvancesDevicesToCpuBusPhaseBeforeTransaction();
     std::cout << "System clock tests passed\n";
 }

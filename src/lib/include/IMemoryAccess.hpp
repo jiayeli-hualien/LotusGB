@@ -6,9 +6,9 @@
 namespace LOTUSGB {
 
 class IMemoryAccess {
-    // CPU read/write calls occur synchronously inside the M-cycle being
-    // advanced by ICPU::stepOneCycle(). A system bus can therefore observe
-    // each transaction at M-cycle granularity; T-cycle ordering is deferred.
+    // CPU read/write calls occur at the bus phase within the M-cycle advanced
+    // by ICPU::stepOneCycle(). Implementations may synchronize devices to that
+    // point before completing the transaction.
 public:
     virtual ~IMemoryAccess() = default;
     virtual uint8_t read(uint16_t addr) = 0;

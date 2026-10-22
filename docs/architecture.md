@@ -6,7 +6,7 @@ This document describes the implemented emulator, not a target design. Update it
 
 LotusGB currently runs ROM-only DMG cartridges up to 32 KiB. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
 
-The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, a partial PPU, OAM DMA, and an initial APU implementation. The APU generates audio for pulse channels 1 and 2, wave channel 3, and noise channel 4. Wave RAM is blocked during active channel 3 playback because the bus model does not yet resolve its narrow access window. Cartridge banking and save persistence, boot-ROM execution, and more complete PPU/APU timing are not implemented.
+The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, a partial PPU, OAM DMA, and an initial APU implementation. The APU generates audio for pulse channels 1 and 2, wave channel 3, and noise channel 4. LotusGB schedules CPU bus transactions after three T-cycles of each four-T-cycle M-cycle. Clocked devices advance to that point before the transaction, then advance the remaining T-cycle. This lets DMG CH3 expose wave RAM only on its sample-fetch T-cycle. Cartridge banking and save persistence, boot-ROM execution, and more complete PPU/APU timing are not implemented.
 
 ## Runtime flow
 
@@ -37,7 +37,7 @@ flowchart TD
     LR -->|video and audio callbacks| RA
 ```
 
-`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. The CPU's bus accesses happen synchronously during that step; after the CPU reports elapsed T-cycles, the clock advances the timer, APU, and PPU by that amount. The timer sends the APU a clock event when divider bit 12 falls, including when a DIV write resets that bit from high to low; the APU uses this to clock its frame sequencer. A zero-time CPU step does not advance system time or peripherals.
+`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. On the first bus access during the step, it advances the timer, APU, and PPU by three T-cycles before dispatching the transaction; it advances the remaining T-cycle after the CPU step. A step without a bus access advances all reported T-cycles after the CPU step. The timer sends the APU a clock event when divider bit 12 falls, including when a DIV write resets that bit from high to low; the APU uses this to clock its frame sequencer. A zero-time CPU step does not advance system time or peripherals.
 
 `GameBoySystem` owns the hardware components. `AddressBus` routes CPU accesses to mapped regions and borrows those regions; the system keeps them alive. RetroArch callbacks and lifecycle handling stay in the libretro adapter, outside CPU and hardware components.
 

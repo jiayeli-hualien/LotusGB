@@ -122,6 +122,50 @@ void testSystemTimerClocksApuFrameSequencer() {
            "Timer DIV falling edge reaches the APU and clocks channel length");
 }
 
+void testSystemBusMapsWaveRamToApu() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x80,       // LD A, $80
+        0xE0, 0x26,       // LDH ($FF26), A (power on APU)
+        0x3E, 0xF0,       // LD A, $F0
+        0xE0, 0x30,       // LDH ($FF30), A (write wave RAM)
+        0x3E, 0x80,       // LD A, $80
+        0xE0, 0x1A,       // LDH ($FF1A), A (enable channel 3 DAC)
+        0x3E, 0x20,       // LD A, $20
+        0xE0, 0x1C,       // LDH ($FF1C), A (full wave output level)
+        0x3E, 0xFE,       // LD A, $FE
+        0xE0, 0x1D,       // LDH ($FF1D), A
+        0x3E, 0x87,       // LD A, $87
+        0xE0, 0x1E,       // LDH ($FF1E), A (trigger channel 3)
+        0x3E, 0x70,       // LD A, $70
+        0xE0, 0x24,       // LDH ($FF24), A (left volume)
+        0x3E, 0x40,       // LD A, $40
+        0xE0, 0x25,       // LDH ($FF25), A (route channel 3 left)
+        0x18, 0xFE,       // JR $ (keep the system running)
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
+    const RetStepFrame frame = system.stepFrame();
+    expect(frame.success && frame.frameCompleted,
+           "channel 3 system-bus integration frame completes");
+    const auto samples = system.takeAudioSamples();
+
+    bool hasLeftAudio = false;
+    bool changesOverTime = false;
+    int16_t previousLeft = samples.empty() ? 0 : samples[0];
+    for (size_t i = 0; i < samples.size(); i += 2) {
+        hasLeftAudio |= samples[i] != 0;
+        changesOverTime |= samples[i] != previousLeft;
+        previousLeft = samples[i];
+        expect(samples[i + 1] == 0,
+               "system-routed wave channel does not leak into the right output");
+    }
+    expect(hasLeftAudio && changesOverTime,
+           "CPU writes to mapped wave RAM produce changing channel 3 PCM");
+}
+
 void testGameBoySystemAcceptsButtonInput() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -265,6 +309,7 @@ int main() {
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
     testTimerInterruptWakesHaltAndRunsHandler();
     testSystemTimerClocksApuFrameSequencer();
+    testSystemBusMapsWaveRamToApu();
     testGameBoySystemAcceptsButtonInput();
     testPpuAdvancesAndExposesScanlineThroughSystemBus();
     testGameBoySystemExposesRenderedFrameBuffer();

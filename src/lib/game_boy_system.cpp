@@ -22,6 +22,8 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
       oamDma(bus, ppu),
       cpu(bus, decoder, decoderCB, &interruptRegisters),
       systemClock(cpu) {
+    bus.setCpuBusAccessCallback(
+        [this] { systemClock.advanceToCpuBusAccess(); });
     timer.setDividerApuClockCallback([this] { apu.onDividerApuFallingEdge(); });
 
     bus.map(0x0000, 0x7FFF, cartridge);
@@ -32,6 +34,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     bus.map(0xFF00, 0xFF00, joypad);
     bus.map(0xFF04, 0xFF07, timer);
     bus.map(0xFF10, 0xFF26, apu);
+    bus.map(0xFF30, 0xFF3F, apu);
     bus.map(0xFF40, 0xFF45, ppu);
     bus.map(0xFF47, 0xFF4B, ppu);
     bus.map(0xFF46, 0xFF46, oamDma);
