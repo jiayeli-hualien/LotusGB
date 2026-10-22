@@ -4,7 +4,7 @@ This document describes the implemented emulator, not a target design. Update it
 
 ## Current scope
 
-LotusGB currently runs ROM-only DMG cartridges up to 32 KiB and MBC1 types `$01`–`$03` with up to 2 MiB of ROM and 32 KiB of external RAM. Battery-backed RAM is exposed through libretro's save RAM memory interface, and the frontend owns disk persistence. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
+LotusGB currently runs ROM-only DMG cartridges up to 32 KiB, MBC1 types `$01`–`$03`, and MBC3 types `$11`–`$13`, with up to 2 MiB of ROM and 32 KiB of external RAM. MBC3 timer variants and MBC30-sized RAM are not supported. Battery-backed RAM is exposed through libretro's save RAM memory interface, and the frontend owns disk persistence. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
 
 The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, a partial PPU, OAM DMA, and an initial APU implementation. The APU generates audio for pulse channels 1 and 2, wave channel 3, and noise channel 4. LotusGB schedules CPU bus transactions after three T-cycles of each four-T-cycle M-cycle. Clocked devices advance to that point before the transaction, then advance the remaining T-cycle. This lets DMG CH3 expose wave RAM only on its sample-fetch T-cycle. Other cartridge mappers, boot-ROM execution, and more complete PPU/APU timing are not implemented.
 
@@ -20,7 +20,7 @@ flowchart TD
     CLOCK -->|one M-cycle| CPU[CPU and opcode decoder]
     CPU <-->|synchronous reads and writes| BUS[AddressBus]
 
-    BUS --> CART[ROM-only or MBC1 cartridge and external RAM]
+    BUS --> CART[ROM-only, MBC1, or MBC3 cartridge and external RAM]
     BUS --> RAM[WRAM and HRAM]
     BUS --> IO[Mapped hardware registers]
     IO --> JOY[Joypad and interrupts]
@@ -48,7 +48,7 @@ flowchart TD
 | --- | --- | --- |
 | CPU and instruction execution | `src/lib/GBCPU.cpp`, `src/lib/decoder.cpp`, `src/lib/instSubFunc*.cpp` | Execute instructions in M-cycle steps and report memory accesses, flags, and CPU state. |
 | System composition and clock | `src/lib/game_boy_system.cpp`, `src/lib/system_clock.cpp` | Own and connect hardware, initialize the default post-boot profile, and advance components from CPU time. |
-| Memory and hardware | `src/lib/address_bus.cpp`, `src/lib/cartridge.cpp`, `src/lib/memory_region.cpp`, `src/lib/timer.cpp`, `src/lib/dmg_apu.cpp`, `src/lib/dmg_ppu.cpp`, `src/lib/dmg_oam_dma.cpp` | Implement mapped memory regions, ROM-only/MBC1 cartridges, external RAM, and DMG devices. |
+| Memory and hardware | `src/lib/address_bus.cpp`, `src/lib/cartridge.cpp`, `src/lib/memory_region.cpp`, `src/lib/timer.cpp`, `src/lib/dmg_apu.cpp`, `src/lib/dmg_ppu.cpp`, `src/lib/dmg_oam_dma.cpp` | Implement mapped memory regions, ROM-only/MBC1/MBC3 cartridges, external RAM, and DMG devices. |
 | Frontend adapter | `src/libretro/libretro_core.cpp` | Load supported content, poll RetroArch input, run frames, and deliver video/audio callbacks. |
 | Tests and test ROMs | `src/unit_test/`, `tests/roms/` | Check observable component, system, rendering, and frontend behavior. |
 

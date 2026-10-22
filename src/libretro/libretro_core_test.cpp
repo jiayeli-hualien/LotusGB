@@ -250,6 +250,45 @@ void testLibretroExposesMbc1BatteryRam() {
     retro_unload_game();
 }
 
+void testLibretroExposesMbc3BatteryRam() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x0A,             // LD A, $0A
+        0xEA, 0x00, 0x00,       // LD ($0000), A (enable cartridge RAM)
+        0x3E, 0x02,             // LD A, $02
+        0xEA, 0x00, 0x40,       // LD ($4000), A (select RAM bank 2)
+        0x3E, 0x5A,             // LD A, $5A
+        0xEA, 0x00, 0xA0,       // LD ($A000), A
+        0x18, 0xFE,             // loop forever
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x0100);
+    rom[0x0147] = 0x13; // MBC3 + RAM + battery
+    rom[0x0148] = 0x00; // 32 KiB ROM
+    rom[0x0149] = 0x03; // 32 KiB external RAM
+
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game),
+           "core loads an original-header MBC3 battery cartridge");
+    for (unsigned frame = 0; frame < 2; ++frame)
+        retro_run();
+
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x8000,
+           "libretro reports the MBC3 cartridge's declared external RAM size");
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr && saveRam[0x4000] == 0x5A,
+           "CPU writes to MBC3 RAM reach the selected libretro save RAM bank");
+    uint8_t *stableSaveRamPointer = saveRam;
+    retro_reset();
+    saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam == stableSaveRamPointer && saveRam[0x4000] == 0x5A,
+           "MBC3 system reset preserves the frontend-owned save RAM buffer");
+    retro_unload_game();
+}
+
 void testLibretroReportsApiAndVideoTiming() {
     expect(retro_api_version() == RETRO_API_VERSION,
            "core reports the libretro API version");
@@ -288,6 +327,7 @@ int main() {
     testLibretroInputChangesPongGameplayFrame();
     testLibretroPublishesPulseChannelAudio();
     testLibretroExposesMbc1BatteryRam();
+    testLibretroExposesMbc3BatteryRam();
 
     retro_unload_game();
     retro_deinit();

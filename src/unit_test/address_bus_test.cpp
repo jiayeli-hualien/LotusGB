@@ -199,6 +199,102 @@ void testMbc1RomAndRamBanking() {
            "MBC1 battery cartridge provides stable save RAM storage");
 }
 
+void testMbc3RomAndRamBanking() {
+    constexpr size_t ROM_BANKS = 128;
+    std::vector<uint8_t> rom(ROM_BANKS * 0x4000, 0);
+    for (size_t bank = 0; bank < ROM_BANKS; ++bank)
+        std::fill(rom.begin() + bank * 0x4000,
+                  rom.begin() + (bank + 1) * 0x4000,
+                  static_cast<uint8_t>(bank));
+    rom[0x0147] = 0x13; // MBC3 + RAM + battery
+    rom[0x0148] = 0x06; // 2 MiB, 128 banks
+    rom[0x0149] = 0x03; // 32 KiB, four RAM banks
+
+    Cartridge cartridge(std::move(rom));
+    AddressBus bus;
+    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
+
+    expect(bus.read(0x0000) == 0,
+           "MBC3 keeps ROM bank zero in the lower ROM window");
+    expect(bus.read(0x4000) == 1,
+           "MBC3 starts with ROM bank one in the switchable window");
+    bus.write(0x2000, 0x7F);
+    expect(bus.read(0x4000) == 0x7F,
+           "MBC3 selects its highest ROM bank with the seven-bit register");
+    bus.write(0x2000, 0x00);
+    expect(bus.read(0x4000) == 1,
+           "MBC3 maps ROM bank zero to bank one");
+
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC3 external RAM reads are disabled after startup");
+    bus.write(0x0000, 0x0A);
+    bus.write(0x4000, 0x02);
+    bus.write(0xA000, 0x5A);
+    expect(bus.read(0xA000) == 0x5A,
+           "MBC3 reads and writes the selected external RAM bank");
+    bus.write(0x4000, 0x01);
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC3 external RAM banks keep independent contents");
+    bus.write(0x4000, 0x08);
+    expect(bus.read(0xA000) == 0xFF,
+           "MBC3 timer register selections remain unmapped without RTC support");
+    bus.write(0xA000, 0xA5);
+    bus.write(0x4000, 0x00);
+    expect(bus.read(0xA000) == 0xFF,
+           "unsupported MBC3 register selections do not alter RAM");
+    bus.write(0x4000, 0x02);
+    expect(bus.read(0xA000) == 0x5A,
+           "MBC3 RAM retains data after an unsupported register selection");
+
+    expect(cartridge.hasBattery() && cartridge.getExternalRamSize() == 0x8000,
+           "MBC3 battery cartridge exposes its declared save RAM");
+    expect(cartridge.getExternalRamData() != nullptr,
+           "MBC3 battery cartridge provides save RAM storage");
+}
+
+void testMbc3RejectsUnsupportedRtcAndRamSizes() {
+    for (uint8_t type : {uint8_t{0x0F}, uint8_t{0x10}}) {
+        std::vector<uint8_t> rom(0x8000, 0);
+        rom[0x0147] = type;
+        rom[0x0149] = 0x02;
+        bool rejected = false;
+        try {
+            Cartridge cartridge(std::move(rom));
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+        expect(rejected, "MBC3 RTC cartridges are rejected until RTC is implemented");
+    }
+
+    std::vector<uint8_t> unsupportedRamRom(0x8000, 0);
+    unsupportedRamRom[0x0147] = 0x13;
+    unsupportedRamRom[0x0149] = 0x04; // MBC30-sized RAM
+    bool unsupportedRamRejected = false;
+    try {
+        Cartridge cartridge(std::move(unsupportedRamRom));
+    } catch (const std::invalid_argument &) {
+        unsupportedRamRejected = true;
+    }
+    expect(unsupportedRamRejected,
+           "MBC3 rejects the larger MBC30 RAM size until it is implemented");
+}
+
+void testMbc3SupportsSmallExternalRamSizes() {
+    const std::pair<uint8_t, size_t> ramSizes[] = {
+        {0x01, 0x0800}, // 2 KiB
+        {0x02, 0x2000}, // 8 KiB
+    };
+    for (const auto &[sizeCode, expectedSize] : ramSizes) {
+        std::vector<uint8_t> rom(0x8000, 0);
+        rom[0x0147] = 0x12; // MBC3 + RAM
+        rom[0x0149] = sizeCode;
+        Cartridge cartridge(std::move(rom));
+        expect(cartridge.getExternalRamSize() == expectedSize,
+               "MBC3 allocates the external RAM size declared by the header");
+    }
+}
+
 }
 
 int main() {
@@ -207,5 +303,8 @@ int main() {
     testRomOnlyCartridgeAndRamRegions();
     testCartridgeRejectsUnsupportedSizesAndTypes();
     testMbc1RomAndRamBanking();
+    testMbc3RomAndRamBanking();
+    testMbc3RejectsUnsupportedRtcAndRamSizes();
+    testMbc3SupportsSmallExternalRamSizes();
     std::cout << "Address bus tests passed\n";
 }

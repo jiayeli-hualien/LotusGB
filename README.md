@@ -5,9 +5,10 @@ LotusGB is a learning project to build a Nintendo Game Boy emulator in C++.
 ## Project status
 
 The repository contains a CPU implementation, a headless DMG system, and a
-libretro adapter for RetroArch. It supports ROM-only games up to 32 KiB and
-MBC1 cartridge types `$01`–`$03` with ROM banking up to 2 MiB and up to 32 KiB
-of external RAM. Battery-backed RAM is exposed through libretro's save RAM
+libretro adapter for RetroArch. It supports ROM-only games up to 32 KiB,
+MBC1 cartridge types `$01`–`$03`, and MBC3 types `$11`–`$13` with ROM banking
+up to 2 MiB and up to 32 KiB of external RAM. MBC3 timer variants are not
+supported yet. Battery-backed RAM is exposed through libretro's save RAM
 interface for RetroArch to persist. The core also supports joypad input, a
 partial DMG PPU, and all four DMG APU channels. The default startup profile
 skips the boot ROM. Other cartridge mappers, boot-ROM execution, and more exact
@@ -21,17 +22,17 @@ elapsed T-cycles to the hardware components.
 
 ### Near term
 
-- Expand CPU regression coverage for flag edge cases and externally observable
-  cycle/bus timing, using GBIT and targeted timing tests.
-- Keep modeling CPU work in M-cycle steps. Defer internal ALU substeps unless
-  later system components need that detail for observable bus or clock timing.
-- Maintain GitHub Actions CI for the project build, CPU unit tests, and GBIT
-  instruction tests.
+- Refine DMG audio and visual compatibility with focused tests and reference
+  games; F-1 Race is a PPU visual target.
+- Broaden cartridge support and validate battery-backed save behavior with
+  games that store progress.
+- Maintain GitHub Actions CI for the build, unit tests, and GBIT instruction
+  tests.
 
 ### Longer term
 
-- Implement the remaining Game Boy system components.
-- Add a libretro adapter so the emulator can run as a RetroArch core.
+- Verify the libretro core on Steam Deck and Raspberry Pi with Recalbox.
+- Add Windows build and CI coverage after the core behavior is established.
 
 ## Building
 

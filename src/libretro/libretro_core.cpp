@@ -131,7 +131,7 @@ retro_input_descriptor INPUT_DESCRIPTORS[] = {
 
 bool isSupportedRom(const std::vector<uint8_t> &rom) {
     constexpr size_t MINIMUM_HEADER_SIZE = 0x150;
-    constexpr size_t MAX_MBC1_SIZE = 0x200000;
+    constexpr size_t MAX_BANKED_ROM_SIZE = 0x200000;
     constexpr size_t CARTRIDGE_TYPE_OFFSET = 0x0147;
     if (rom.size() < MINIMUM_HEADER_SIZE)
         return false;
@@ -139,8 +139,11 @@ bool isSupportedRom(const std::vector<uint8_t> &rom) {
     const uint8_t type = rom[CARTRIDGE_TYPE_OFFSET];
     if (type == 0x00)
         return rom.size() <= 0x8000;
-    return (type == 0x01 || type == 0x02 || type == 0x03) &&
-           rom.size() >= 0x8000 && rom.size() <= MAX_MBC1_SIZE &&
+    const bool supportedBankedType =
+        type == 0x01 || type == 0x02 || type == 0x03 ||
+        type == 0x11 || type == 0x12 || type == 0x13;
+    return supportedBankedType && rom.size() >= 0x8000 &&
+           rom.size() <= MAX_BANKED_ROM_SIZE &&
            rom.size() % 0x4000 == 0;
 }
 

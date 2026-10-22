@@ -10,7 +10,8 @@
 
 namespace LOTUSGB {
 
-// Initial cartridge support: ROM-only and the MBC1 variants (types $01-$03).
+// Initial cartridge support: ROM-only, MBC1 ($01-$03), and MBC3 ($11-$13).
+// MBC3 timer variants are not supported yet.
 class Cartridge final : public IAddressRegion {
 public:
     explicit Cartridge(
@@ -27,6 +28,12 @@ public:
     std::shared_ptr<std::vector<uint8_t>> getBatteryRamStorage() const;
 
 private:
+    enum class Mapper {
+        RomOnly,
+        Mbc1,
+        Mbc3,
+    };
+
     uint8_t readRom(uint16_t address) const;
     uint8_t readExternalRam(uint16_t address) const;
     void writeExternalRam(uint16_t address, uint8_t value);
@@ -36,11 +43,13 @@ private:
 
     std::vector<uint8_t> rom;
     std::shared_ptr<std::vector<uint8_t>> externalRam;
-    bool mbc1 = false;
+    Mapper mapper = Mapper::RomOnly;
     bool battery = false;
     bool ramEnabled = false;
     uint8_t romBankLow = 1;
     uint8_t bankHigh = 0;
+    uint8_t mbc3RomBank = 1;
+    uint8_t mbc3RamBank = 0;
     bool ramBankingMode = false;
 };
 
