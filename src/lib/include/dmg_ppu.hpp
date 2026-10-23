@@ -11,8 +11,9 @@
 
 namespace LOTUSGB {
 
-// Initial DMG PPU timing, memory interface, and scanline renderer. Mode 3
-// currently uses its minimum duration without rendering penalties.
+// Initial DMG PPU timing, memory interface, and scanline renderer. Pixels are
+// emitted during mode 3, which currently uses its minimum duration without
+// rendering penalties.
 class DmgPpu final : public IAddressRegion, public IClockedComponent {
 public:
     static constexpr size_t FRAME_WIDTH = 160;
@@ -39,9 +40,9 @@ private:
     bool statInterruptSignal() const;
     void updateStatInterruptLine();
     void advanceDot();
-    void renderScanline();
-    void renderObjects(const std::array<uint8_t, FRAME_WIDTH> &bgColorIndices,
-                       size_t lineOffset);
+    void prepareScanline();
+    void renderPixel(size_t screenX);
+    void prepareObjects();
     uint8_t getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
                          bool unsignedTileData) const;
     uint8_t getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) const;
@@ -51,6 +52,9 @@ private:
     std::array<uint8_t, 0x2000> videoRam{};
     std::array<uint8_t, OAM_SIZE> objectRam{};
     FrameBuffer frameBuffer{};
+    std::array<uint8_t, FRAME_WIDTH> scanlineBgColorIndices{};
+    std::array<uint8_t, FRAME_WIDTH> scanlineObjectColorIndices{};
+    std::array<bool, FRAME_WIDTH> scanlineObjectUsesPalette1{};
 
     uint8_t lcdControl = 0;
     uint8_t statInterruptEnable = 0;
@@ -65,6 +69,7 @@ private:
     uint8_t windowX = 0;
     uint8_t windowLineCounter = 0;
     uint16_t dot = 0;
+    bool scanlineDrewWindow = false;
     bool statInterruptLine = false;
 };
 

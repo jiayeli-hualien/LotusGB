@@ -163,6 +163,33 @@ void testBackgroundTilesAndPaletteRenderToFrameBuffer() {
     expect(frame[2] == 0, "background zero bits produce color index 0");
 }
 
+void testBackgroundPaletteWriteAffectsOnlyFuturePixels() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00); // Every pixel has color index 1.
+    for (uint16_t column = 0; column < 32; ++column)
+        ppu.write(static_cast<uint16_t>(0x9800 + column), 1);
+    ppu.write(BGP, 0xE4); // Color index 1 maps to shade 1.
+    ppu.write(LCDC, 0x91);
+
+    // The first visible pixel is emitted at dot 93. Stop after eight pixels,
+    // then change BGP before the next pixel is emitted.
+    ppu.advanceTCycles(100);
+    ppu.write(BGP, 0x0C); // Color index 1 now maps to shade 3.
+    ppu.advanceTCycles(1);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[7] == 1,
+           "a mid-scanline BGP write does not recolor pixels already emitted");
+    expect(frame[8] == 3,
+           "a mid-scanline BGP write affects the next emitted pixel");
+
+    ppu.advanceTCycles(151);
+    expect(frame[DmgPpu::FRAME_WIDTH - 1] == 3,
+           "the updated BGP remains active for the rest of the scanline");
+}
+
 void testSignedBackgroundTileAddressing() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -267,6 +294,7 @@ int main() {
     testStatInterruptUsesRisingEdgeOfCombinedSources();
     testLycCoincidenceAndStatInterrupt();
     testBackgroundTilesAndPaletteRenderToFrameBuffer();
+    testBackgroundPaletteWriteAffectsOnlyFuturePixels();
     testSignedBackgroundTileAddressing();
     testWindowPositionAndWindowTileMap();
     testObjectsUseTransparencyPaletteAndPriority();

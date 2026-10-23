@@ -65,6 +65,7 @@ void DmgPpu::initializeDmgPostBootState() {
     windowX = 0;
     windowLineCounter = 0;
     dot = 0;
+    scanlineDrewWindow = false;
     frameBuffer.fill(0);
     statInterruptLine = false;
 }
@@ -235,8 +236,21 @@ void DmgPpu::updateStatInterruptLine() {
 
 void DmgPpu::advanceDot() {
     ++dot;
-    if (ly < VISIBLE_SCANLINES && dot == MODE2_DOTS + MODE3_DOTS)
-        renderScanline();
+    if (ly < VISIBLE_SCANLINES && dot == MODE2_DOTS)
+        prepareScanline();
+
+    // Mode 3 has a 12-dot startup before its 160 visible output dots. Keeping
+    // pixel output on the PPU clock lets palette writes affect only pixels
+    // that have not reached the LCD yet.
+    constexpr uint16_t FIRST_PIXEL_DOT = MODE2_DOTS + 13;
+    if (ly < VISIBLE_SCANLINES && dot >= FIRST_PIXEL_DOT &&
+        dot < MODE2_DOTS + MODE3_DOTS + 1) {
+        renderPixel(dot - FIRST_PIXEL_DOT);
+    }
+
+    if (ly < VISIBLE_SCANLINES && dot == MODE2_DOTS + MODE3_DOTS &&
+        scanlineDrewWindow)
+        ++windowLineCounter;
 
     if (dot == DOTS_PER_SCANLINE) {
         dot = 0;
@@ -251,9 +265,11 @@ void DmgPpu::advanceDot() {
     updateStatInterruptLine();
 }
 
-void DmgPpu::renderScanline() {
-    const size_t lineOffset = static_cast<size_t>(ly) * FRAME_WIDTH;
-    std::array<uint8_t, FRAME_WIDTH> bgColorIndices{};
+void DmgPpu::prepareScanline() {
+    scanlineBgColorIndices.fill(0);
+    scanlineObjectColorIndices.fill(0);
+    scanlineObjectUsesPalette1.fill(false);
+
     const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const uint16_t bgTileMapOffset = (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
     const uint16_t windowTileMapOffset =
@@ -261,7 +277,7 @@ void DmgPpu::renderScanline() {
     const bool windowEnabled = bgWindowEnabled && (lcdControl & WINDOW_ENABLE_MASK) &&
                                ly >= windowY && windowX <= 166;
     const int windowLeft = static_cast<int>(windowX) - 7;
-    bool drewWindow = false;
+    scanlineDrewWindow = false;
 
     for (size_t x = 0; x < FRAME_WIDTH; ++x) {
         uint8_t bgColorIndex = 0;
@@ -272,7 +288,7 @@ void DmgPpu::renderScanline() {
                     static_cast<int>(x) - windowLeft);
                 bgColorIndex = getTileMapPixel(windowTileMapOffset, windowPixelX,
                                                windowLineCounter);
-                drewWindow = true;
+                scanlineDrewWindow = true;
             } else {
                 bgColorIndex = getTileMapPixel(
                     bgTileMapOffset,
@@ -280,15 +296,25 @@ void DmgPpu::renderScanline() {
                     static_cast<uint8_t>(scrollY + ly));
             }
         }
-        bgColorIndices[x] = bgColorIndex;
-        frameBuffer[lineOffset + x] = applyPalette(bgPalette, bgColorIndex);
+        scanlineBgColorIndices[x] = bgColorIndex;
     }
 
     if ((lcdControl & OBJECT_ENABLE_MASK) != 0)
-        renderObjects(bgColorIndices, lineOffset);
+        prepareObjects();
+}
 
-    if (drewWindow)
-        ++windowLineCounter;
+void DmgPpu::renderPixel(size_t screenX) {
+    const size_t frameOffset = static_cast<size_t>(ly) * FRAME_WIDTH + screenX;
+    frameBuffer[frameOffset] =
+        applyPalette(bgPalette, scanlineBgColorIndices[screenX]);
+
+    const uint8_t objectColorIndex = scanlineObjectColorIndices[screenX];
+    if (objectColorIndex != 0) {
+        const uint8_t palette = scanlineObjectUsesPalette1[screenX]
+                                    ? objectPalette1
+                                    : objectPalette0;
+        frameBuffer[frameOffset] = applyPalette(palette, objectColorIndex);
+    }
 }
 
 uint8_t DmgPpu::getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
@@ -315,8 +341,7 @@ uint8_t DmgPpu::getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) co
                         (lcdControl & TILE_DATA_SELECT_MASK) != 0);
 }
 
-void DmgPpu::renderObjects(const std::array<uint8_t, FRAME_WIDTH> &bgColorIndices,
-                           size_t lineOffset) {
+void DmgPpu::prepareObjects() {
     struct Object {
         size_t oamIndex;
         uint8_t x;
@@ -373,9 +398,10 @@ void DmgPpu::renderObjects(const std::array<uint8_t, FRAME_WIDTH> &bgColorIndice
 
             const bool behindBackground = (attributes & 0x80) != 0;
             if (!(behindBackground && (lcdControl & BG_WINDOW_ENABLE_MASK) &&
-                  bgColorIndices[screenX] != 0)) {
-                const uint8_t palette = (attributes & 0x10) ? objectPalette1 : objectPalette0;
-                frameBuffer[lineOffset + screenX] = applyPalette(palette, colorIndex);
+                  scanlineBgColorIndices[screenX] != 0)) {
+                scanlineObjectColorIndices[screenX] = colorIndex;
+                scanlineObjectUsesPalette1[screenX] =
+                    (attributes & 0x10) != 0;
             }
             // A higher-priority opaque object still masks lower-priority objects
             // when its behind-BG flag leaves the background visible.
