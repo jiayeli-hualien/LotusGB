@@ -18,6 +18,9 @@ PPU, and all four DMG APU channels. The default startup profile skips the boot R
 Other cartridge mappers, boot-ROM execution, and more exact PPU/APU timing
 remain future work.
 
+See the [DMG implementation and validation matrix](docs/dmg-validation.md) for
+the current feature scope, existing tests, and known coverage gaps.
+
 CPU behavior and timing are covered by focused tests and GBIT integration
 checks. The CPU advances in M-cycle steps, and the system clock distributes
 elapsed T-cycles to the hardware components.
@@ -99,7 +102,9 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 ### Game Boy development and hardware
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
+- [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs used for targeted timing checks
 - [Pan Docs: Rendering](https://gbdev.io/pandocs/Rendering.html) — PPU modes, pixel output, and mode 3 timing penalties
+- [Mealybug Tearoom PPU test ROMs](https://github.com/mattcurrie/mealybug-tearoom-tests) — DMG screenshot tests for PPU register changes during mode 3 (MIT)
 - [Pan Docs: Scrolling](https://gbdev.io/pandocs/Scrolling.html) — SCX/SCY behavior, including scanline sampling of SCX fine-scroll bits
 - [Pan Docs: Audio Registers](https://gbdev.io/pandocs/Audio_Registers.html) — APU register behavior and wave RAM access
 - [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel sequencing, noise LFSR behavior, and output filtering

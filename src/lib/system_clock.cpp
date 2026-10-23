@@ -19,7 +19,7 @@ void SystemClock::advanceToCpuBusAccess() {
     if (!cpuStepInProgress || currentStepTCyclesAdvanced != 0)
         return;
 
-    constexpr uint64_t CPU_BUS_PHASE_T_CYCLES = T_CYCLES_PER_M_CYCLE - 1;
+    constexpr uint64_t CPU_BUS_PHASE_T_CYCLES = T_CYCLES_PER_M_CYCLE;
     advanceComponents(CPU_BUS_PHASE_T_CYCLES);
     currentStepTCyclesAdvanced = CPU_BUS_PHASE_T_CYCLES;
 }

@@ -95,10 +95,10 @@ void testSystemClockAdvancesDevicesToCpuBusPhaseBeforeTransaction() {
     cpu.duringStep = [&clock] { clock.advanceToCpuBusAccess(); };
 
     expect(clock.step().success, "system clock accepts a CPU bus transaction");
-    expect(apu.advances == std::vector<uint64_t>{T_CYCLES_PER_M_CYCLE - 1, 1},
-           "devices advance to the bus phase, then through the M-cycle remainder");
+    expect(apu.advances == std::vector<uint64_t>{T_CYCLES_PER_M_CYCLE},
+           "devices advance to the CPU bus transaction at the M-cycle boundary");
     expect(clock.getElapsedTCycles() == T_CYCLES_PER_M_CYCLE,
-           "bus-phase splitting preserves total elapsed time");
+           "bus transaction timing preserves total elapsed time");
 }
 
 }

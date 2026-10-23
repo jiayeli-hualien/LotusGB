@@ -14,15 +14,16 @@ public:
     virtual void advanceTCycles(uint64_t tCycles) = 0;
 };
 
-// The system-level time authority. Clocked components advance up to a CPU bus
-// access before the memory transaction, then through the remainder of the M-cycle.
+// The system-level time authority. Clocked components advance through the
+// modeled M-cycle before the CPU performs its bus transaction.
 class SystemClock {
 public:
     explicit SystemClock(ICPU &cpu);
 
     // CPU and components are borrowed; they must outlive this clock.
     void addClockedComponent(IClockedComponent &component);
-    // Called by the CPU bus immediately before a memory transaction.
+    // Called by the CPU bus immediately before a memory transaction. The
+    // current model advances devices to the end of the M-cycle here.
     void advanceToCpuBusAccess();
     RetStepOneCycle step();
     uint64_t getElapsedTCycles() const;

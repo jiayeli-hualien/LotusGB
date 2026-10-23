@@ -2,6 +2,7 @@ CC := g++
 CPPFLAGS := -Wall -fPIC --std=c++17 -O2
 LDFLAGS := -shared
 lotus_gb_lib_build_path := $(build_dir)/liblotusgb.so
+mooneye_runner := $(build_dir)/mooneye_rom_runner
 obj_build_dir := $(build_dir)/obj
 
 SRCS := $(wildcard *.cpp)
@@ -12,6 +13,9 @@ generated_tables := $(include_path)/generated_decode_tables.hpp
 csv_sources := $(wildcard $(include_path)/*.csv)
 
 all: $(lotus_gb_lib_build_path)
+
+.PHONY: mooneye-runner
+mooneye-runner: $(mooneye_runner)
 
 $(obj_build_dir) $(build_dir):
 	mkdir -p $@
@@ -24,3 +28,7 @@ $(obj_build_dir)/%.o: %.cpp $(obj_build_dir) $(generated_tables)
 
 $(lotus_gb_lib_build_path): $(OBJS)
 	$(CC) $(CPPFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(mooneye_runner): ../integration_test/mooneye_rom_runner.cpp $(lotus_gb_lib_build_path)
+	$(CC) $(CPPFLAGS) -Iinclude -o $@ $< -L$(build_dir) -llotusgb \
+		-Wl,-rpath,'$$ORIGIN'

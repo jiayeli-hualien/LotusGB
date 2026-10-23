@@ -12,8 +12,8 @@
 namespace LOTUSGB {
 
 // Initial DMG PPU timing, memory interface, and scanline renderer. Pixels are
-// emitted during mode 3, with SCX fine-scroll dots and a visible-window stall
-// included; object rendering penalties are not yet modeled.
+// emitted during mode 3, with SCX fine-scroll, visible-window, and object-fetch
+// stalls included.
 class DmgPpu final : public IAddressRegion, public IClockedComponent {
 public:
     static constexpr size_t FRAME_WIDTH = 160;
@@ -55,6 +55,7 @@ private:
     std::array<uint8_t, FRAME_WIDTH> scanlineBgColorIndices{};
     std::array<uint8_t, FRAME_WIDTH> scanlineObjectColorIndices{};
     std::array<bool, FRAME_WIDTH> scanlineObjectUsesPalette1{};
+    std::array<uint16_t, FRAME_WIDTH> scanlineObjectPenaltyAtX{};
 
     uint8_t lcdControl = 0;
     uint8_t statInterruptEnable = 0;
@@ -74,6 +75,7 @@ private:
     uint8_t scanlineOutputX = 0;
     uint8_t scanlineWindowStartX = 0;
     uint8_t windowPenaltyDotsRemaining = 0;
+    uint16_t objectPenaltyDotsRemaining = 0;
     bool scanlineWindowPenaltyPending = false;
     bool scanlineDrewWindow = false;
     bool statInterruptLine = false;

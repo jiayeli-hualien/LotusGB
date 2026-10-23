@@ -41,7 +41,7 @@ void writeTileRow(DmgPpu &ppu, uint8_t tile, uint8_t row, uint8_t low, uint8_t h
 
 void renderFirstScanline(DmgPpu &ppu, uint8_t lcdc) {
     ppu.write(LCDC, lcdc);
-    ppu.advanceTCycles(252);
+    ppu.advanceTCycles(456);
 }
 
 void testDisabledPpuRegistersAndVideoMemory() {
@@ -163,6 +163,93 @@ void testVisibleWindowAddsSixDotsToMode3() {
            "a visible window extends mode 3 by six dots");
     expect(frame[DmgPpu::FRAME_WIDTH - 1] == 2,
            "the final visible pixel uses the window tile map");
+}
+
+void testObjectFetchPenaltyStallsPixelsAndExtendsMode3() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00); // Background color index 1.
+    writeTileRow(ppu, 2, 0, 0x00, 0xFF); // Object color index 2.
+    for (uint16_t column = 0; column < 32; ++column)
+        ppu.write(static_cast<uint16_t>(0x9800 + column), 1);
+    ppu.write(BGP, 0xE4);
+    ppu.write(OBP0, 0xE4);
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 11); // Object begins at screen x=3.
+    ppu.write(OAM + 2, 2);
+    ppu.write(LCDC, 0x93);
+
+    ppu.advanceTCycles(95);
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[2] == 1,
+           "background pixels before the object are emitted on schedule");
+    expect(frame[3] == 0,
+           "the object pixel waits for its fetch penalty");
+
+    ppu.advanceTCycles(8);
+    expect(frame[3] == 0,
+           "the first object in a background tile incurs an eight-dot stall");
+    ppu.advanceTCycles(1);
+    expect(frame[3] == 2,
+           "the object pixel is emitted after its fetch stall");
+
+    ppu.advanceTCycles(155);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "the object penalty extends mode 3 through dot 259");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 0x03) == 0,
+           "mode 0 begins after the object penalty's final output dot");
+}
+
+void testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00);
+    writeTileRow(ppu, 2, 0, 0x00, 0xFF);
+    for (uint16_t column = 0; column < 32; ++column)
+        ppu.write(static_cast<uint16_t>(0x9800 + column), 1);
+    ppu.write(BGP, 0xE4);
+    ppu.write(OBP0, 0xE4);
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 11); // Screen x=3, first object in this BG tile.
+    ppu.write(OAM + 2, 2);
+    ppu.write(OAM + 4, 16);
+    ppu.write(OAM + 5, 15); // Screen x=7, same BG tile.
+    ppu.write(OAM + 6, 2);
+    ppu.write(LCDC, 0x93);
+
+    ppu.advanceTCycles(113);
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[7] == 0,
+           "a later object in the same fetched tile stalls its first pixel");
+    ppu.advanceTCycles(1);
+    expect(frame[7] == 2,
+           "the later object pays the flat six-dot fetch penalty");
+
+    ppu.advanceTCycles(151);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "both object penalties extend mode 3 through dot 265");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 0x03) == 0,
+           "mode 0 begins after both object stalls have elapsed");
+}
+
+void testObjectAtXZeroUsesTheFixedFetchPenalty() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 0); // Fully off-screen, with the DMG's fixed penalty.
+    ppu.write(LCDC, 0x93);
+
+    ppu.advanceTCycles(262);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "an X=0 object keeps mode 3 active through dot 262");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 0x03) == 0,
+           "an X=0 object adds its fixed eleven-dot penalty");
 }
 
 void testVblankInterruptAndFrameRollover() {
@@ -363,6 +450,9 @@ int main() {
     testVisibleLineModesAndVideoMemoryAccess();
     testFineScrollAddsStartupDotsToMode3();
     testVisibleWindowAddsSixDotsToMode3();
+    testObjectFetchPenaltyStallsPixelsAndExtendsMode3();
+    testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty();
+    testObjectAtXZeroUsesTheFixedFetchPenalty();
     testVblankInterruptAndFrameRollover();
     testStatInterruptUsesRisingEdgeOfCombinedSources();
     testLycCoincidenceAndStatInterrupt();

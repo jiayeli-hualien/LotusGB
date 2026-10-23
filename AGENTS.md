@@ -15,6 +15,10 @@ From the repository root:
   copies, screenshots, logs, and a report under `build/test-roms/`; check the
   screenshots manually for the on-screen result. This local workflow is not
   part of GitHub CI.
+- `make test-mooneye MOONEYE_SUITE_DIR=/path/to/extracted-suite` optionally
+  runs selected Mooneye PPU and interrupt timing ROMs. ROMs stay outside the
+  repository; logs and a report go under `build/test-roms/mooneye/`. This local
+  workflow is not part of GitHub CI.
 - The GBIT integration executable expects the `gbit` repository beside this repository. Build it with `make -C ../gbit`, then run the test executable from `build/`:
 
   ```sh

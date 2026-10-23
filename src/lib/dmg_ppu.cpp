@@ -142,6 +142,7 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 scanlineOutputX = 0;
                 scanlineWindowPenaltyPending = false;
                 windowPenaltyDotsRemaining = 0;
+                objectPenaltyDotsRemaining = 0;
                 scanlineDrewWindow = false;
                 if (!lcdEnabled())
                     frameBuffer.fill(0);
@@ -262,6 +263,14 @@ void DmgPpu::advanceDot() {
         } else if (windowPenaltyDotsRemaining > 0) {
             --windowPenaltyDotsRemaining;
             outputStalled = true;
+        } else if (objectPenaltyDotsRemaining > 0) {
+            --objectPenaltyDotsRemaining;
+            outputStalled = true;
+        } else if (scanlineObjectPenaltyAtX[scanlineOutputX] > 0) {
+            objectPenaltyDotsRemaining =
+                scanlineObjectPenaltyAtX[scanlineOutputX] - 1;
+            scanlineObjectPenaltyAtX[scanlineOutputX] = 0;
+            outputStalled = true;
         }
 
         if (!outputStalled)
@@ -292,6 +301,8 @@ void DmgPpu::prepareScanline() {
     scanlineOutputX = 0;
     scanlineWindowPenaltyPending = false;
     windowPenaltyDotsRemaining = 0;
+    objectPenaltyDotsRemaining = 0;
+    scanlineObjectPenaltyAtX.fill(0);
     scanlineBgColorIndices.fill(0);
     scanlineObjectColorIndices.fill(0);
     scanlineObjectUsesPalette1.fill(false);
@@ -396,6 +407,65 @@ void DmgPpu::prepareObjects() {
                   return left.x == right.x ? left.oamIndex < right.oamIndex
                                            : left.x < right.x;
               });
+
+    const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
+    const bool windowEnabled = bgWindowEnabled &&
+                               (lcdControl & WINDOW_ENABLE_MASK) &&
+                               ly >= windowY && windowX <= 166;
+    const int windowLeft = static_cast<int>(windowX) - 7;
+    // Track BG and window tile columns separately. The first object that
+    // interrupts a tile fetch pays the alignment wait; later objects in that
+    // already-fetched tile pay only the fixed object-fetch cost.
+    std::array<bool, 64> fetchedBackgroundTiles{};
+
+    for (size_t selectedIndex = 0; selectedIndex < selectedCount;
+         ++selectedIndex) {
+        const Object &object = selected[selectedIndex];
+        const int objectLeft = static_cast<int>(object.x) - 8;
+        if (object.x >= FRAME_WIDTH + 8 && object.x != 0)
+            continue;
+
+        uint16_t penalty = 0;
+        if (object.x == 0) {
+            // An OBJ at X=0 is fully off-screen, but the DMG still incurs the
+            // fixed penalty while attempting to fetch it.
+            penalty = 11;
+            scanlineObjectPenaltyAtX[0] += penalty;
+        } else {
+            const int firstVisibleX = std::max(0, objectLeft);
+            const bool firstPixelUsesWindow =
+                windowEnabled && objectLeft >= windowLeft;
+
+            uint8_t tilePixelX;
+            size_t fetchedTileIndex;
+            if (firstPixelUsesWindow) {
+                const uint8_t windowPixelX = static_cast<uint8_t>(
+                    objectLeft - windowLeft);
+                tilePixelX = windowPixelX & 0x07;
+                fetchedTileIndex = 32 + (windowPixelX >> 3);
+            } else {
+                const uint8_t backgroundPixelX = static_cast<uint8_t>(
+                    scrollX + static_cast<uint8_t>(objectLeft));
+                tilePixelX = backgroundPixelX & 0x07;
+                fetchedTileIndex = backgroundPixelX >> 3;
+            }
+
+            penalty = 6;
+            if (!fetchedBackgroundTiles[fetchedTileIndex]) {
+                fetchedBackgroundTiles[fetchedTileIndex] = true;
+                const int backgroundPixelsToRight = 7 - tilePixelX;
+                penalty = static_cast<uint16_t>(
+                    penalty + std::max(0, backgroundPixelsToRight - 2));
+            }
+
+            const size_t stallX = static_cast<size_t>(firstVisibleX);
+            // Multiple objects can begin at one output pixel; their stalls
+            // occur consecutively before that pixel is emitted.
+            scanlineObjectPenaltyAtX[stallX] += penalty;
+        }
+
+        mode3Duration = static_cast<uint16_t>(mode3Duration + penalty);
+    }
 
     for (size_t screenX = 0; screenX < FRAME_WIDTH; ++screenX) {
         for (size_t selectedIndex = 0; selectedIndex < selectedCount; ++selectedIndex) {
