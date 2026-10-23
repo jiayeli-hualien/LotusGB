@@ -76,6 +76,10 @@ These are discussion prompts, not approved implementation tasks. Discuss them on
 
 For each step, state what externally observable behavior changes, add a focused regression test at the narrowest useful boundary, and run the relevant unit or integration checks. Use GBIT as one CPU comparison source; investigate disagreements instead of copying behavior without hardware evidence.
 
+## Validation lessons
+
+- GBIT's isolated CPU mock returns `$AA` for every read outside the injected instruction bytes and records writes, not read addresses. It can verify instruction results while missing an incorrect read address: with `C = $30`, `LDH A,(C)` reading `$0030` instead of `$FF30` sees the same mock value. The Blargg CH3 test exposed this bug. Whole-game testing also exposed interrupt entry between the two bytes of `CB 33`; targeted tests should cover bus addresses and instruction boundaries that an isolated opcode test cannot observe.
+
 ## Test ROMs and acceptance
 
 - **Real-game acceptance:** use a short, representative set of commonly played DMG games for end-to-end checks. A game counts as playable only after it reaches gameplay, accepts controls that change the game state, and runs with stable video and audio; verify save/load for games with battery-backed saves. Keep commercial ROMs outside the repository. Use targeted homebrew and hardware tests to isolate any behavior exposed by these checks.
