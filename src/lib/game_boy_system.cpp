@@ -47,6 +47,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     bus.map(0xA000, 0xBFFF, cartridge);
     bus.map(0x8000, 0x9FFF, ppu);
     bus.map(0xC000, 0xDFFF, workRam);
+    bus.mapAlias(0xE000, 0xFDFF, workRam, 0xC000);
     bus.map(0xFE00, 0xFE9F, ppu);
     bus.map(0xFF80, 0xFFFE, highRam);
     bus.map(0xFF00, 0xFF00, joypad);

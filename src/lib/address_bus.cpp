@@ -6,15 +6,24 @@
 namespace LOTUSGB {
 
 void AddressBus::map(uint16_t start, uint16_t end, IAddressRegion &region) {
+    mapAlias(start, end, region, start);
+}
+
+void AddressBus::mapAlias(uint16_t start, uint16_t end, IAddressRegion &region,
+                          uint16_t regionStart) {
     if (start > end)
         throw std::invalid_argument("address region start exceeds end");
+
+    const uint32_t regionEnd = static_cast<uint32_t>(regionStart) + (end - start);
+    if (regionEnd > 0xFFFF)
+        throw std::invalid_argument("aliased address region exceeds address space");
 
     for (const Mapping &mapping : mappings) {
         if (start <= mapping.end && mapping.start <= end)
             throw std::invalid_argument("address regions cannot overlap");
     }
 
-    mappings.push_back({start, end, &region});
+    mappings.push_back({start, end, &region, regionStart});
 }
 
 void AddressBus::setCpuBusAccessCallback(std::function<void()> callback) {
@@ -30,7 +39,8 @@ uint8_t AddressBus::read(uint16_t address) {
     onCpuBusAccess();
     for (const Mapping &mapping : mappings) {
         if (address >= mapping.start && address <= mapping.end)
-            return mapping.region->read(address);
+            return mapping.region->read(static_cast<uint16_t>(
+                mapping.regionStart + (address - mapping.start)));
     }
     return 0xFF;
 }
@@ -39,7 +49,8 @@ void AddressBus::write(uint16_t address, uint8_t value) {
     onCpuBusAccess();
     for (const Mapping &mapping : mappings) {
         if (address >= mapping.start && address <= mapping.end) {
-            mapping.region->write(address, value);
+            mapping.region->write(static_cast<uint16_t>(
+                mapping.regionStart + (address - mapping.start)), value);
             return;
         }
     }

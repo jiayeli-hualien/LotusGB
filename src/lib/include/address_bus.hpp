@@ -21,6 +21,9 @@ class AddressBus final : public IMemoryAccess {
 public:
     // Mapped regions are borrowed and must outlive this bus.
     void map(uint16_t start, uint16_t end, IAddressRegion &region);
+    // Map a CPU address range onto a region at a different address range.
+    void mapAlias(uint16_t start, uint16_t end, IAddressRegion &region,
+                  uint16_t regionStart);
     // Called at the CPU bus phase, before dispatching a read or write.
     void setCpuBusAccessCallback(std::function<void()> callback);
     uint8_t read(uint16_t address) override;
@@ -32,6 +35,7 @@ private:
         uint16_t start;
         uint16_t end;
         IAddressRegion *region;
+        uint16_t regionStart;
     };
 
     void onCpuBusAccess();

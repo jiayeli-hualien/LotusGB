@@ -45,6 +45,30 @@ void testCpuFetchesAndExecutesFromCartridgeThroughSystemBus() {
            "system clock accumulates all CPU M-cycles");
 }
 
+void testEchoRamReadsAndWritesWorkRam() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0xA5,       // LD A, $A5
+        0xEA, 0x00, 0xC0, // LD ($C000), A
+        0x3E, 0x00,       // LD A, $00
+        0xFA, 0x00, 0xE0, // LD A, ($E000)
+        0x3E, 0x5A,       // LD A, $5A
+        0xEA, 0x01, 0xE0, // LD ($E001), A
+        0x3E, 0x00,       // LD A, $00
+        0xFA, 0x01, 0xC0, // LD A, ($C001)
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
+    for (int cycle = 0; cycle < 25; ++cycle)
+        expect(system.stepOneCycle().success,
+               "echo RAM program advances through system CPU cycles");
+
+    expect(system.getCpuRegisters().getRefA() == 0x5A,
+           "system bus aliases echo RAM reads and writes to work RAM");
+}
+
 void testTimerInterruptWakesHaltAndRunsHandler() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -307,6 +331,7 @@ void testFrameSteppingReturnsWhenCpuStops() {
 
 int main() {
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
+    testEchoRamReadsAndWritesWorkRam();
     testTimerInterruptWakesHaltAndRunsHandler();
     testSystemTimerClocksApuFrameSequencer();
     testSystemBusMapsWaveRamToApu();

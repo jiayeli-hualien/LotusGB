@@ -20,9 +20,11 @@ static uint8_t* getRegLHS(const uint8_t &op, Reg *pReg) {
 }
 
 SUB_FUNC_IMPL(NOT_SUPPORT) {
-    // TDOO: throw exception
-    std::cerr << "Op code " << std::hex << pInstState->opcode
-              << "is not supported" << std::endl;
+    // TODO: handle unsupported opcodes explicitly.
+    std::cerr << "Unsupported opcode 0x" << std::hex
+              << static_cast<unsigned>(pInstState->opcode)
+              << " (PC after fetch: 0x" << static_cast<unsigned>(pReg->getRefPC())
+              << ")" << std::dec << std::endl;
 }
 
 SUB_FUNC_IMPL(LDRR) {

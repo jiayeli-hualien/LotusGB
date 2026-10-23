@@ -62,6 +62,25 @@ void testAddressBusRoutesMappedRanges() {
            "unmapped accesses do not reach mapped regions");
 }
 
+void testAddressBusRoutesAliasedRanges() {
+    AddressBus bus;
+    RamRegion workRam(0xC000, 0x2000);
+    bus.map(0xC000, 0xDFFF, workRam);
+    bus.mapAlias(0xE000, 0xFDFF, workRam, 0xC000);
+
+    bus.write(0xC000, 0x12);
+    expect(bus.read(0xE000) == 0x12,
+           "echo range reads the corresponding work RAM byte");
+
+    bus.write(0xFDFF, 0x34);
+    expect(bus.read(0xDDFF) == 0x34,
+           "echo range writes the corresponding final mirrored work RAM byte");
+    expect(bus.read(0xDFFF) == 0,
+           "the final 512 work RAM bytes are outside the echo range");
+    expect(bus.read(0xFE00) == 0xFF,
+           "the echo mapping ends before OAM");
+}
+
 void testAddressBusRejectsInvalidMappings() {
     AddressBus bus;
     TestRegion first;
@@ -107,7 +126,8 @@ void testRomOnlyCartridgeAndRamRegions() {
     bus.write(0xDFFF, 0x5A);
     expect(bus.read(0xC000) == 0xA5, "work RAM stores data at its first address");
     expect(bus.read(0xDFFF) == 0x5A, "work RAM stores data at its final address");
-    expect(bus.read(0xE000) == 0xFF, "unmapped echo RAM remains unmapped for now");
+    expect(bus.read(0xE000) == 0xFF,
+           "unmapped echo RAM remains unmapped when no alias is registered");
     expect(bus.read(0xA000) == 0xFF,
            "ROM-only cartridge does not expose external RAM");
 }
@@ -615,6 +635,7 @@ void testMbc3SupportsSmallExternalRamSizes() {
 
 int main() {
     testAddressBusRoutesMappedRanges();
+    testAddressBusRoutesAliasedRanges();
     testAddressBusRejectsInvalidMappings();
     testRomOnlyCartridgeAndRamRegions();
     testCartridgeRejectsUnsupportedSizesAndTypes();

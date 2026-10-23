@@ -55,12 +55,15 @@ void GBCPU::doFetchNextOp() {
     instStat = {};
     uint16_t &pc = reg.getRefPC();
     const uint16_t fetchAddress = pc;
+    const bool fetchingCbOpcode = waitDecodeCB;
     if (haltBugPending)
         haltBugPending = false;
     else
         ++pc;
     pInst = fetch(fetchAddress);
-    instructionBoundary = true;
+    // CB's second byte is part of the same instruction as the prefix. Do not
+    // sample interrupts between fetching the CB opcode and executing it.
+    instructionBoundary = !fetchingCbOpcode;
 }
 
 RetStepOneCycle GBCPU::stepInterruptCycle() {

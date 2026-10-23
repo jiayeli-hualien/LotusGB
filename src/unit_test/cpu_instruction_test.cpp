@@ -470,6 +470,45 @@ void testInterruptEntryPriorityStackAndVector() {
            "interrupt entry fetches the handler opcode after its stack writes");
 }
 
+void testInterruptWaitsUntilCbInstructionCompletes() {
+    CpuFixture f{{0x0000, 0xCB}, {0x0001, 0x33}, {0x0002, 0x00},
+                 {0x0040, 0x00}};
+    Reg reg = f.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    reg.getRefE() = 0xF0;
+    f.cpu.setReg(reg);
+
+    const auto prefixCycle = f.cpu.stepOneCycle();
+    expect(prefixCycle.success && !prefixCycle.fetchedNewInst,
+           "CB prefix fetch does not complete the two-byte instruction");
+    expect(f.cpu.getReg().getRefPC() == 2,
+           "CB prefix fetches its opcode byte before checking the next boundary");
+
+    f.interrupts.write(0xFFFF, 0x01);
+    f.interrupts.write(0xFF0F, 0x01);
+    const auto cbOpcodeCycle = f.cpu.stepOneCycle();
+    expect(cbOpcodeCycle.success && cbOpcodeCycle.fetchedNewInst,
+           "pending interrupt does not split a CB-prefixed instruction");
+    expect(f.cpu.getIME() && f.cpu.getReg().getRefE() == 0x0F,
+           "CB opcode executes before the pending interrupt is accepted");
+
+    const auto interruptStart = f.cpu.stepOneCycle();
+    expect(interruptStart.success && !interruptStart.fetchedNewInst &&
+               !f.cpu.getIME(),
+           "pending interrupt is accepted after the CB instruction completes");
+    for (unsigned cycle = 1; cycle < 5; ++cycle) {
+        const auto result = f.cpu.stepOneCycle();
+        expect(result.success && result.fetchedNewInst == (cycle == 4),
+               "CB-following interrupt completes its five-M-cycle entry");
+    }
+
+    expect(f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+               {0xC0FF, 0x00}, {0xC0FE, 0x02}},
+           "interrupt returns to the opcode after the completed CB instruction");
+    expect(f.cpu.getReg().getRefPC() == 0x0041,
+           "CB-following interrupt vectors to the requested handler");
+}
+
 void testHaltWakeAndHaltBug() {
     CpuFixture halted{{0x0000, 0x76}, {0x0001, 0x00}, {0x0002, 0x00}};
     halted.cpu.setIME(false);
@@ -513,6 +552,7 @@ int main() {
     testLdhReadThroughCUsesTheHighMemoryPage();
     testEiDelay();
     testInterruptEntryPriorityStackAndVector();
+    testInterruptWaitsUntilCbInstructionCompletes();
     testHaltWakeAndHaltBug();
     std::cout << "CPU instruction tests passed\n";
     return EXIT_SUCCESS;
