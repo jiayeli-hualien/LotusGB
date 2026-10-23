@@ -99,6 +99,8 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 ### Game Boy development and hardware
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
+- [Pan Docs: Rendering](https://gbdev.io/pandocs/Rendering.html) — PPU modes, pixel output, and mode 3 timing penalties
+- [Pan Docs: Scrolling](https://gbdev.io/pandocs/Scrolling.html) — SCX/SCY behavior, including scanline sampling of SCX fine-scroll bits
 - [Pan Docs: Audio Registers](https://gbdev.io/pandocs/Audio_Registers.html) — APU register behavior and wave RAM access
 - [Pan Docs: Audio Details](https://gbdev.io/pandocs/Audio_details.html) — channel sequencing, noise LFSR behavior, and output filtering
 - [Pan Docs: MBCs](https://gbdev.io/pandocs/MBCs.html) — cartridge banking and mapper behavior

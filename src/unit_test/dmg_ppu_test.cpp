@@ -18,6 +18,7 @@ constexpr uint16_t IF = 0xFF0F;
 constexpr uint16_t BGP = 0xFF47;
 constexpr uint16_t OBP0 = 0xFF48;
 constexpr uint16_t OBP1 = 0xFF49;
+constexpr uint16_t SCX = 0xFF43;
 constexpr uint16_t WX = 0xFF4B;
 constexpr uint16_t WY = 0xFF4A;
 
@@ -92,6 +93,40 @@ void testVisibleLineModesAndVideoMemoryAccess() {
     ppu.advanceTCycles(1);
     expect(ppu.read(LY) == 1, "LY increments after 456 dots");
     expect((ppu.read(STAT) & 0x03) == 2, "the next visible line begins in mode 2");
+}
+
+void testFineScrollAddsStartupDotsToMode3() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00);
+    for (uint16_t column = 0; column < 32; ++column)
+        ppu.write(static_cast<uint16_t>(0x9800 + column), 1);
+    ppu.write(SCX, 3);
+    ppu.write(BGP, 0xE4);
+    ppu.write(LCDC, 0x91);
+
+    ppu.advanceTCycles(80);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "mode 3 begins after the 80-dot OAM scan");
+    expect(ppu.getFrameBuffer()[0] == 0,
+           "SCX fine scroll delays the first visible pixel by three dots");
+
+    ppu.advanceTCycles(15); // Reach dot 95; the first pixel is due at dot 96.
+    expect(ppu.getFrameBuffer()[0] == 0,
+           "the first pixel remains pending before the fine-scroll delay ends");
+    ppu.advanceTCycles(1);
+    expect(ppu.getFrameBuffer()[0] == 1,
+           "the first pixel is emitted after the SCX fine-scroll delay");
+
+    ppu.advanceTCycles(158);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "SCX fine scroll keeps mode 3 active through the last output pixel");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 0x03) == 0,
+           "three fine-scroll dots extend mode 3 by three dots");
+    expect(ppu.getFrameBuffer()[DmgPpu::FRAME_WIDTH - 1] == 1,
+           "the final visible pixel is emitted as mode 3 ends");
 }
 
 void testVblankInterruptAndFrameRollover() {
@@ -290,6 +325,7 @@ void testSixteenPixelObjectsUsePairedTiles() {
 int main() {
     testDisabledPpuRegistersAndVideoMemory();
     testVisibleLineModesAndVideoMemoryAccess();
+    testFineScrollAddsStartupDotsToMode3();
     testVblankInterruptAndFrameRollover();
     testStatInterruptUsesRisingEdgeOfCombinedSources();
     testLycCoincidenceAndStatInterrupt();

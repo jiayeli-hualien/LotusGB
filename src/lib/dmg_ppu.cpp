@@ -136,6 +136,9 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 dot = 0;
                 ly = 0;
                 windowLineCounter = 0;
+                mode3Duration = MODE3_DOTS;
+                scanlineFineScroll = 0;
+                scanlineDrewWindow = false;
                 if (!lcdEnabled())
                     frameBuffer.fill(0);
                 updateStatInterruptLine();
@@ -203,7 +206,7 @@ uint8_t DmgPpu::getMode() const {
         return 1;
     if (dot < MODE2_DOTS)
         return 2;
-    if (dot < MODE2_DOTS + MODE3_DOTS)
+    if (dot < MODE2_DOTS + mode3Duration)
         return 3;
     return 0;
 }
@@ -239,16 +242,18 @@ void DmgPpu::advanceDot() {
     if (ly < VISIBLE_SCANLINES && dot == MODE2_DOTS)
         prepareScanline();
 
-    // Mode 3 has a 12-dot startup before its 160 visible output dots. Keeping
-    // pixel output on the PPU clock lets palette writes affect only pixels
-    // that have not reached the LCD yet.
-    constexpr uint16_t FIRST_PIXEL_DOT = MODE2_DOTS + 13;
-    if (ly < VISIBLE_SCANLINES && dot >= FIRST_PIXEL_DOT &&
-        dot < MODE2_DOTS + MODE3_DOTS + 1) {
-        renderPixel(dot - FIRST_PIXEL_DOT);
+    // Mode 3 has a 12-dot startup, plus the initial SCX fine-scroll discard,
+    // before its 160 visible output dots. Keeping pixel output on the PPU
+    // clock lets palette writes affect only pixels not yet sent to the LCD.
+    const uint16_t firstPixelDot =
+        MODE2_DOTS + 13 + scanlineFineScroll;
+    if (ly < VISIBLE_SCANLINES && dot >= firstPixelDot &&
+        dot < MODE2_DOTS + mode3Duration + 1) {
+        renderPixel(dot - firstPixelDot);
     }
 
-    if (ly < VISIBLE_SCANLINES && dot == MODE2_DOTS + MODE3_DOTS &&
+    if (ly < VISIBLE_SCANLINES &&
+        dot == MODE2_DOTS + mode3Duration &&
         scanlineDrewWindow)
         ++windowLineCounter;
 
@@ -266,6 +271,8 @@ void DmgPpu::advanceDot() {
 }
 
 void DmgPpu::prepareScanline() {
+    scanlineFineScroll = scrollX & 0x07;
+    mode3Duration = MODE3_DOTS + scanlineFineScroll;
     scanlineBgColorIndices.fill(0);
     scanlineObjectColorIndices.fill(0);
     scanlineObjectUsesPalette1.fill(false);
