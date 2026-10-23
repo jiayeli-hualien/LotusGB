@@ -129,6 +129,42 @@ void testFineScrollAddsStartupDotsToMode3() {
            "the final visible pixel is emitted as mode 3 ends");
 }
 
+void testVisibleWindowAddsSixDotsToMode3() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00); // Background color index 1.
+    writeTileRow(ppu, 2, 0, 0x00, 0xFF); // Window color index 2.
+    for (uint16_t column = 0; column < 32; ++column) {
+        ppu.write(static_cast<uint16_t>(0x9800 + column), 1);
+        ppu.write(static_cast<uint16_t>(0x9C00 + column), 2);
+    }
+    ppu.write(BGP, 0xE4);
+    ppu.write(WY, 0);
+    ppu.write(WX, 9); // Window begins at screen x=2.
+    ppu.write(LCDC, 0xF1); // Enable LCD, window, unsigned tiles, and BG.
+
+    ppu.advanceTCycles(100);
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[1] == 1,
+           "background pixels are emitted before the window penalty");
+    expect(frame[2] == 0,
+           "the first window pixel waits for the six-dot fetcher penalty");
+
+    ppu.advanceTCycles(1);
+    expect(frame[2] == 2,
+           "the first window pixel is emitted after six stalled dots");
+
+    ppu.advanceTCycles(156);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "the window penalty keeps mode 3 active through dot 257");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 0x03) == 0,
+           "a visible window extends mode 3 by six dots");
+    expect(frame[DmgPpu::FRAME_WIDTH - 1] == 2,
+           "the final visible pixel uses the window tile map");
+}
+
 void testVblankInterruptAndFrameRollover() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -326,6 +362,7 @@ int main() {
     testDisabledPpuRegistersAndVideoMemory();
     testVisibleLineModesAndVideoMemoryAccess();
     testFineScrollAddsStartupDotsToMode3();
+    testVisibleWindowAddsSixDotsToMode3();
     testVblankInterruptAndFrameRollover();
     testStatInterruptUsesRisingEdgeOfCombinedSources();
     testLycCoincidenceAndStatInterrupt();

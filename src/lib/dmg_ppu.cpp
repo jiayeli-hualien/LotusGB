@@ -41,6 +41,7 @@ constexpr uint8_t STAT_COINCIDENCE_MASK = 0x04;
 constexpr uint16_t DOTS_PER_SCANLINE = 456;
 constexpr uint16_t MODE2_DOTS = 80;
 constexpr uint16_t MODE3_DOTS = 172;
+constexpr uint8_t WINDOW_PENALTY_DOTS = 6;
 constexpr uint8_t VISIBLE_SCANLINES = 144;
 constexpr uint8_t SCANLINES_PER_FRAME = 154;
 constexpr size_t OBJECT_ENTRY_SIZE = 4;
@@ -138,6 +139,9 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 windowLineCounter = 0;
                 mode3Duration = MODE3_DOTS;
                 scanlineFineScroll = 0;
+                scanlineOutputX = 0;
+                scanlineWindowPenaltyPending = false;
+                windowPenaltyDotsRemaining = 0;
                 scanlineDrewWindow = false;
                 if (!lcdEnabled())
                     frameBuffer.fill(0);
@@ -243,13 +247,25 @@ void DmgPpu::advanceDot() {
         prepareScanline();
 
     // Mode 3 has a 12-dot startup, plus the initial SCX fine-scroll discard,
-    // before its 160 visible output dots. Keeping pixel output on the PPU
-    // clock lets palette writes affect only pixels not yet sent to the LCD.
+    // before its visible output. Keep pixels on the PPU clock so palette
+    // writes affect only pixels not yet sent to the LCD.
     const uint16_t firstPixelDot =
         MODE2_DOTS + 13 + scanlineFineScroll;
     if (ly < VISIBLE_SCANLINES && dot >= firstPixelDot &&
         dot < MODE2_DOTS + mode3Duration + 1) {
-        renderPixel(dot - firstPixelDot);
+        bool outputStalled = false;
+        if (scanlineWindowPenaltyPending &&
+            scanlineOutputX == scanlineWindowStartX) {
+            scanlineWindowPenaltyPending = false;
+            windowPenaltyDotsRemaining = WINDOW_PENALTY_DOTS - 1;
+            outputStalled = true;
+        } else if (windowPenaltyDotsRemaining > 0) {
+            --windowPenaltyDotsRemaining;
+            outputStalled = true;
+        }
+
+        if (!outputStalled)
+            renderPixel(scanlineOutputX++);
     }
 
     if (ly < VISIBLE_SCANLINES &&
@@ -273,6 +289,9 @@ void DmgPpu::advanceDot() {
 void DmgPpu::prepareScanline() {
     scanlineFineScroll = scrollX & 0x07;
     mode3Duration = MODE3_DOTS + scanlineFineScroll;
+    scanlineOutputX = 0;
+    scanlineWindowPenaltyPending = false;
+    windowPenaltyDotsRemaining = 0;
     scanlineBgColorIndices.fill(0);
     scanlineObjectColorIndices.fill(0);
     scanlineObjectUsesPalette1.fill(false);
@@ -285,6 +304,11 @@ void DmgPpu::prepareScanline() {
                                ly >= windowY && windowX <= 166;
     const int windowLeft = static_cast<int>(windowX) - 7;
     scanlineDrewWindow = false;
+    if (windowEnabled && windowLeft < static_cast<int>(FRAME_WIDTH)) {
+        scanlineWindowStartX = static_cast<uint8_t>(std::max(0, windowLeft));
+        scanlineWindowPenaltyPending = true;
+        mode3Duration += WINDOW_PENALTY_DOTS;
+    }
 
     for (size_t x = 0; x < FRAME_WIDTH; ++x) {
         uint8_t bgColorIndex = 0;

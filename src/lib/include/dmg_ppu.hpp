@@ -12,8 +12,8 @@
 namespace LOTUSGB {
 
 // Initial DMG PPU timing, memory interface, and scanline renderer. Pixels are
-// emitted during mode 3, with initial SCX fine-scroll dots included but other
-// rendering penalties not yet modeled.
+// emitted during mode 3, with SCX fine-scroll dots and a visible-window stall
+// included; object rendering penalties are not yet modeled.
 class DmgPpu final : public IAddressRegion, public IClockedComponent {
 public:
     static constexpr size_t FRAME_WIDTH = 160;
@@ -71,6 +71,10 @@ private:
     uint16_t dot = 0;
     uint16_t mode3Duration = 172;
     uint8_t scanlineFineScroll = 0;
+    uint8_t scanlineOutputX = 0;
+    uint8_t scanlineWindowStartX = 0;
+    uint8_t windowPenaltyDotsRemaining = 0;
+    bool scanlineWindowPenaltyPending = false;
     bool scanlineDrewWindow = false;
     bool statInterruptLine = false;
 };
