@@ -22,7 +22,7 @@ struct tester_operations gbLotusOps = {
 static pILotusGBIT gpLotusGB = NULL;
 int main(int argc, char *argv[]) {
     static struct tester_flags flags = {
-    .keep_going_on_mismatch = 1,
+    .keep_going_on_mismatch = 0,
     .enable_cb_instruction_testing = 1,
     .print_tested_instruction = 0,
     .print_verbose_inputs = 0,

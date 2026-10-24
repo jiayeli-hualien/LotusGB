@@ -3,7 +3,8 @@ CC := gcc
 CPPFLAGS := -Wall -O2
 # Assume gbit(https://github.com/koenk/gbit) repo is in the same dir
 repo_parent_folder = $(realpath $(build_dir)/../../)
-gbit_path = $(repo_parent_folder)/gbit
+GBIT_DIR ?= $(repo_parent_folder)/gbit
+gbit_path = $(abspath $(GBIT_DIR))
 libgbit_path = $(gbit_path)/libgbit.so
 gbit_include_path = $(gbit_path)/lib # Warning: both .c and .h here, just include .h
 
@@ -16,4 +17,5 @@ exec_build_path = $(build_dir)/gbit_test
 all: $(exec_build_path)
 
 $(exec_build_path): gbit_test.c $(libgbit_path) $(lotus_gb_lib_path)
-	$(CC) $(CPPFLAGS) -o $@ $^ -I $(gbit_include_path) -I $(lotus_gb_include_path)
+	$(CC) $(CPPFLAGS) -o $@ $< -I $(gbit_include_path) -I $(lotus_gb_include_path) \
+		-L$(gbit_path) -L$(build_dir) -lgbit -llotusgb

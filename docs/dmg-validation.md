@@ -230,3 +230,26 @@ and [restart](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/
 was also consulted to distinguish DMG source-bus conflicts from the simplified
 HRAM-only usage guideline; it is a comparison reference, not independent
 hardware validation of every contention edge.
+
+
+### GBIT comparison and CI failure propagation (2026-10-24)
+
+The first DMA milestone CI run returned success while its GBIT log reported
+243/244 ordinary opcodes: the reference still treated normal STOP as one byte.
+The tester's keep-going mode also returned zero after logging mismatches.
+The local sibling GBIT checkout predates the pinned EI fix, causing an
+additional EI mismatch. These are reference/harness discrepancies, not evidence
+that DMA changed CPU instruction semantics.
+
+The user's fork now consumes the normal STOP padding byte and returns nonzero
+for mismatches even in keep-going mode. Regressions check all 256 ignored STOP
+padding values and inject a deliberately wrong CPU to verify error propagation.
+CI builds and runs those regressions and uses pinned revision
+`40c5247b818a7c524e3c3e75fe0fde900a4ee8e9`. LotusGB also uses fail-fast comparison;
+a run against the old library now fails rather than silently passing. A correct
+local run reports **244/244 ordinary and 256/256 CB opcodes**, with no mismatch.
+This covers normal STOP in the single-instruction reference, not hardware
+joypad/interrupt entry races or other exceptional STOP paths.
+
+Source for normal two-byte STOP with ignored padding:
+[Pan Docs](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction).

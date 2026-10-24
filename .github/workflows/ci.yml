@@ -21,11 +21,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: jiayeli-hualien/gbit
-          ref: 3fa132a2ae9dc9da1529aafe3ac06d8767327d80
+          ref: 40c5247b818a7c524e3c3e75fe0fde900a4ee8e9
           path: gbit
 
-      - name: Build GBIT
-        run: make -C gbit
+      - name: Build and check GBIT
+        run: |
+          make -C gbit
+          make -C gbit test
 
       - name: Build LotusGB
         working-directory: lotus-gbemu

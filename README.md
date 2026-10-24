@@ -93,6 +93,20 @@ cd build
 LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 ```
 
+Use the same GBIT revision as CI:
+`40c5247b818a7c524e3c3e75fe0fde900a4ee8e9`. It fixes EI's single-instruction
+state, normal STOP's two-byte length, and failure status in keep-going mode.
+Run `make -C ../gbit test` to check the reference/tester regressions. LotusGB's
+runner stops on the first mismatch and returns failure.
+
+For an isolated GBIT checkout, build with
+`make build GBIT_DIR=/absolute/path/to/gbit` and run with that directory plus
+`build/` in `LD_LIBRARY_PATH`. The runner links by library name so the runtime
+library path can select the intended GBIT build; confirm the reported opcode
+counts as well as the process status. A successful full run reports 244/244
+ordinary opcodes and 256/256 CB opcodes.
+
+
 ## History
 
 - **2023-02-12:** Started the project, added an example using GBIT, and began a
