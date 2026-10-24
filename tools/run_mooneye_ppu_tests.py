@@ -16,6 +16,18 @@ TESTS = (
     "acceptance/ppu/intr_2_oam_ok_timing.gb",
     "acceptance/intr_timing.gb",
     "acceptance/halt_ime1_timing.gb",
+    "acceptance/ppu/stat_lyc_onoff.gb",
+    "acceptance/ppu/lcdon_write_timing-GS.gb",
+    "acceptance/ppu/lcdon_timing-GS.gb",
+)
+
+
+# Diagnostic coverage: known failures are retained to track unimplemented edges.
+EXTENDED_TESTS = (
+    "acceptance/ppu/intr_2_mode0_timing_sprites.gb",
+    "acceptance/ppu/hblank_ly_scx_timing-GS.gb",
+    "acceptance/ppu/stat_irq_blocking.gb",
+    "acceptance/ppu/vblank_stat_intr-GS.gb",
 )
 
 
@@ -25,9 +37,12 @@ def main() -> int:
     parser.add_argument("--suite-dir", required=True, type=Path,
                         help="Root of an extracted Mooneye test-suite archive")
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--extended", action="store_true",
+                        help="Include diagnostic PPU cases with known failures")
     args = parser.parse_args()
+    tests = TESTS + EXTENDED_TESTS if args.extended else TESTS
 
-    missing = [name for name in TESTS if not (args.suite_dir / name).is_file()]
+    missing = [name for name in tests if not (args.suite_dir / name).is_file()]
     if missing:
         print("Missing selected Mooneye ROMs:", file=sys.stderr)
         for name in missing:
@@ -37,7 +52,7 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     failed = False
-    for name in TESTS:
+    for name in tests:
         rom_path = args.suite_dir / name
         log_path = args.output_dir / f"{rom_path.stem}.log"
         started = time.monotonic()
