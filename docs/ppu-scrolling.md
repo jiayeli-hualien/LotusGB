@@ -158,3 +158,15 @@ FAIL. SCX-high remains 84; BGP and SCX-low stay at 3,642 and 540. `make test`,
 Both 3,600-frame homebrew profiles preserve their prior final frame hashes
 and the original supplied SRAM. The rebuilt core includes these stages, but
 full raster-effect compatibility has not been established.
+
+## Gameplay acceptance boundary
+
+The current work targets advanced visible raster effects beyond the selected
+games already checked. Common-game smoke success does not establish broad
+compatibility, and remaining synthetic pixel differences are diagnostic
+evidence rather than a requirement to implement every obscure PPU behavior.
+Use Canyon Racer's visible SCY parallax as the next gameplay check, retaining
+Mealybug images to explain deviations. The official ROM is distributed on
+the author's itch.io page; the GitHub release currently has no ROM asset.
+The local Canyon Racer ROM has not yet been supplied, so no compatibility
+result is claimed.

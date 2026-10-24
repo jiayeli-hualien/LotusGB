@@ -14,8 +14,12 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - **Active: PPU mid-scanline scrolling.** Establish a selected Mealybug DMG
   screenshot baseline at the documented software breakpoint, then implement
   one observable SCX/SCY fetch behavior at a time. Retain existing regressions;
-  passing the whole suite is not a prerequisite. F-1 Race remains the eventual
-  gameplay target, not an already-verified result.
+  passing the whole suite is not a prerequisite. Use an author-provided
+  Canyon Racer Game Boy ROM for visible-effect acceptance when supplied;
+  keep the remaining synthetic pixel mismatches as diagnostics, not an
+  obligation to close every edge before gameplay. Existing successful game
+  checks do not establish compatibility with all popular titles. F-1 Race
+  remains the eventual gameplay target, not an already-verified result.
 - **Game acceptance:** wait for the user's additional private dumps. ROMs and
   saves remain external; use the existing homebrew profiles in the meantime.
 - **Save states / rewind / replay:** deferred. The user prefers a pause/rewind
@@ -38,7 +42,7 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - A regression test creates two GBIT adapters, destroys one, and verifies that the other remains usable.
 - CPU-local STOP and HALT states are separate; STOP consumes its second byte, ignores its value, and resumes fetching only after an explicit wake request.
 - The CPU stepping interface defines one M-cycle as four T-cycles and reports elapsed T-cycles per step (zero during STOP idle). Tests check elapsed time and memory accesses across instruction M-cycles.
-- The initial DMG PPU owns VRAM/OAM and implements LCD registers, 456-dot scanlines, mode 0/1/2/3 transitions, VBlank and edge-triggered STAT requests, mode-based CPU video-memory access restrictions, and a headless 160×144 DMG shade-index framebuffer. Its renderer draws the background, window, and 8×8/8×16 objects with tile addressing, palettes, transparency, and DMG object priority. It prepares background/object color indices at mode 3 entry and emits pixels during mode 3, sampling BGP/OBP palettes per pixel so mid-scanline palette writes affect later pixels. Mode 3 starts from 172 dots, adds `SCX & 7` fine-scroll dots, adds six dots when the window emits visible pixels, and stalls at object fetch positions for the DMG's 6–11 dot penalties. Mid-mode-3 scroll/tile fetch changes are not modeled yet.
+- The initial DMG PPU owns VRAM/OAM and implements LCD registers, 456-dot scanlines, mode 0/1/2/3 transitions, VBlank and edge-triggered STAT requests, mode-based CPU video-memory access restrictions, and a headless 160×144 DMG shade-index framebuffer. Its renderer draws the background, window, and 8×8/8×16 objects with tile addressing, palettes, transparency, and DMG object priority. Window/object data are prepared at Mode 3 entry; background tiles use staged SCX/SCY sampling, and palette/priority resolution happens at pixel output. Mode 3 starts from 172 dots, adds `SCX & 7` fine-scroll dots, adds six dots when the window emits visible pixels, and stalls at object fetch positions for the DMG's 6–11 dot penalties. Selected mid-Mode-3 scroll changes are modeled; exact FIFO/sprite arbitration remains incomplete.
 - FF46 OAM DMA copies 160 bytes from the selected address page into PPU OAM. The shared clock models startup, one-byte-per-M-cycle progress, restart, and basic CPU bus arbitration; precise corruption/rendering conflicts remain separate work.
 - `GameBoySystem` starts from a no-boot-ROM DMG post-boot profile for the implemented CPU, timer, joypad, interrupt, APU, and PPU state. System tests request the synthetic CPU-reset state through the explicitly named `GameBoySystem::createForTest()` factory. `stepFrame()` advances one nominal 70,224-T-cycle frame and reports an incomplete frame if STOP freezes CPU/system time.
 - `AddressBus` supports address aliases, and `GameBoySystem` maps Echo RAM `$E000–$FDFF` to WRAM `$C000–$DDFF`. Bus and system tests cover mirrored reads/writes and the boundary before OAM.
