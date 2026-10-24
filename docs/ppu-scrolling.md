@@ -3,15 +3,14 @@
 ## Scope
 
 The active route is one observable SCX/SCY fetch behavior at a time, with
-selected independent visual ROMs and existing regressions. The first step
-establishes a baseline; it does not yet change the PPU renderer. Complete
+selected independent visual ROMs and existing regressions. The first checkpoint established a baseline; subsequent checkpoints add
+SCX coarse sampling and separate SCY bitplane reads. Complete
 Mealybug conformance and a full FIFO rewrite are not acceptance prerequisites.
 
-The current renderer prepares background and object color indices at Mode 3
-entry. It emits pixels and samples palettes later, but does not re-read SCX
-and SCY at tile-fetch time. Changing this requires keeping object-behind-BG
-priority consistent with the background actually fetched, and retaining
-window behavior and existing Mode 3 stalls.
+At the initial baseline the renderer prepared background/object color indices
+at Mode 3 entry. The current background path has distinct tile-map and
+bitplane sampling stages. Object-behind-BG priority is evaluated at output;
+window preparation and simplified Mode 3 stalls remain separate paths.
 
 [Pan Docs scrolling](https://gbdev.io/pandocs/Scrolling.html) describes repeated
 scroll-register sampling during tile fetch, with SCX's low three bits sampled
@@ -123,3 +122,39 @@ Girl both complete 3,600 frames with their preceding final frame hashes;
 the supplied Big2Small player SRAM remains unchanged. The rebuilt libretro
 `.so` includes the change. These regressions supplement, rather than replace,
 the still-failing Mealybug timing measurements above.
+
+## Separate SCY bitplane reads
+
+Background fetches now latch a tile number, read the low bitplane two dots
+later and the high bitplane after another two dots, then commit its eight
+pixels to the cache. SCY is sampled for the tile-map row and independently
+for each bitplane's row offset. The tile number remains latched if SCY crosses
+a tile-map row between stages. SCX coarse sampling keeps its prior phase.
+This follows the DMG register sampling behavior described in
+[Pan Docs scrolling](https://gbdev.io/pandocs/Scrolling.html) and the separate
+[fetch stages](https://gbdev.io/pandocs/pixel_fifo.html).
+
+New public PPU tests write SCY before, between and after the bitplane reads,
+checking new-row data, mixed bitplanes and already-read data respectively.
+Another test crosses a tile-map row after the map read and verifies that only
+the next tile number changes. The preceding implementation fails the new
+SCY regression. These are sampling tests on the current clock baseline, not
+independent proof of every T-cycle in sprite/FIFO arbitration.
+
+### Bounded investigation of the remaining SCX pixels
+
+Temporary traces show, for example, line 8's third tile sampled at dot 112
+and SCX written at dot 114. Testing coarse-sampling phases 6, 7, 8, 9 and 10
+yielded 84, 84, 77, 80 and 45 SCX-high differing pixels. None reached an exact
+match, and the lower mismatch count alone does not establish hardware timing.
+Those variants were discarded; the existing phase remains. The surviving
+SCX differences need explicit fetch/sprite interaction evidence.
+
+### Measured SCY result
+
+The SCY diagnostic decreases from 9,873 to **8,330 differing pixels**, still
+FAIL. SCX-high remains 84; BGP and SCX-low stay at 3,642 and 540. `make test`,
+67/67 default Mooneye cases and GBIT (244/244 ordinary + 256/256 CB) pass.
+Both 3,600-frame homebrew profiles preserve their prior final frame hashes
+and the original supplied SRAM. The rebuilt core includes these stages, but
+full raster-effect compatibility has not been established.

@@ -44,6 +44,7 @@ private:
     void prepareScanline();
     void renderPixel(size_t screenX);
     void advanceBackgroundFetch();
+    uint8_t readBackgroundBitplane(bool high) const;
     void prepareObjects();
     uint8_t getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
                          bool unsignedTileData) const;
@@ -76,7 +77,9 @@ private:
     uint16_t dot = 0;
     uint16_t mode3Duration = 172;
     uint8_t scanlineFineScroll = 0;
-    uint8_t scanlineBackgroundY = 0;
+    uint8_t backgroundFetchTile = 0;
+    uint8_t backgroundFetchLow = 0;
+    uint8_t backgroundFetchHigh = 0;
     uint16_t backgroundFetchTicks = 0;
     uint16_t scanlineBackgroundMap = 0;
     bool scanlineBackgroundEnabled = false;

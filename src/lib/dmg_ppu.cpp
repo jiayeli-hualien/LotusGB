@@ -369,7 +369,7 @@ void DmgPpu::prepareScanline() {
     scanlineObjectUsesPalette1.fill(false);
     scanlineObjectBehindBg.fill(false);
     backgroundFetchTicks = 0;
-    scanlineBackgroundY = static_cast<uint8_t>(scrollY + ly);
+    backgroundFetchTile = backgroundFetchLow = backgroundFetchHigh = 0;
 
     const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const uint16_t bgTileMapOffset = (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
@@ -406,23 +406,48 @@ void DmgPpu::prepareScanline() {
         prepareObjects();
 }
 
+uint8_t DmgPpu::readBackgroundBitplane(bool high) const {
+    int tileOffset;
+    if (lcdControl & TILE_DATA_SELECT_MASK) {
+        tileOffset = backgroundFetchTile * 16;
+    } else {
+        const int signedIndex = backgroundFetchTile < 0x80
+                                    ? backgroundFetchTile : backgroundFetchTile - 0x100;
+        tileOffset = 0x1000 + signedIndex * 16;
+    }
+    // On DMG, each bitplane samples SCY separately, while the tile number
+    // remains latched from the preceding tile-map read.
+    const uint8_t row = static_cast<uint8_t>(scrollY + ly) & 7;
+    return videoRam[tileOffset + row * 2 + (high ? 1 : 0)];
+}
+
 void DmgPpu::advanceBackgroundFetch() {
-    // Six startup dots precede the first useful tile fetch. Later BG tiles
-    // start eight dots apart; object/window stalls pause this baseline clock.
-    // Only SCX coarse sampling is modeled here. SCY/bitplane and LCDC fetch
-    // stages remain separate work, rather than sampling registers per pixel.
-    if (backgroundFetchTicks >= 6 && (backgroundFetchTicks - 6) % 8 == 0 &&
-        scanlineBackgroundEnabled) {
+    // Keep the existing startup/8-dot schedule while splitting the tile-map
+    // and bitplane reads into separate two-dot stages. Sprite/window stalls
+    // pause this baseline clock; exact FIFO arbitration remains future work.
+    if (backgroundFetchTicks >= 6 && scanlineBackgroundEnabled) {
+        const unsigned phase = (backgroundFetchTicks - 6) % 8;
         const unsigned tileColumn = (backgroundFetchTicks - 6) / 8;
-        const uint8_t sourceX = static_cast<uint8_t>((scrollX & 0xF8) + tileColumn * 8);
-        for (int pixel = 0; pixel < 8; ++pixel) {
-            const int screenX = static_cast<int>(tileColumn * 8) + pixel - scanlineFineScroll;
-            if (screenX < 0 || screenX >= static_cast<int>(FRAME_WIDTH) ||
-                (scanlineDrewWindow && screenX >= scanlineWindowStartX))
-                continue;
-            scanlineBgColorIndices[screenX] = getTileMapPixel(
-                scanlineBackgroundMap, static_cast<uint8_t>(sourceX + pixel),
-                scanlineBackgroundY);
+        if (phase == 0) {
+            const uint8_t sourceX = static_cast<uint8_t>((scrollX & 0xF8) + tileColumn * 8);
+            const uint8_t sourceY = static_cast<uint8_t>(scrollY + ly);
+            backgroundFetchTile = videoRam[scanlineBackgroundMap +
+                                           (sourceY / 8) * 32 + sourceX / 8];
+        } else if (phase == 2) {
+            backgroundFetchLow = readBackgroundBitplane(false);
+        } else if (phase == 4) {
+            backgroundFetchHigh = readBackgroundBitplane(true);
+        } else if (phase == 6) {
+            for (int pixel = 0; pixel < 8; ++pixel) {
+                const int screenX = static_cast<int>(tileColumn * 8) + pixel - scanlineFineScroll;
+                if (screenX < 0 || screenX >= static_cast<int>(FRAME_WIDTH) ||
+                    (scanlineDrewWindow && screenX >= scanlineWindowStartX))
+                    continue;
+                const int bit = 7 - pixel;
+                scanlineBgColorIndices[screenX] =
+                    ((backgroundFetchLow >> bit) & 1) |
+                    (((backgroundFetchHigh >> bit) & 1) << 1);
+            }
         }
     }
     ++backgroundFetchTicks;

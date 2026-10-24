@@ -19,6 +19,7 @@ constexpr uint16_t BGP = 0xFF47;
 constexpr uint16_t OBP0 = 0xFF48;
 constexpr uint16_t OBP1 = 0xFF49;
 constexpr uint16_t SCX = 0xFF43;
+constexpr uint16_t SCY = 0xFF42;
 constexpr uint16_t WX = 0xFF4B;
 constexpr uint16_t WY = 0xFF4A;
 
@@ -630,6 +631,43 @@ void testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard() {
     }
 }
 
+void testBackgroundBitplanesSampleScySeparately() {
+    for (unsigned writeDot : {87U, 89U, 91U}) {
+        InterruptRegisters interrupts;
+        DmgPpu ppu(interrupts);
+        writeTileRow(ppu, 0, 0, 0xFF, 0x00); // Row 0: color 1.
+        writeTileRow(ppu, 0, 1, 0x00, 0xFF); // Row 1: color 2.
+        ppu.write(BGP, 0xE4);
+        ppu.write(LCDC, 0x91);
+        ppu.advanceTCycles(writeDot - 2); // Startup begins at internal dot 2.
+        ppu.write(SCY, 1);
+        ppu.advanceTCycles(456 - writeDot);
+        const uint8_t expected = writeDot == 87 ? 2 : writeDot == 89 ? 3 : 1;
+        expect(ppu.getFrameBuffer()[0] == expected,
+               "SCY changes before/between/after bitplane reads affect only unread data");
+        expect(ppu.getFrameBuffer()[8] == 2,
+               "subsequent tile bitplanes use the new SCY row");
+    }
+}
+
+void testScyTileNumberRemainsLatchedBetweenFetchStages() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    writeTileRow(ppu, 0, 0, 0xFF, 0x00);
+    writeTileRow(ppu, 1, 0, 0x00, 0xFF);
+    for (int x = 0; x < 32; ++x)
+        ppu.write(0x9820 + x, 1); // Tile-map row 1 selects a different tile.
+    ppu.write(BGP, 0xE4);
+    ppu.write(LCDC, 0x91);
+    ppu.advanceTCycles(85); // Dot 87, after the first tile-map read.
+    ppu.write(SCY, 8);
+    ppu.advanceTCycles(369);
+    expect(ppu.getFrameBuffer()[0] == 1,
+           "SCY does not replace a tile number already fetched from the map");
+    expect(ppu.getFrameBuffer()[8] == 2,
+           "the next tile-map read samples the new SCY tile row");
+}
+
 void testObjectBehindBackgroundUsesFetchedScrollPixels() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -817,6 +855,8 @@ int main() {
     testWindowPositionAndWindowTileMap();
     testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard();
     testObjectBehindBackgroundUsesFetchedScrollPixels();
+    testBackgroundBitplanesSampleScySeparately();
+    testScyTileNumberRemainsLatchedBetweenFetchStages();
     testWindowYTriggerAndHiddenRows();
     testWindowYRequiresScanlineStartEquality();
     testObjectsUseTransparencyPaletteAndPriority();
