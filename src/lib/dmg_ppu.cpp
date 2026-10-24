@@ -52,6 +52,7 @@ constexpr size_t MAX_OBJECTS_PER_SCANLINE = 10;
 DmgPpu::DmgPpu(IInterruptController &interrupts) : interrupts(interrupts) {}
 
 void DmgPpu::initializeDmgPostBootState() {
+    startupScanline = false;
     lcdControl = 0x91;
     statInterruptEnable = 0;
     scrollY = 0;
@@ -68,19 +69,23 @@ void DmgPpu::initializeDmgPostBootState() {
     dot = 0;
     scanlineDrewWindow = false;
     frameBuffer.fill(0);
+    lycCoincidence = true;
     statInterruptLine = false;
 }
 
 uint8_t DmgPpu::read(uint16_t address) {
     if (address >= VRAM_START && address <= VRAM_END) {
-        if (lcdEnabled() && getMode() == 3)
+        if (lcdEnabled() && (getMode() == 3 ||
+            (getMode() == 2 && dot >= MODE2_DOTS - 2)))
             return 0xFF;
         return videoRam[address - VRAM_START];
     }
 
     if (address >= OAM_START && address <= OAM_END) {
         const uint8_t mode = getMode();
-        if (lcdEnabled() && (mode == 2 || mode == 3))
+        if (lcdEnabled() && (mode == 2 || mode == 3 ||
+            (dot >= DOTS_PER_SCANLINE - 2 &&
+             (ly + 1) % SCANLINES_PER_FRAME < VISIBLE_SCANLINES)))
             return 0xFF;
         return objectRam[address - OAM_START];
     }
@@ -97,7 +102,7 @@ uint8_t DmgPpu::read(uint16_t address) {
         case SCX_ADDRESS:
             return scrollX;
         case LY_ADDRESS:
-            return ly;
+            return reportedLy();
         case LYC_ADDRESS:
             return lyCompare;
         case BGP_ADDRESS:
@@ -124,7 +129,10 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
 
     if (address >= OAM_START && address <= OAM_END) {
         const uint8_t mode = getMode();
-        if (!lcdEnabled() || (mode != 2 && mode != 3))
+        // The final two Mode 2 dots permit OAM writes while reads remain
+        // blocked; the LCD-on write test verifies this distinct bus window.
+        if (!lcdEnabled() || (mode != 3 &&
+            (mode != 2 || dot >= MODE2_DOTS - 2)))
             objectRam[address - OAM_START] = value;
         return;
     }
@@ -134,7 +142,10 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
             const bool wasEnabled = lcdEnabled();
             lcdControl = value;
             if (wasEnabled != lcdEnabled()) {
-                dot = 0;
+                startupScanline = lcdEnabled();
+                // LCD startup begins two dots into the normal scanline timeline.
+                // Mooneye lcdon_timing-GS checks LY, mode and access windows.
+                dot = startupScanline ? 2 : 0;
                 ly = 0;
                 windowLineCounter = 0;
                 mode3Duration = MODE3_DOTS;
@@ -210,10 +221,16 @@ uint8_t DmgPpu::getMode() const {
     if (ly >= VISIBLE_SCANLINES)
         return 1;
     if (dot < MODE2_DOTS)
-        return 2;
+        return startupScanline ? 0 : 2;
     if (dot < MODE2_DOTS + mode3Duration)
         return 3;
     return 0;
+}
+
+uint8_t DmgPpu::reportedLy() const {
+    // The readable line counter changes two dots before the mode timeline.
+    return dot >= DOTS_PER_SCANLINE - 2
+        ? static_cast<uint8_t>((ly + 1) % SCANLINES_PER_FRAME) : ly;
 }
 
 bool DmgPpu::lcdEnabled() const {
@@ -221,7 +238,7 @@ bool DmgPpu::lcdEnabled() const {
 }
 
 bool DmgPpu::lyEqualsLyc() const {
-    return ly == lyCompare;
+    return lycCoincidence;
 }
 
 bool DmgPpu::statInterruptSignal() const {
@@ -236,6 +253,14 @@ bool DmgPpu::statInterruptSignal() const {
 }
 
 void DmgPpu::updateStatInterruptLine() {
+    // The LY comparator clock stops with the LCD. Retain both its flag and
+    // interrupt edge history until the LCD starts comparing again.
+    // Mooneye acceptance/ppu/stat_lyc_onoff.s documents all four transitions.
+    if (!lcdEnabled())
+        return;
+    // During the two-dot LY transition neither the old nor the next line
+    // compares equal (Mooneye lcdon_timing-GS checks LYC=0 and LYC=1).
+    lycCoincidence = dot < DOTS_PER_SCANLINE - 2 && ly == lyCompare;
     const bool signal = statInterruptSignal();
     if (signal && !statInterruptLine)
         interrupts.requestInterrupt(INTERRUPT_LCD_STAT);
@@ -252,7 +277,8 @@ void DmgPpu::advanceDot() {
     // writes affect only pixels not yet sent to the LCD.
     const uint16_t firstPixelDot =
         MODE2_DOTS + 13 + scanlineFineScroll;
-    if (ly < VISIBLE_SCANLINES && dot >= firstPixelDot &&
+    if (ly < VISIBLE_SCANLINES && scanlineOutputX < FRAME_WIDTH &&
+        dot >= firstPixelDot &&
         dot < MODE2_DOTS + mode3Duration + 1) {
         bool outputStalled = false;
         if (scanlineWindowPenaltyPending &&
@@ -283,8 +309,9 @@ void DmgPpu::advanceDot() {
         ++windowLineCounter;
 
     if (dot == DOTS_PER_SCANLINE) {
-        dot = 0;
         ++ly;
+        startupScanline = false;
+        dot = 0;
         if (ly == VISIBLE_SCANLINES)
             interrupts.requestInterrupt(INTERRUPT_VBLANK);
         else if (ly == SCANLINES_PER_FRAME) {

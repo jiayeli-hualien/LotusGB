@@ -67,7 +67,8 @@ void testVisibleLineModesAndVideoMemoryAccess() {
     ppu.write(VRAM, 0x12);
     ppu.write(OAM, 0x34);
     ppu.write(LCDC, 0x80);
-    expect((ppu.read(STAT) & 0x03) == 2, "LCD enable begins visible line in mode 2");
+    ppu.advanceTCycles(454); // Check normal scanlines after the LCD startup line.
+    expect((ppu.read(STAT) & 0x03) == 2, "normal visible line begins in mode 2");
     expect(ppu.read(VRAM) == 0x12, "VRAM is accessible during mode 2");
     expect(ppu.read(OAM) == 0xFF, "OAM reads are blocked during mode 2");
     ppu.write(OAM, 0x56);
@@ -88,11 +89,110 @@ void testVisibleLineModesAndVideoMemoryAccess() {
     expect(ppu.read(VRAM) == 0x12, "blocked mode 3 write does not alter VRAM");
     expect(ppu.read(OAM) == 0x34, "blocked mode 2 or 3 writes do not alter OAM");
 
-    ppu.advanceTCycles(203);
-    expect(ppu.read(LY) == 0, "LY stays on the current line before dot 456");
+    ppu.advanceTCycles(201);
+    expect(ppu.read(LY) == 1, "LY stays on the current line before dot 454");
     ppu.advanceTCycles(1);
-    expect(ppu.read(LY) == 1, "LY increments after 456 dots");
+    expect(ppu.read(LY) == 2, "readable LY increments two dots before mode 2");
+    expect((ppu.read(STAT) & 3) == 0, "mode 0 remains active at the early LY edge");
+    ppu.advanceTCycles(2);
     expect((ppu.read(STAT) & 0x03) == 2, "the next visible line begins in mode 2");
+}
+
+void testLcdStartupLineBeginsInModeZero() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    ppu.write(OAM, 0x34);
+    ppu.write(VRAM, 0x12);
+    ppu.write(STAT, STAT_MODE2_INTERRUPT);
+    ppu.write(LCDC, 0x80);
+    expect((ppu.read(STAT) & 3) == 0, "LCD startup line begins in mode 0");
+    expect(!(interrupts.read(IF) & INTERRUPT_LCD_STAT),
+           "LCD startup does not generate a mode 2 interrupt");
+    expect(ppu.read(OAM) == 0x34 && ppu.read(VRAM) == 0x12,
+           "OAM and VRAM are accessible in startup mode 0");
+    ppu.write(OAM, 0x56);
+    ppu.advanceTCycles(77);
+    expect((ppu.read(STAT) & 3) == 0, "startup mode 0 lasts until dot 78");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 3) == 3, "startup line proceeds directly to mode 3");
+    expect(ppu.read(OAM) == 0xff && ppu.read(VRAM) == 0xff,
+           "startup mode 3 restricts OAM and VRAM access");
+    ppu.advanceTCycles(171);
+    expect((ppu.read(STAT) & 3) == 3, "startup mode 3 lasts 172 dots");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 3) == 0, "startup HBlank begins at elapsed dot 250");
+    ppu.advanceTCycles(201);
+    expect(ppu.read(LY) == 0, "startup LY remains zero through elapsed dot 451");
+    ppu.advanceTCycles(1);
+    expect(ppu.read(LY) == 1, "startup LY advances at elapsed dot 452");
+    expect((ppu.read(STAT) & 3) == 0, "startup LY edge precedes the mode 2 edge");
+    ppu.advanceTCycles(2);
+    expect((ppu.read(STAT) & 3) == 2, "following line uses normal mode 2");
+    expect(interrupts.read(IF) & INTERRUPT_LCD_STAT,
+           "following line requests the first mode 2 interrupt");
+    ppu.write(LCDC, 0);
+    expect(ppu.read(OAM) == 0x56, "startup mode 0 OAM writes take effect");
+    ppu.write(LCDC, 0x80);
+    expect((ppu.read(STAT) & 3) == 0, "each LCD restart uses the startup mode");
+}
+
+void testLyTransitionSeparatesComparisonAndOamReadAccess() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    ppu.write(OAM, 0x34);
+    ppu.write(LYC, 1);
+    ppu.write(STAT, STAT_LYC_INTERRUPT);
+    ppu.write(LCDC, 0x80);
+    ppu.advanceTCycles(451);
+    expect(ppu.read(LY) == 0 && ppu.read(OAM) == 0x34,
+           "startup LY and OAM access remain unchanged before the transition");
+    ppu.advanceTCycles(1);
+    expect(ppu.read(LY) == 1 && (ppu.read(STAT) & 7) == 0,
+           "readable LY advances before mode 2 and LYC comparison");
+    expect(ppu.read(OAM) == 0xff,
+           "OAM reads are blocked during the two-dot line transition");
+    ppu.write(OAM, 0x56);
+    expect(!(interrupts.read(IF) & INTERRUPT_LCD_STAT),
+           "LYC interrupt waits for the comparison clock after the transition");
+    ppu.advanceTCycles(2);
+    expect((ppu.read(STAT) & 7) == 6,
+           "mode 2 and LYC match become active after the transition");
+    expect(interrupts.read(IF) & INTERRUPT_LCD_STAT,
+           "LYC match requests its interrupt after the transition");
+    ppu.write(LCDC, 0);
+    expect(ppu.read(OAM) == 0x56,
+           "OAM writes still pass at the early read-blocking edge");
+
+    // The old line's comparison must also clear during the transition.
+    ppu.write(LYC, 0);
+    ppu.write(LCDC, 0x80);
+    ppu.advanceTCycles(452);
+    expect(!(ppu.read(STAT) & 4),
+           "neither old nor new LY matches during the transition window");
+}
+
+void testVramReadBlockPrecedesModeThree() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    ppu.write(VRAM, 0x12);
+    ppu.write(OAM, 0x34);
+    ppu.write(LCDC, 0x80);
+    ppu.advanceTCycles(454 + 77);
+    expect(ppu.read(VRAM) == 0x12, "VRAM is readable before the early mode 3 edge");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 3) == 2 && ppu.read(VRAM) == 0xff,
+           "VRAM reads block two dots before STAT reports mode 3");
+    expect(ppu.read(OAM) == 0xff, "OAM reads remain blocked at the Mode 2 tail");
+    ppu.write(OAM, 0x56);
+    ppu.write(VRAM, 0x56);
+    ppu.advanceTCycles(2);
+    ppu.write(OAM, 0x88);
+    ppu.write(VRAM, 0x88);
+    ppu.write(LCDC, 0);
+    expect(ppu.read(VRAM) == 0x56,
+           "VRAM writes pass at the early read edge but block in mode 3");
+    expect(ppu.read(OAM) == 0x56,
+           "OAM writes pass in the final two Mode 2 dots but block in Mode 3");
 }
 
 void testFineScrollAddsStartupDotsToMode3() {
@@ -106,13 +206,13 @@ void testFineScrollAddsStartupDotsToMode3() {
     ppu.write(BGP, 0xE4);
     ppu.write(LCDC, 0x91);
 
-    ppu.advanceTCycles(80);
+    ppu.advanceTCycles(78);
     expect((ppu.read(STAT) & 0x03) == 3,
-           "mode 3 begins after the 80-dot OAM scan");
+           "startup transfer begins before the fine-scroll discard");
     expect(ppu.getFrameBuffer()[0] == 0,
            "SCX fine scroll delays the first visible pixel by three dots");
 
-    ppu.advanceTCycles(15); // Reach dot 95; the first pixel is due at dot 96.
+    ppu.advanceTCycles(15); // Reach elapsed dot 93; the first pixel is due at dot 94.
     expect(ppu.getFrameBuffer()[0] == 0,
            "the first pixel remains pending before the fine-scroll delay ends");
     ppu.advanceTCycles(1);
@@ -144,7 +244,7 @@ void testVisibleWindowAddsSixDotsToMode3() {
     ppu.write(WX, 9); // Window begins at screen x=2.
     ppu.write(LCDC, 0xF1); // Enable LCD, window, unsigned tiles, and BG.
 
-    ppu.advanceTCycles(100);
+    ppu.advanceTCycles(98);
     const auto &frame = ppu.getFrameBuffer();
     expect(frame[1] == 1,
            "background pixels are emitted before the window penalty");
@@ -180,7 +280,7 @@ void testObjectFetchPenaltyStallsPixelsAndExtendsMode3() {
     ppu.write(OAM + 2, 2);
     ppu.write(LCDC, 0x93);
 
-    ppu.advanceTCycles(95);
+    ppu.advanceTCycles(93);
     const auto &frame = ppu.getFrameBuffer();
     expect(frame[2] == 1,
            "background pixels before the object are emitted on schedule");
@@ -220,7 +320,7 @@ void testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty() {
     ppu.write(OAM + 6, 2);
     ppu.write(LCDC, 0x93);
 
-    ppu.advanceTCycles(113);
+    ppu.advanceTCycles(111);
     const auto &frame = ppu.getFrameBuffer();
     expect(frame[7] == 0,
            "a later object in the same fetched tile stalls its first pixel");
@@ -244,7 +344,7 @@ void testObjectAtXZeroUsesTheFixedFetchPenalty() {
     ppu.write(OAM + 1, 0); // Fully off-screen, with the DMG's fixed penalty.
     ppu.write(LCDC, 0x93);
 
-    ppu.advanceTCycles(262);
+    ppu.advanceTCycles(260);
     expect((ppu.read(STAT) & 0x03) == 3,
            "an X=0 object keeps mode 3 active through dot 262");
     ppu.advanceTCycles(1);
@@ -275,7 +375,7 @@ void testStatInterruptUsesRisingEdgeOfCombinedSources() {
     ppu.write(STAT, STAT_MODE2_INTERRUPT | STAT_MODE0_INTERRUPT);
     ppu.write(LCDC, 0x80);
     expect((interrupts.read(IF) & INTERRUPT_LCD_STAT) != 0,
-           "entering enabled mode 2 requests a STAT interrupt");
+           "startup mode 0 requests an enabled STAT interrupt");
 
     interrupts.acknowledgeInterrupt(INTERRUPT_LCD_STAT);
     ppu.advanceTCycles(80);
@@ -303,6 +403,36 @@ void testLycCoincidenceAndStatInterrupt() {
     expect((ppu.read(STAT) & 0x04) != 0, "LYC flag is set when LY reaches LYC");
     expect((interrupts.read(IF) & INTERRUPT_LCD_STAT) != 0,
            "LY=LYC requests STAT interrupt when enabled");
+}
+
+void testLycComparisonStopsWhileLcdIsOff() {
+    for (bool previousMatch : {false, true}) {
+        for (bool nextMatch : {false, true}) {
+            InterruptRegisters interrupts;
+            DmgPpu ppu(interrupts);
+            ppu.write(STAT, STAT_LYC_INTERRUPT);
+            ppu.write(LCDC, 0x80);
+            ppu.advanceTCycles(456U * 144U);
+            ppu.write(LYC, previousMatch ? 144 : 1);
+            ppu.write(LCDC, 0);
+            interrupts.acknowledgeInterrupt(INTERRUPT_LCD_STAT);
+            expect(ppu.read(LY) == 0, "disabling LCD resets LY");
+            expect(bool(ppu.read(STAT) & 4) == previousMatch,
+                   "LCD disable retains the previous LY comparison flag");
+            ppu.write(LYC, nextMatch ? 0 : 1);
+            ppu.advanceTCycles(456);
+            expect(bool(ppu.read(STAT) & 4) == previousMatch,
+                   "LYC writes and clock ticks do not compare while LCD is off");
+            expect(!(interrupts.read(IF) & INTERRUPT_LCD_STAT),
+                   "the stopped comparator does not request interrupts");
+            ppu.write(LCDC, 0x80);
+            expect(bool(ppu.read(STAT) & 4) == nextMatch,
+                   "LCD enable resumes comparison against LY zero");
+            expect(bool(interrupts.read(IF) & INTERRUPT_LCD_STAT) ==
+                       (!previousMatch && nextMatch),
+                   "LCD enable requests LYC interrupt only for a new match");
+        }
+    }
 }
 
 void testBackgroundTilesAndPaletteRenderToFrameBuffer() {
@@ -333,7 +463,7 @@ void testBackgroundPaletteWriteAffectsOnlyFuturePixels() {
 
     // The first visible pixel is emitted at dot 93. Stop after eight pixels,
     // then change BGP before the next pixel is emitted.
-    ppu.advanceTCycles(100);
+    ppu.advanceTCycles(98);
     ppu.write(BGP, 0x0C); // Color index 1 now maps to shade 3.
     ppu.advanceTCycles(1);
 
@@ -448,6 +578,9 @@ void testSixteenPixelObjectsUsePairedTiles() {
 int main() {
     testDisabledPpuRegistersAndVideoMemory();
     testVisibleLineModesAndVideoMemoryAccess();
+    testLcdStartupLineBeginsInModeZero();
+    testLyTransitionSeparatesComparisonAndOamReadAccess();
+    testVramReadBlockPrecedesModeThree();
     testFineScrollAddsStartupDotsToMode3();
     testVisibleWindowAddsSixDotsToMode3();
     testObjectFetchPenaltyStallsPixelsAndExtendsMode3();
@@ -456,6 +589,7 @@ int main() {
     testVblankInterruptAndFrameRollover();
     testStatInterruptUsesRisingEdgeOfCombinedSources();
     testLycCoincidenceAndStatInterrupt();
+    testLycComparisonStopsWhileLcdIsOff();
     testBackgroundTilesAndPaletteRenderToFrameBuffer();
     testBackgroundPaletteWriteAffectsOnlyFuturePixels();
     testSignedBackgroundTileAddressing();

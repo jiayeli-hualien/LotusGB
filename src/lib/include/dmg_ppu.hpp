@@ -35,6 +35,7 @@ public:
 
 private:
     uint8_t getMode() const;
+    uint8_t reportedLy() const;
     bool lcdEnabled() const;
     bool lyEqualsLyc() const;
     bool statInterruptSignal() const;
@@ -78,6 +79,8 @@ private:
     uint16_t objectPenaltyDotsRemaining = 0;
     bool scanlineWindowPenaltyPending = false;
     bool scanlineDrewWindow = false;
+    bool startupScanline = false;
+    bool lycCoincidence = true;
     bool statInterruptLine = false;
 };
 
