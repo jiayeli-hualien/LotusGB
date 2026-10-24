@@ -10,7 +10,7 @@
 namespace {
 
 bool hasPassed(LOTUSGB::Reg &registers) {
-    return registers.getRefA() == 0 && registers.getRefB() == 3 &&
+    return registers.getRefB() == 3 &&
            registers.getRefC() == 5 && registers.getRefD() == 8 &&
            registers.getRefE() == 13 && registers.getRefH() == 21 &&
            registers.getRefL() == 34;
@@ -53,7 +53,9 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    LOTUSGB::GameBoySystem system(std::move(rom));
+    // Keep the ROM image to recognize the protocol breakpoint. The curated
+    // tests report from fixed ROM code, not bank-switched RAM/HRAM code.
+    LOTUSGB::GameBoySystem system(rom);
     constexpr uint64_t MAX_M_CYCLES = 10'000'000;
     for (uint64_t cycle = 0; cycle < MAX_M_CYCLES; ++cycle) {
         const auto result = system.stepOneCycle();
@@ -63,6 +65,14 @@ int main(int argc, char **argv) {
         }
 
         LOTUSGB::Reg registers = system.getCpuRegisters();
+        // Register patterns alone can occur during normal test execution.
+        // Mooneye requires LD B,B ($40) as a breakpoint as well. PC points
+        // past the prefetched opcode in this CPU, so inspect PC-1 only when
+        // a complete instruction's next opcode has been fetched.
+        const uint16_t opcodeAddress = static_cast<uint16_t>(registers.getRefPC() - 1);
+        if (!result.fetchedNewInst || opcodeAddress >= 0x8000 ||
+            opcodeAddress >= rom.size() || rom[opcodeAddress] != 0x40)
+            continue;
         if (hasPassed(registers)) {
             std::cout << "PASS after " << cycle + 1 << " M-cycles\n";
             return 0;
