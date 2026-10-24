@@ -27,6 +27,7 @@ void Timer::initializeDmgPostBootState() {
     tma = 0;
     tac = 0;
     overflowReloadTCycles = 0;
+    reloadWindowTCycles = 0;
 }
 
 uint8_t Timer::read(uint16_t address) {
@@ -55,17 +56,17 @@ void Timer::write(uint16_t address, uint8_t value) {
             break;
         }
         case TIMA_ADDRESS:
-            // A write during the overflow window cancels a pending reload,
-            // except on the reload cycle where the hardware ignores the write.
-            if (overflowReloadTCycles == 1)
+            // Writes in the delay cancel reload; the following reload M-cycle
+            // ignores TIMA writes for all four T-cycles.
+            if (reloadWindowTCycles > 0)
                 break;
             tima = value;
-            if (overflowReloadTCycles > 1)
+            if (overflowReloadTCycles > 0)
                 overflowReloadTCycles = 0;
             break;
         case TMA_ADDRESS:
             tma = value;
-            if (overflowReloadTCycles == 1)
+            if (reloadWindowTCycles > 0)
                 tima = value;
             break;
         case TAC_ADDRESS: {
@@ -81,9 +82,14 @@ void Timer::write(uint16_t address, uint8_t value) {
 
 void Timer::advanceTCycles(uint64_t tCycles) {
     for (uint64_t cycle = 0; cycle < tCycles; ++cycle) {
+        if (reloadWindowTCycles > 0)
+            --reloadWindowTCycles;
         if (overflowReloadTCycles > 0) {
             --overflowReloadTCycles;
             if (overflowReloadTCycles == 0) {
+                // The load signal remains active for this entire M-cycle:
+                // TIMA writes are ignored and TMA writes also update TIMA.
+                reloadWindowTCycles = 4;
                 tima = tma;
                 interrupts.requestInterrupt(INTERRUPT_TIMER);
             }

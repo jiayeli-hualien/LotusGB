@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a small, curated Mooneye DMG timing set and save a local report."""
+"""Run selected Mooneye DMG PPU/interrupt or timer checks and save a local report."""
 
 import argparse
 from pathlib import Path
@@ -23,6 +23,14 @@ TESTS = (
 )
 
 
+TIMER_TESTS = tuple(f"acceptance/timer/{name}.gb" for name in (
+    "div_write", "rapid_toggle", "tim00", "tim00_div_trigger",
+    "tim01", "tim01_div_trigger", "tim10", "tim10_div_trigger",
+    "tim11", "tim11_div_trigger", "tima_reload",
+    "tima_write_reloading", "tma_write_reloading",
+))
+
+
 # Diagnostic coverage: known failures are retained to track unimplemented edges.
 EXTENDED_TESTS = (
     "acceptance/ppu/intr_2_mode0_timing_sprites.gb",
@@ -37,10 +45,18 @@ def main() -> int:
     parser.add_argument("--suite-dir", required=True, type=Path,
                         help="Root of an extracted Mooneye test-suite archive")
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--group", choices=("ppu", "timer", "all"), default="ppu",
+                        help="Selected regression group (default: ppu)")
     parser.add_argument("--extended", action="store_true",
                         help="Include diagnostic PPU cases with known failures")
     args = parser.parse_args()
-    tests = TESTS + EXTENDED_TESTS if args.extended else TESTS
+    if args.extended and args.group == "timer":
+        parser.error("--extended adds PPU diagnostics; use --group ppu or all")
+    tests = () if args.group == "timer" else TESTS
+    if args.extended:
+        tests += EXTENDED_TESTS
+    if args.group in ("timer", "all"):
+        tests += TIMER_TESTS
 
     missing = [name for name in tests if not (args.suite_dir / name).is_file()]
     if missing:
@@ -74,7 +90,7 @@ def main() -> int:
             print(f"     {output.splitlines()[-1]}")
 
     report = [
-        "# Mooneye PPU timing checks",
+        f"# Mooneye timing checks: {args.group}",
         "",
         "Run with the local LotusGB system runner and externally supplied ROMs.",
         "The ROM archive is not copied into this repository.",

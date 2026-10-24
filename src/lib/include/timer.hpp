@@ -36,6 +36,7 @@ private:
     uint8_t tma = 0;
     uint8_t tac = 0;
     int overflowReloadTCycles = 0;
+    int reloadWindowTCycles = 0;
     std::function<void()> dividerApuClockCallback;
 };
 

@@ -7,7 +7,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | Area | Implemented behavior and notable DMG details | Current validation | Known gaps / next useful check |
 | --- | --- | --- | --- |
 | CPU instructions and timing | CPU advances in M-cycles and reports T-cycles. Focused behavior includes DAA and `ADD SP,e8` flags, stack/jump bus sequences, EI delay, interrupt entry, STOP/HALT distinction, HALT wake-up and HALT bug. | `make test`: `cpu_instruction_test.cpp`, `cpu_cycle_test.cpp`; GBIT instruction integration runs separately and in CI. | This is not a claim that every instruction timing edge is independently verified on hardware. Add a focused ROM only when a real disagreement or game exposes a gap. |
-| Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp`, `game_boy_system_test.cpp`, `cpu_instruction_test.cpp`. | Dedicated external timer/interrupt ROMs have not yet been added to the local workflow. |
+| Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp`, `game_boy_system_test.cpp`, `cpu_instruction_test.cpp`. | All 13 Mooneye `acceptance/timer` ROMs pass, including TIMA/TMA writes during reload. The existing PPU group also includes interrupt-entry and HALT timing ROMs; this does not cover every interrupt race. |
 | Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23: the user confirmed progress survived a restart. This covers an MBC5 + RAM + battery cartridge; it does not establish disk persistence for every mapper. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. Actual `.rtc` disk persistence also remains unverified. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
 | Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. Palette registers are sampled as pixels are emitted. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; `dmg-acid2` exact framebuffer regression passes. | `dmg-acid2` does not cover every mid-scanline effect. F-1 Race remains a scrolling/visual compatibility target. |
@@ -21,6 +21,8 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 - `make test` runs the in-repository CPU, hardware, visual, and libretro tests.
 - `make test-roms` optionally runs the selected Blargg CH3 ROMs when they are available outside the repository. This is not part of GitHub CI.
 - `make test-mooneye MOONEYE_SUITE_DIR=/path/to/extracted-suite` optionally runs eleven selected Mooneye PPU/interrupt timing ROMs. The suite stays outside the repository; logs and a Markdown report go under `build/test-roms/mooneye/`. This is not part of GitHub CI.
+- `make test-mooneye MOONEYE_GROUP=timer MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs all 13 timer cases; `MOONEYE_GROUP=all` runs the eleven default PPU/interrupt cases plus these thirteen. Reports go under `build/test-roms/mooneye-timer/` and `mooneye-all/`, respectively. These optional groups remain outside CI.
+- `make test-homebrew` runs the [local Big2Small smoke check](homebrew-check.md), optionally with `HOMEBREW_SAVE=/path/to/big2small.srm`.
 - The GBIT integration executable is a separate CPU comparison check; see the GBIT section in the README for its local command.
 
 ## Validation rule
@@ -155,3 +157,23 @@ ROMs. That experiment was reverted. Keep the SCX failure open and investigate
 interrupt sampling/entry and bus phase together; do not change the SCX delay
 formula merely to match one test. The expanded set remains twelve passes
 out of fourteen.
+
+
+### Timer reload write window (2026-10-24)
+
+The initial external timer run passed 11 of 13 Mooneye cases. Both failures
+were reload-write tests: `tima_write_reloading` and `tma_write_reloading`.
+The timer previously applied the write collision rules to the final T-cycle
+*before* reload, then discarded the reload state immediately after copying TMA.
+
+Separate the four-T-cycle pending-overflow delay from the following four-T-cycle
+reload window. TIMA writes cancel a pending reload throughout the delay;
+during the reload window they are ignored. TMA writes always update TMA and
+also update TIMA while the reload window is active. The interrupt remains
+requested at reload, four T-cycles after overflow. Public Timer-interface tests
+cover writes at each offset from overflow through the end of the reload window.
+All 13 original external timer ROMs now pass.
+
+References: [Pan Docs timer overflow behavior](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html#timer-overflow-behavior),
+[Mooneye TIMA write test](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/timer/tima_write_reloading.s),
+and [Mooneye TMA write test](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/timer/tma_write_reloading.s).

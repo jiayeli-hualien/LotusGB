@@ -10,6 +10,8 @@ TEST_ROM_DIR ?= ../test-roms/dmg_sound
 TEST_ROM_FRAMES ?= 1200
 HOMEBREW_ROM ?= ../test-roms/homebrew/big2small.gb
 HOMEBREW_SAVE ?=
+MOONEYE_GROUP ?= ppu
+MOONEYE_OUTPUT_DIR ?= $(build_dir)/test-roms/mooneye$(if $(filter ppu,$(MOONEYE_GROUP)),,-$(MOONEYE_GROUP))
 MOONEYE_SUITE_DIR ?= ../test-roms/mooneye
 
 all: build
@@ -38,7 +40,8 @@ test-mooneye:
 	python3 tools/run_mooneye_ppu_tests.py \
 		--runner "$(build_dir)/mooneye_rom_runner" \
 		--suite-dir "$(MOONEYE_SUITE_DIR)" \
-		--output-dir "$(build_dir)/test-roms/mooneye"
+		--group "$(MOONEYE_GROUP)" \
+		--output-dir "$(MOONEYE_OUTPUT_DIR)"
 
 test-homebrew:
 	$(MAKE) -C $(src_dir)/libretro build rom-test-runner build_dir=$(build_dir)

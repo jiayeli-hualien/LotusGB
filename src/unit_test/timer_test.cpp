@@ -124,6 +124,51 @@ void testTimaWriteCancelsPendingReload() {
            "cancelled overflow does not request the timer interrupt");
 }
 
+// Exercise observable writes on both sides of the four-T-cycle reload window.
+void testWritesAcrossOverflowAndReloadWindow() {
+    for (unsigned offset = 0; offset <= 8; ++offset) {
+        InterruptRegisters interrupts;
+        Timer timer(interrupts);
+        timer.write(0xFF06, 0x42);
+        timer.write(0xFF05, 0xFF);
+        timer.write(0xFF07, 0x05);
+        timer.advanceTCycles(16 + offset);
+        timer.write(0xFF05, 0x99);
+        if (offset < 4) {
+            timer.advanceTCycles(8 - offset);
+            expect(timer.read(0xFF05) == 0x99,
+                   "TIMA writes before reload cancel the entire pending reload");
+            expect((interrupts.read(0xFF0F) & 4) == 0,
+                   "cancelled reload does not request an interrupt");
+        } else {
+            expect(timer.read(0xFF05) == (offset < 8 ? 0x42 : 0x99),
+                   "TIMA writes are ignored throughout reload, then accepted");
+            expect((interrupts.read(0xFF0F) & 4) != 0,
+                   "writes during or after reload do not cancel its interrupt");
+        }
+    }
+
+    for (unsigned offset = 0; offset <= 8; ++offset) {
+        InterruptRegisters interrupts;
+        Timer timer(interrupts);
+        timer.write(0xFF06, 0x42);
+        timer.write(0xFF05, 0xFF);
+        timer.write(0xFF07, 0x05);
+        timer.advanceTCycles(16 + offset);
+        timer.write(0xFF06, 0x77);
+        expect(timer.read(0xFF06) == 0x77, "TMA writes always update TMA");
+        expect(timer.read(0xFF05) == (offset < 4 ? 0 : offset < 8 ? 0x77 : 0x42),
+               "TMA writes update TIMA only during the reload window");
+        if (offset < 4) {
+            timer.advanceTCycles(4 - offset);
+            expect(timer.read(0xFF05) == 0x77,
+                   "pending reload picks up the latest TMA value");
+            expect((interrupts.read(0xFF0F) & 4) != 0,
+                   "TMA write does not cancel the pending interrupt");
+        }
+    }
+}
+
 void testInterruptRegistersMaskAndExposeRequests() {
     InterruptRegisters interrupts;
     interrupts.write(0xFFFF, 0x05);
@@ -147,6 +192,7 @@ int main() {
     testDividerApuClockUsesFallingEdgesAndDividerWrites();
     testOverflowReloadAndInterruptAreDelayed();
     testTimaWriteCancelsPendingReload();
+    testWritesAcrossOverflowAndReloadWindow();
     testInterruptRegistersMaskAndExposeRequests();
     std::cout << "Timer tests passed\n";
 }

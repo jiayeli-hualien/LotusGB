@@ -108,6 +108,7 @@ LD_LIBRARY_PATH="../../gbit:.${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ./gbit_test
 - [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs used for targeted timing checks
 - [Tobu Tobu Girl](https://tangramgames.itch.io/tobutobugirl) — freely downloadable DMG homebrew; source code is MIT and game assets are CC BY 4.0. Its MBC1 battery-backed save makes it a useful local RetroArch save-persistence target.
 - [Tobu Tobu Girl source and build settings](https://github.com/SimonLarsen/tobutobugirl) — build declares MBC1 + RAM + battery, 16 ROM banks, and one RAM bank.
+- [Pan Docs: Timer obscure behaviour](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html) — divider edges, overflow delay, and TIMA/TMA reload-write interactions
 - [Pan Docs: Rendering](https://gbdev.io/pandocs/Rendering.html) — PPU modes, pixel output, and mode 3 timing penalties
 - [Mealybug Tearoom PPU test ROMs](https://github.com/mattcurrie/mealybug-tearoom-tests) — DMG screenshot tests for PPU register changes during mode 3 (MIT)
 - [Pan Docs: Scrolling](https://gbdev.io/pandocs/Scrolling.html) — SCX/SCY behavior, including scanline sampling of SCX fine-scroll bits
