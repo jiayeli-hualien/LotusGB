@@ -22,6 +22,7 @@ See the [DMG implementation and validation matrix](docs/dmg-validation.md) for
 the current feature scope, existing tests, and known coverage gaps.
 The [interrupt behavior and validation guide](docs/interrupts.md) documents
 IF/IE/IME, EI, HALT/STOP, peripheral requests, and unresolved timing edges.
+For repeatable local gameplay smoke checks, see the [Big2Small workflow](docs/homebrew-check.md).
 
 CPU behavior and timing are covered by focused tests and GBIT integration
 checks. The CPU advances in M-cycle steps, and the system clock distributes

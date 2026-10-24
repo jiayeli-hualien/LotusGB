@@ -5,6 +5,8 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <fstream>
+#include <filesystem>
+#include <sstream>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
@@ -22,6 +24,9 @@ unsigned videoFrameCount = 0;
 size_t audioFrameCount = 0;
 bool hasVideoFrame = false;
 std::string callbackError;
+unsigned currentFrame = 0;
+struct InputEvent { unsigned start, end, button; };
+std::vector<InputEvent> inputEvents;
 
 bool environmentCallback(unsigned command, void *data) {
     if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT) {
@@ -57,8 +62,44 @@ size_t audioSampleBatchCallback(const int16_t *, size_t frames) {
 
 void inputPollCallback() {}
 
-int16_t inputStateCallback(unsigned, unsigned, unsigned, unsigned) {
+int16_t inputStateCallback(unsigned port, unsigned device, unsigned index, unsigned id) {
+    if (port != 0 || device != RETRO_DEVICE_JOYPAD || index != 0)
+        return 0;
+    for (const auto &event : inputEvents)
+        if (event.button == id && currentFrame >= event.start && currentFrame < event.end)
+            return 1;
     return 0;
+}
+
+void readInputScript(const std::string &path, unsigned frames) {
+    std::ifstream file(path);
+    if (!file)
+        throw std::runtime_error("cannot open input script: " + path);
+    const std::array<std::pair<const char *, unsigned>, 8> buttons{{
+        {"A", RETRO_DEVICE_ID_JOYPAD_A}, {"B", RETRO_DEVICE_ID_JOYPAD_B},
+        {"START", RETRO_DEVICE_ID_JOYPAD_START}, {"SELECT", RETRO_DEVICE_ID_JOYPAD_SELECT},
+        {"UP", RETRO_DEVICE_ID_JOYPAD_UP}, {"DOWN", RETRO_DEVICE_ID_JOYPAD_DOWN},
+        {"LEFT", RETRO_DEVICE_ID_JOYPAD_LEFT}, {"RIGHT", RETRO_DEVICE_ID_JOYPAD_RIGHT}}};
+    std::string line;
+    unsigned lineNumber = 0;
+    while (std::getline(file, line)) {
+        ++lineNumber;
+        line = line.substr(0, line.find('#'));
+        std::istringstream fields(line);
+        fields >> std::ws;
+        if (fields.eof()) continue;
+        InputEvent event{};
+        std::string button, extra;
+        if (!(fields >> event.start >> event.end >> button) || fields >> extra ||
+            event.start >= event.end || event.end > frames)
+            throw std::runtime_error("invalid input interval at line " + std::to_string(lineNumber));
+        bool found = false;
+        for (const auto &entry : buttons)
+            if (button == entry.first) { event.button = entry.second; found = true; }
+        if (!found)
+            throw std::runtime_error("unknown input button: " + button);
+        inputEvents.push_back(event);
+    }
 }
 
 template <typename Function>
@@ -178,14 +219,21 @@ unsigned parseFrames(const char *value) {
 } // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 6) {
+    if (argc < 6 || argc > 8) {
         std::cerr << "Usage: " << argv[0]
-                  << " CORE.so ROM.gb FRAMES OUTPUT.rgb OUTPUT.srm\n";
+                  << " CORE.so ROM.gb FRAMES OUTPUT.rgb OUTPUT.srm [INPUT.txt [RESTORE.srm]]\n";
         return 2;
     }
 
     try {
         const unsigned frames = parseFrames(argv[3]);
+        if (argc >= 7) readInputScript(argv[6], frames);
+        if (argc == 8) {
+            for (int output : {4, 5})
+                if (std::filesystem::exists(argv[output]) &&
+                    std::filesystem::equivalent(argv[7], argv[output]))
+                    throw std::runtime_error("output must not overwrite restored save");
+        }
         const std::vector<uint8_t> rom = readBinary(argv[2]);
         CoreApi core(argv[1]);
 
@@ -204,7 +252,14 @@ int main(int argc, char **argv) {
         if (!core.loadGame(&game))
             throw std::runtime_error("core rejected ROM: " + std::string(argv[2]));
 
-        for (unsigned frame = 0; frame < frames; ++frame)
+        if (argc == 8) {
+            const auto saved = readBinary(argv[7]);
+            void *ram = core.getMemoryData(RETRO_MEMORY_SAVE_RAM);
+            if (!ram || saved.size() != core.getMemorySize(RETRO_MEMORY_SAVE_RAM))
+                throw std::runtime_error("restored save size does not match cartridge RAM");
+            std::memcpy(ram, saved.data(), saved.size());
+        }
+        for (currentFrame = 0; currentFrame < frames; ++currentFrame)
             core.run();
 
         if (!callbackError.empty())
