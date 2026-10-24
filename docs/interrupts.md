@@ -96,29 +96,20 @@ for commands and current results.
 
 ## Open audit and investigation order
 
-1. **SCX / HBlank timing conflict.** The original SCX ROM still fails its
-   SCX=0 boundary after correcting startup IME. In the current 13/14 model,
-   an extra HALT wake M-cycle makes it pass but regresses six previously
-   passing PPU timing ROMs, so that experiment was discarded. The trace shows
-   the first expected-old-LY sample succeeds, while the second test iteration
-   (sampled with one more M-cycle of delay) still reads the old LY. Capture the
-   STAT request dot, HALT wake, each entry cycle,
-   vector fetch, and final LY bus-read phase against the same clock before
-   changing CPU or PPU behavior. See the [follow-up experiment](#scx-halt-wake-follow-up-2026-10-25).
-2. **EI combinations.** EI followed by EI now has focused pending-request
+1. **EI combinations.** EI followed by EI now has focused pending-request
    coverage and passes the external `ei_sequence` ROM. EI followed by HALT
    with a later-arriving VBlank passes `halt_ime0_ei`. An already-pending
    request at EI/HALT still needs separate evidence; its return-PC behavior
    must not be inferred from ordinary HALT.
-3. **Entry races and RETI.** Check changing IE/IF during the stack writes,
+2. **Entry races and RETI.** Check changing IE/IF during the stack writes,
    cancellation/reprioritization of requests. Immediate service after RETI now
    has unit and external ROM coverage. Acceptance-time selection is still
    not proof of the remaining entry races.
-4. **Peripheral-specific gaps.** Add evidence for STAT-write glitches. Line-153 early LY reset and comparison
+3. **Peripheral-specific gaps.** Add evidence for STAT-write glitches. Line-153 early LY reset and comparison
    now have focused PPU and CPU-handler tests; finer hardware races remain open. Implement STOP wake with joypad evidence. Unconnected serial completion now
    has component/system coverage; exact serial boot phase and link peers remain separate work.
 
-Items 2–4 are coverage gaps, not confirmed bugs or prerequisites for all other
+Items 1–3 are coverage gaps, not confirmed bugs or prerequisites for all other
 emulator work. Choose an item when a reproducer or active feature needs it.
 
 For a fix, keep the chain of evidence: hardware expectation → reproducer →
@@ -134,19 +125,19 @@ all relevant evidence instead of adjusting one subsystem to satisfy one ROM.
 | Wrong IME at skipped-boot entry | System startup | Pending IF/IE before EI system test |
 | LYC comparison recomputed while LCD off | Peripheral request generation | Retained-flag and edge-history tests |
 | Missing Mode 2 STAT event at VBlank | Peripheral event / shared signal | Entry-dot, blocking, and external DIV-based timing checks |
-| SCX passes only after an extra HALT cycle | Cross-component timing, unresolved | Keep the conflicting ROM results; do not retain the experimental delay |
+| SCX/HBlank LY sample used the previous line at dot 452 | PPU readable LY edge | Assert the dot-451/dot-452 boundary and retain the expanded 14-ROM regression |
 
 
-## Bounded SCX timing experiment (2026-10-24)
+## Bounded SCX timing experiment (2026-10-24, historical checkpoint)
 
 Four isolated library builds varied only the CPU bus-access phase and an
 experimental extra IME-enabled HALT wake M-cycle. Production sources and
 core behavior were not changed by the matrix run. Each build ran the same
 14 unmodified Mooneye ROMs from `mts-20240926-1737-443f6e1`.
 
-| Bus access phase within M-cycle | Extra HALT wake M-cycle | Passes / 14 | SCX / HBlank | Additional failures relative to current model |
+| Bus access phase within M-cycle | Extra HALT wake M-cycle | Passes / 14 | SCX / HBlank | Additional failures relative to the experiment baseline |
 | --- | --- | --- | --- | --- |
-| End of T4 (current) | 0 | 12 | FAIL | None |
+| End of T4 (baseline) | 0 | 12 | FAIL | None |
 | End of T3 | 0 | 9 | FAIL | Mode 2→3, Mode 2→0, OAM access timing |
 | End of T4 | 1 | 8 | PASS | Five existing PPU mode/interrupt timing cases |
 | End of T3 | 1 | 11 | PASS | Mode 1→2 and Mode 2→0 interrupt interval |
@@ -189,9 +180,13 @@ The EI/HALT ROM waits for a later interrupt; it does not establish the behavior
 of every already-pending EI/HALT combination. No test expectations were relaxed.
 
 
-## SCX / HALT wake follow-up (2026-10-25)
+## SCX / HALT wake follow-up (2026-10-25, historical checkpoint)
 
-The current production model passes 13/14 expanded PPU diagnostics; only
+This records the state before the normal-line LY edge correction. The current
+production result is 14/14 on the expanded PPU ROM set; see the [resolution in
+the validation matrix](dmg-validation.md#normal-line-ly-edge-follow-up-2026-10-25).
+
+At that checkpoint, the production model passed 13/14 expanded PPU diagnostics; only
 [`hblank_ly_scx_timing-GS`](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ppu/hblank_ly_scx_timing-GS.s)
 fails. Its SCX=0 case samples LY twice after the Mode 0 STAT interrupt. The
 first read correctly sees the old line (`$41`); the second test iteration uses

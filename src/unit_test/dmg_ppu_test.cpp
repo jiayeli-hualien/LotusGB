@@ -90,12 +90,12 @@ void testVisibleLineModesAndVideoMemoryAccess() {
     expect(ppu.read(VRAM) == 0x12, "blocked mode 3 write does not alter VRAM");
     expect(ppu.read(OAM) == 0x34, "blocked mode 2 or 3 writes do not alter OAM");
 
-    ppu.advanceTCycles(201);
-    expect(ppu.read(LY) == 1, "LY stays on the current line before dot 454");
+    ppu.advanceTCycles(199);
+    expect(ppu.read(LY) == 1, "normal-line LY stays unchanged through dot 451");
     ppu.advanceTCycles(1);
-    expect(ppu.read(LY) == 2, "readable LY increments two dots before mode 2");
+    expect(ppu.read(LY) == 2, "normal-line LY advances at dot 452");
     expect((ppu.read(STAT) & 3) == 0, "mode 0 remains active at the early LY edge");
-    ppu.advanceTCycles(2);
+    ppu.advanceTCycles(4);
     expect((ppu.read(STAT) & 0x03) == 2, "the next visible line begins in mode 2");
 }
 
@@ -411,7 +411,7 @@ void testLastVblankLineResetsLyBeforeModeEnds() {
     expect(ppu.read(LY) == 0, "LY resets four dots after first becoming readable as 153");
     expect((ppu.read(STAT) & 3) == 1, "early LY zero does not end VBlank mode");
     interrupts.write(IF, 0);
-    ppu.advanceTCycles(453);
+    ppu.advanceTCycles(455); // LY now resets at the start of internal line 153.
     expect(ppu.read(LY) == 0 && (ppu.read(STAT) & 3) == 1,
            "the remainder of the final scanline is still LY zero in mode 1");
     expect((interrupts.read(IF) & INTERRUPT_VBLANK) == 0,
@@ -448,7 +448,7 @@ void testLastVblankLineLycComparisonAndInterruptEdges() {
         expect(bool(interrupts.read(IF) & INTERRUPT_LCD_STAT) == (lyc == 0),
                "LYC=0 requests STAT before VBlank mode ends");
         interrupts.write(IF, 0);
-        ppu.advanceTCycles(446);
+        ppu.advanceTCycles(448); // Finish line 153 from its dot-8 comparison edge.
         expect((ppu.read(STAT) & 3) == 2 && bool(ppu.read(STAT) & 4) == (lyc == 0),
                "line zero comparison survives the frame boundary without a false mismatch");
         expect((interrupts.read(IF) & INTERRUPT_LCD_STAT) == 0,

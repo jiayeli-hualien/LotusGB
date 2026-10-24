@@ -39,9 +39,8 @@ constexpr uint8_t STAT_INTERRUPT_ENABLE_MASK = 0x78;
 constexpr uint8_t STAT_COINCIDENCE_MASK = 0x04;
 
 constexpr uint16_t DOTS_PER_SCANLINE = 456;
-// This model's line timeline starts two dots after LY first reports a new
-// line. On the final VBlank line, readable LY resets after four such dots.
-constexpr uint16_t LAST_LINE_LY_RESET_DOT = 2;
+// After LY first reports 153, it compares as 153 four dots later, then as 0
+// after a short blank interval. LY itself resets at that four-dot boundary.
 constexpr uint16_t LAST_LINE_153_COMPARISON_END_DOT = 4;
 constexpr uint16_t LAST_LINE_ZERO_COMPARISON_DOT = 8;
 constexpr uint16_t MODE2_DOTS = 80;
@@ -235,10 +234,14 @@ uint8_t DmgPpu::getMode() const {
 }
 
 uint8_t DmgPpu::reportedLy() const {
-    if (ly == SCANLINES_PER_FRAME - 1 && dot >= LAST_LINE_LY_RESET_DOT)
+    if (ly == SCANLINES_PER_FRAME - 1)
         return 0;
-    // The readable line counter changes two dots before the mode timeline.
-    return dot >= DOTS_PER_SCANLINE - 2
+    // LCD startup begins two dots late, so its first line keeps the dot-454
+    // LY edge. Normal DMG lines expose the next LY at dot 452; the Mooneye
+    // hblank_ly_scx_timing-GS ROM checks this against the Mode 0 STAT edge.
+    const uint16_t readableLyTransitionDot = startupScanline
+        ? DOTS_PER_SCANLINE - 2 : DOTS_PER_SCANLINE - 4;
+    return dot >= readableLyTransitionDot
         ? static_cast<uint8_t>((ly + 1) % SCANLINES_PER_FRAME) : ly;
 }
 
@@ -277,8 +280,7 @@ void DmgPpu::updateStatInterruptLine() {
         comparisonLine = -1;
         if (dot >= LAST_LINE_ZERO_COMPARISON_DOT)
             comparisonLine = 0;
-        else if (dot >= LAST_LINE_LY_RESET_DOT &&
-                 dot < LAST_LINE_153_COMPARISON_END_DOT)
+        else if (dot < LAST_LINE_153_COMPARISON_END_DOT)
             comparisonLine = SCANLINES_PER_FRAME - 1;
     }
     lycCoincidence = comparisonLine == lyCompare;
