@@ -391,6 +391,32 @@ void testStatInterruptUsesRisingEdgeOfCombinedSources() {
            "switching between enabled mode 0 and mode 2 keeps the combined line high");
 }
 
+void testModeTwoStatSourceAtVblankEntry() {
+    for (uint8_t enabled : {uint8_t(0), STAT_MODE2_INTERRUPT,
+                            uint8_t(STAT_MODE0_INTERRUPT | STAT_MODE2_INTERRUPT)}) {
+        InterruptRegisters interrupts;
+        DmgPpu ppu(interrupts);
+        ppu.initializeDmgPostBootState();
+        ppu.write(STAT, enabled);
+        ppu.advanceTCycles(456U * 144U - 1);
+        interrupts.acknowledgeInterrupt(INTERRUPT_LCD_STAT | INTERRUPT_VBLANK);
+        expect((ppu.read(STAT) & 3) == 0,
+               "the final visible scanline remains in HBlank before VBlank");
+        ppu.advanceTCycles(1);
+        expect((ppu.read(STAT) & 3) == 1,
+               "VBlank entry reports mode 1 even for the Mode 2 STAT source");
+        expect(interrupts.read(IF) & INTERRUPT_VBLANK,
+               "VBlank interrupt is requested at the entry dot");
+        expect(bool(interrupts.read(IF) & INTERRUPT_LCD_STAT) ==
+                   (enabled == STAT_MODE2_INTERRUPT),
+               "Mode 2 requests STAT at VBlank only if enabled and not blocked");
+        interrupts.acknowledgeInterrupt(INTERRUPT_LCD_STAT | INTERRUPT_VBLANK);
+        ppu.advanceTCycles(456);
+        expect(!(interrupts.read(IF) & (INTERRUPT_LCD_STAT | INTERRUPT_VBLANK)),
+               "later VBlank lines do not repeat the entry interrupt");
+    }
+}
+
 void testLycCoincidenceAndStatInterrupt() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -588,6 +614,7 @@ int main() {
     testObjectAtXZeroUsesTheFixedFetchPenalty();
     testVblankInterruptAndFrameRollover();
     testStatInterruptUsesRisingEdgeOfCombinedSources();
+    testModeTwoStatSourceAtVblankEntry();
     testLycCoincidenceAndStatInterrupt();
     testLycComparisonStopsWhileLcdIsOff();
     testBackgroundTilesAndPaletteRenderToFrameBuffer();

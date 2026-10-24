@@ -312,8 +312,15 @@ void DmgPpu::advanceDot() {
         ++ly;
         startupScanline = false;
         dot = 0;
-        if (ly == VISIBLE_SCANLINES)
+        if (ly == VISIBLE_SCANLINES) {
+            // DMG also clocks the Mode 2 STAT source at VBlank entry,
+            // although STAT's mode field becomes 1. Respect the combined
+            // line's existing level, just as for ordinary STAT edges.
+            if ((statInterruptEnable & STAT_MODE2_INTERRUPT_MASK) &&
+                !statInterruptLine)
+                interrupts.requestInterrupt(INTERRUPT_LCD_STAT);
             interrupts.requestInterrupt(INTERRUPT_VBLANK);
+        }
         else if (ly == SCANLINES_PER_FRAME) {
             ly = 0;
             windowLineCounter = 0;

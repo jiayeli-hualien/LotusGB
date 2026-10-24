@@ -17,6 +17,7 @@ TESTS = (
     "acceptance/intr_timing.gb",
     "acceptance/halt_ime1_timing.gb",
     "acceptance/ppu/stat_lyc_onoff.gb",
+    "acceptance/ppu/vblank_stat_intr-GS.gb",
     "acceptance/ppu/lcdon_write_timing-GS.gb",
     "acceptance/ppu/lcdon_timing-GS.gb",
 )
@@ -27,7 +28,6 @@ EXTENDED_TESTS = (
     "acceptance/ppu/intr_2_mode0_timing_sprites.gb",
     "acceptance/ppu/hblank_ly_scx_timing-GS.gb",
     "acceptance/ppu/stat_irq_blocking.gb",
-    "acceptance/ppu/vblank_stat_intr-GS.gb",
 )
 
 

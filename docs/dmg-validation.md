@@ -11,7 +11,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23: the user confirmed progress survived a restart. This covers an MBC5 + RAM + battery cartridge; it does not establish disk persistence for every mapper. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. Actual `.rtc` disk persistence also remains unverified. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
 | Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. Palette registers are sampled as pixels are emitted. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; `dmg-acid2` exact framebuffer regression passes. | `dmg-acid2` does not cover every mid-scanline effect. F-1 Race remains a scrolling/visual compatibility target. |
-| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs ten external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all ten pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Mid-Mode-3 scroll/tile-fetch changes are also not modeled. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
+| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Mid-Mode-3 scroll/tile-fetch changes are also not modeled. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
 | OAM DMA | FF46 copies 160 bytes from the selected source page into OAM. | `make test`: `dmg_oam_dma_test.cpp`. | Transfer is immediate; per-byte timing and CPU blocking during DMA are not modeled. |
 | APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the recorded 2026-10-22 run. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
 | Startup, frame stepping, and libretro | Default startup skips the boot ROM and begins at the DMG post-boot state at `$0100`. `stepFrame()` advances a nominal 70,224 T-cycles. The libretro core provides video, audio, input, save RAM, and MBC3 RTC memory interfaces. | `make test`: system and libretro tests; `dmg-acid2` and GB Pong regressions; the core has been loaded in Ubuntu RetroArch and common-game play has been checked manually. | Boot-ROM execution and model-specific power-on behavior are not implemented. Continue testing selected games end to end; do not treat core loading alone as full compatibility. |
@@ -20,7 +20,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 
 - `make test` runs the in-repository CPU, hardware, visual, and libretro tests.
 - `make test-roms` optionally runs the selected Blargg CH3 ROMs when they are available outside the repository. This is not part of GitHub CI.
-- `make test-mooneye MOONEYE_SUITE_DIR=/path/to/extracted-suite` optionally runs ten selected Mooneye PPU/interrupt timing ROMs. The suite stays outside the repository; logs and a Markdown report go under `build/test-roms/mooneye/`. This is not part of GitHub CI.
+- `make test-mooneye MOONEYE_SUITE_DIR=/path/to/extracted-suite` optionally runs eleven selected Mooneye PPU/interrupt timing ROMs. The suite stays outside the repository; logs and a Markdown report go under `build/test-roms/mooneye/`. This is not part of GitHub CI.
 - The GBIT integration executable is a separate CPU comparison check; see the GBIT section in the README for its local command.
 
 ## Validation rule
@@ -119,3 +119,19 @@ Both ROMs join the default ten-case regression set. The expanded set has
 `hblank_ly_scx_timing-GS`, and `vblank_stat_intr-GS`. Earlier entries above
 record intermediate results. These ROMs cover selected startup/visible-line
 edges, not all VBlank, line-153, or mid-scanline behavior.
+
+
+### Mode 2 STAT source at VBlank entry (2026-10-24)
+
+On DMG, entering VBlank also clocks the enabled Mode 2 STAT source even
+though the mode field reads 1. The core now requests that entry event at the
+same dot as VBlank, respecting blocking by an already-high combined STAT
+line. Focused PPU tests cover enabled/disabled sources, HBlank-source
+blocking, the reported mode, and the absence of repeated entry events on
+later VBlank lines. The hardware-verified
+[`vblank_stat_intr-GS`](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ppu/vblank_stat_intr-GS.s)
+ROM now passes (323,625 M-cycles), including its DIV-based comparison of
+VBlank and STAT interrupt timing. It joins the default eleven-case set.
+The expanded 14-case set now has twelve passes; sprite Mode 0 timing and
+SCX/HBlank timing remain the two failures. The source event does not imply
+that the PPU actually enters Mode 2 during VBlank.
