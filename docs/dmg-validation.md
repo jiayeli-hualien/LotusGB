@@ -2,6 +2,10 @@
 
 This matrix summarizes the current DMG target and the evidence for each area. “Implemented” means the behavior exists in LotusGB; it does not imply complete hardware accuracy. Unit tests protect selected observable cases, while external ROMs and real-game checks provide independent integration evidence.
 
+Current expanded PPU timing result (2026-10-25): 13 of 14 cases pass. The
+sprite Mode 0 timing ROM now passes; `hblank_ly_scx_timing-GS` is the remaining
+failure. Earlier result counts below are historical checkpoints.
+
 The current system starts from a DMG post-boot profile and skips boot-ROM execution. CGB behavior and unsupported cartridge hardware are outside this matrix.
 
 | Area | Implemented behavior and notable DMG details | Current validation | Known gaps / next useful check |
@@ -12,7 +16,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. | `make test`: `dmg_serial_test.cpp` checks register and bit/completion boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. | No real peer, external clock input, accessories or CGB fast clock. The model-specific `boot_sclk_align-dmgABCmgb` ROM still fails; exact post-boot clock phase and SC-write edge races remain unresolved. Component/system tests do not establish full hardware serial conformance. |
 | Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. LCDC.0/LCDC.1 and palette effects are sampled at pixel output; background-map select is sampled at each tile-map fetch. Background fetch and per-line object data are retained while their display bits are clear, so a later re-enable can affect upcoming pixels. OAM selection uses the first ten Y-matching entries even when their X positions are off-screen. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; focused PPU tests cover mid-line LCDC.0/LCDC.1 disable/re-enable, enabling after scanline preparation, unchanged Mode 3 duration with OBJ disabled, off-screen-object selection limits, and map changes; `dmg-acid2` exact framebuffer regression passes. | Mealybug `m3_lcdc_bg_map_change` improves from 1,234 to 1,082 differing pixels; `m3_lcdc_bg_en_change` improves from 2,189 to 1,750. `m3_lcdc_obj_en_change` still differs by 146 pixels, but this ROM uses the boot-ROM Nintendo logo pattern at tile `$19`, which the no-boot test profile does not initialize; it is not a clean check of this behavior. Exact FIFO/sprite timing and Canyon Racer's hardware output remain unverified; F-1 Race remains a later scrolling target. |
-| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests, final-line early LY reset and delayed LYC comparison, and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. SCX high bits are sampled per background tile on a simplified fetch clock; SCY is sampled separately at tile-map/bitplane stages, while exact FIFO and sprite-fetch interactions remain incomplete. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
+| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests, final-line early LY reset and delayed LYC comparison, and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. The first modeled OBJ fetch overlaps one dot with the initial BG fetch phase. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. The optional expanded 14-case PPU set currently passes 13/14. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. SCX high bits are sampled per background tile on a simplified fetch clock; SCY is sampled separately at tile-map/bitplane stages, while exact FIFO and sprite-fetch interactions remain incomplete. `hblank_ly_scx_timing-GS` remains failing. The one-dot first-fetch overlap is a model supported by the passing sprite-timing ROM, not independent hardware measurement; Pan Docs describes the X=0 penalty as 11 dots. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
 | OAM DMA | FF46 schedules 160 bytes at one byte per M-cycle after startup, supports delayed restart, and arbitrates CPU OAM/source-bus access; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. | `make test`: `dmg_oam_dma_test.cpp`; six Mooneye OAM DMA cases pass: `basic`, `reg_read`, `sources-GS`, `oam_dma_start`, `oam_dma_timing`, `oam_dma_restart`. | Basic read contention is modeled; exact write-induced bus corruption, PPU/DMA rendering contention, and sub-M-cycle bus effects remain unmodeled. |
 | APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the recorded 2026-10-22 run. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
 | Startup, frame stepping, and libretro | Default startup skips the boot ROM and begins at the DMG post-boot state at `$0100` with IME disabled. `stepFrame()` advances a nominal 70,224 T-cycles. The libretro core provides video, audio, input, save RAM, and MBC3 RTC memory interfaces, with frontend/stderr diagnostics for rejected content and incomplete frames. | `make test`: system and libretro tests; `dmg-acid2` and GB Pong regressions; the core has been loaded in Ubuntu RetroArch and common-game play has been checked manually. | Boot-ROM execution and model-specific power-on behavior are not implemented. Continue testing selected games end to end; do not treat core loading alone as full compatibility. |
@@ -141,6 +145,31 @@ VBlank and STAT interrupt timing. It joins the default eleven-case set.
 The expanded 14-case set now has twelve passes; sprite Mode 0 timing and
 SCX/HBlank timing remain the two failures. The source event does not imply
 that the PPU actually enters Mode 2 during VBlank.
+
+
+### Sprite-to-Mode 0 timing (2026-10-25)
+
+The official
+[`intr_2_mode0_timing_sprites`](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ppu/intr_2_mode0_timing_sprites.s)
+ROM checks the interval from the Mode 2 STAT interrupt to Mode 0 across many
+sprite positions and counts, and lists DMG among its verified systems. LotusGB
+now passes the full ROM (4,181,841 M-cycles). Focused PPU-interface tests
+protect a single X=0 object boundary, the visible pixel stall, and ten X=10
+objects entering Mode 0 at the tested boundary.
+
+To match these observed boundaries, the model treats the first OBJ fetch on a
+scanline as overlapping one dot of the initial BG fetch phase. Additional
+X=0 objects at the same fetch position pay the flat six-dot cost. This is a
+test-backed timing model, not a direct hardware measurement: [Pan Docs describes
+X=0 as an 11-dot penalty](https://eldred.fr/pandocs/Rendering.html#obj-penalty-algorithm),
+so the effective one-dot overlap remains a point to verify against independent
+hardware evidence. The implementation still does not model full FIFO or
+per-dot sprite arbitration.
+
+The expanded 14-case PPU set now passes 13 cases. The only remaining failure
+is `hblank_ly_scx_timing-GS` (signature failure at 233,928 M-cycles); this
+change does not alter the SCX/HBlank investigation or claim complete PPU
+timing accuracy.
 
 
 ### Post-boot IME and SCX investigation (2026-10-24)

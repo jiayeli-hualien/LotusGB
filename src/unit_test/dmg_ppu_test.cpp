@@ -288,16 +288,16 @@ void testObjectFetchPenaltyStallsPixelsAndExtendsMode3() {
     expect(frame[3] == 0,
            "the object pixel waits for its fetch penalty");
 
-    ppu.advanceTCycles(8);
+    ppu.advanceTCycles(7);
     expect(frame[3] == 0,
-           "the first object in a background tile incurs an eight-dot stall");
+           "the first object fetch overlaps one dot with initial background fetch");
     ppu.advanceTCycles(1);
     expect(frame[3] == 2,
-           "the object pixel is emitted after its fetch stall");
+           "the object pixel is emitted after the seven-dot visible stall");
 
     ppu.advanceTCycles(155);
     expect((ppu.read(STAT) & 0x03) == 3,
-           "the object penalty extends mode 3 through dot 259");
+           "the object penalty keeps mode 3 active through dot 258");
     ppu.advanceTCycles(1);
     expect((ppu.read(STAT) & 0x03) == 0,
            "mode 0 begins after the object penalty's final output dot");
@@ -321,7 +321,7 @@ void testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty() {
     ppu.write(OAM + 6, 2);
     ppu.write(LCDC, 0x93);
 
-    ppu.advanceTCycles(111);
+    ppu.advanceTCycles(110);
     const auto &frame = ppu.getFrameBuffer();
     expect(frame[7] == 0,
            "a later object in the same fetched tile stalls its first pixel");
@@ -331,13 +331,13 @@ void testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty() {
 
     ppu.advanceTCycles(151);
     expect((ppu.read(STAT) & 0x03) == 3,
-           "both object penalties extend mode 3 through dot 265");
+           "both object penalties keep mode 3 active through dot 264");
     ppu.advanceTCycles(1);
     expect((ppu.read(STAT) & 0x03) == 0,
            "mode 0 begins after both object stalls have elapsed");
 }
 
-void testObjectAtXZeroUsesTheFixedFetchPenalty() {
+void testObjectAtXZeroMode0Boundary() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
 
@@ -345,12 +345,32 @@ void testObjectAtXZeroUsesTheFixedFetchPenalty() {
     ppu.write(OAM + 1, 0); // Fully off-screen, with the DMG's fixed penalty.
     ppu.write(LCDC, 0x93);
 
-    ppu.advanceTCycles(260);
+    ppu.advanceTCycles(259);
     expect((ppu.read(STAT) & 0x03) == 3,
-           "an X=0 object keeps mode 3 active through dot 262");
+           "an X=0 object keeps mode 3 active through dot 261");
     ppu.advanceTCycles(1);
     expect((ppu.read(STAT) & 0x03) == 0,
-           "an X=0 object adds its fixed eleven-dot penalty");
+           "mode 0 starts at dot 262 for an X=0 object");
+}
+
+void testTenObjectsAtXTenMatchMode0TimingBoundary() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    for (uint16_t index = 0; index < 10; ++index) {
+        const uint16_t base = static_cast<uint16_t>(OAM + index * 4);
+        ppu.write(base, 16);
+        ppu.write(base + 1, 10);
+    }
+    ppu.write(LCDC, 0x93);
+
+    // Mooneye expects a 15-M-cycle Mode 2-to-Mode 0 interval for ten X=10 objects.
+    ppu.advanceTCycles(311);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "ten X=10 objects keep mode 3 active through dot 313");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 0x03) == 0,
+           "ten X=10 objects enter mode 0 at dot 314");
 }
 
 void testVblankInterruptAndFrameRollover() {
@@ -767,11 +787,12 @@ void testObjectEnableIsSampledForEachOutputPixel() {
     ppu.write(OBP0, 0xE4);
     ppu.write(LCDC, 0x93); // LCD on, objects and BG enabled.
 
-    // This object incurs an 11-dot Mode 3 fetch penalty at x=0. Hide objects
-    // through the first two emitted pixels, then re-enable them for later ones.
+    // The x=0 fetch has a nominal 11-dot cost, with one dot overlapping the
+    // initial background fetch. Hide objects through the first two emitted
+    // pixels, then re-enable them for later ones.
     ppu.advanceTCycles(90); // Dot 92, just before the first output dot.
     ppu.write(LCDC, 0x91); // Disable objects, keep LCD and BG on.
-    ppu.advanceTCycles(13); // Dot 105, after output pixels 0 and 1.
+    ppu.advanceTCycles(12); // Dot 104, after output pixels 0 and 1.
     ppu.write(LCDC, 0x93);
     ppu.advanceTCycles(1);
 
@@ -805,7 +826,7 @@ void testDisabledObjectsDoNotAddMode3FetchPenalty() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
     ppu.write(OAM, 16);
-    ppu.write(OAM + 1, 11); // An object that would add an eight-dot penalty.
+    ppu.write(OAM + 1, 11); // An object that would add a fetch stall.
     ppu.write(LCDC, 0x91); // Keep object output disabled for this scanline.
 
     ppu.advanceTCycles(249);
@@ -829,7 +850,7 @@ void testBackgroundDisableAllowsObjectsBehindBackground() {
     ppu.write(BGP, 0xE4);
     ppu.write(OBP0, 0xE4);
     ppu.write(LCDC, 0x93);
-    ppu.advanceTCycles(101); // Dot 103; the first object pixel follows its fetch stall.
+    ppu.advanceTCycles(100); // Dot 102, during the first object's fetch stall.
     ppu.write(LCDC, 0x92); // Turn off BG before the object pixel is emitted.
     ppu.advanceTCycles(1);
 
@@ -1027,7 +1048,8 @@ int main() {
     testVisibleWindowAddsSixDotsToMode3();
     testObjectFetchPenaltyStallsPixelsAndExtendsMode3();
     testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty();
-    testObjectAtXZeroUsesTheFixedFetchPenalty();
+    testObjectAtXZeroMode0Boundary();
+    testTenObjectsAtXTenMatchMode0TimingBoundary();
     testVblankInterruptAndFrameRollover();
     testLastVblankLineResetsLyBeforeModeEnds();
     testLastVblankLineLycComparisonAndInterruptEdges();

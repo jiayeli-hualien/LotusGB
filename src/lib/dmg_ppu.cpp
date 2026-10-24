@@ -532,6 +532,8 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
     // interrupts a tile fetch pays the alignment wait; later objects in that
     // already-fetched tile pay only the fixed object-fetch cost.
     std::array<bool, 64> fetchedBackgroundTiles{};
+    bool fetchedXZeroObject = false;
+    bool initialObjectFetchOverlapUsed = false;
 
     for (size_t selectedIndex = 0; selectedIndex < selectedCount;
          ++selectedIndex) {
@@ -543,11 +545,13 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
             continue;
 
         uint16_t penalty = 0;
+        size_t stallX = 0;
         if (object.x == 0) {
-            // An OBJ at X=0 is fully off-screen, but the DMG still incurs the
-            // fixed penalty while attempting to fetch it.
-            penalty = 11;
-            scanlineObjectPenaltyAtX[0] += penalty;
+            // An OBJ at X=0 is fully off-screen, but the DMG still fetches it.
+            // The initial fetch costs 11 dots; additional X=0 objects at the
+            // same fetch position pay only the flat six-dot fetch cost.
+            penalty = fetchedXZeroObject ? 6 : 11;
+            fetchedXZeroObject = true;
         } else {
             const int firstVisibleX = std::max(0, objectLeft);
             const bool firstPixelUsesWindow =
@@ -575,11 +579,19 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
                     penalty + std::max(0, backgroundPixelsToRight - 2));
             }
 
-            const size_t stallX = static_cast<size_t>(firstVisibleX);
+            stallX = static_cast<size_t>(firstVisibleX);
             // Multiple objects can begin at one output pixel; their stalls
             // occur consecutively before that pixel is emitted.
-            scanlineObjectPenaltyAtX[stallX] += penalty;
         }
+
+        // The first object fetch overlaps one dot of the initial background
+        // fetch phase; later object fetches do not share this overlap.
+        if (!initialObjectFetchOverlapUsed) {
+            --penalty;
+            initialObjectFetchOverlapUsed = true;
+        }
+
+        scanlineObjectPenaltyAtX[stallX] += penalty;
 
         mode3Duration = static_cast<uint16_t>(mode3Duration + penalty);
     }
