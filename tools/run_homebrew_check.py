@@ -13,7 +13,7 @@ def sha256(path):
 
 
 def validate_run(summary, rgb, save_ram):
-    """Check the runner's public output contract for these two profiles."""
+    """Check the runner's public output contract for the pinned profiles."""
     match = re.fullmatch(
         r'frames_requested=(\d+) video_frames=(\d+) audio_frames=(\d+) '
         r'save_ram_bytes=(\d+) width=(\d+) height=(\d+)\s*', summary)
@@ -32,7 +32,7 @@ def validate_run(summary, rgb, save_ram):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--game', choices=('big2small', 'tobutobugirl'), default='big2small')
+    parser.add_argument('--game', choices=('big2small', 'tobutobugirl', 'canyon-racer'), default='big2small')
     parser.add_argument('--rom', type=Path, required=True)
     parser.add_argument('--save', type=Path, help='Optional SRAM to restore read-only')
     parser.add_argument('--core', type=Path, default=Path('build/lotusgb_libretro.so'))
@@ -52,6 +52,7 @@ def main():
     expected_hash = {
         'big2small': '59c096333f93c12c8eb25a5fcffa2be15001abcd5d20b9a82c2bc2dae7e625b2',
         'tobutobugirl': '5d3871cae77db2287807e8914fd21f76203e73aa3fec20955489d45cb4571d8f',
+        'canyon-racer': '19f57c1fefe8ebdcef0ff9def783246a6618d4b822b5c44188a1e9c1e7448c51',
     }[args.game]
     if hashlib.sha256(rom).hexdigest() != expected_hash:
         parser.error(f'expected the pinned {args.game} ROM; see docs/homebrew-check.md')
@@ -63,7 +64,7 @@ def main():
         for start in range(960, 3600, 240):
             events += [f'{start} {start + 4} A',
                        f'{start + 60} {start + 68} {keys[(start // 240) % 4]}']
-    else:
+    elif args.game == 'tobutobugirl':
         # Skip the opening scenes, confirm a stage, then exercise movement,
         # dash (A) and upward boost (B). No START presses during gameplay.
         events += [f'{start} {start + 5} START' for start in range(180, 1500, 180)]
@@ -72,6 +73,11 @@ def main():
             events += [f'{start} {start + 5} A',
                        f'{start + 30} {start + 80} B',
                        f'{start + 30} {start + 70} RIGHT']
+    else:
+        # Let the credits/title settle, enter the first-run help screen,
+        # dismiss help, then issue jump holds during gameplay.
+        events += ['900 905 START', '1500 1505 A']
+        events += [f'{start} {start + 30} A' for start in range(1800, 3600, 90)]
     (output / 'input.txt').write_text('\n'.join(events) + '\n')
     original_save_hash = sha256(args.save) if args.save else None
     command = [str(args.runner.resolve()), str(args.core.resolve()),

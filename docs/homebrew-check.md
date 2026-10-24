@@ -1,4 +1,4 @@
-# Big2Small local regression
+# Local homebrew regressions
 
 Run from the repository root:
 
@@ -80,7 +80,7 @@ complete level compatibility, precise rendering or sound quality.
 
 ## Automated output checks
 
-For both pinned profiles, success requires a runner summary reporting 3,600
+For all pinned profiles, success requires a runner summary reporting 3,600
 requested/video frames, nonzero delivered audio frames, 160×144 RGB output
 of the matching size, and an 8,192-byte SRAM output matching the reported
 size. The report includes `validation_error` (null on success). Old RGB,
@@ -94,3 +94,38 @@ missing audio, wrong dimensions and truncated/oversized artifacts. A mocked
 runner also verifies that a zero exit without fresh artifacts cannot pass
 using stale files. These checks establish output delivery, not audible audio
 quality, correct scene contents or disk-save persistence.
+
+## Canyon Racer raster-effect gameplay check
+
+```sh
+make test-homebrew HOMEBREW_GAME=canyon-racer
+```
+
+Official source/download: [Canyon Racer by bbbbbr](https://bbbbbr.itch.io/canyon-racer).
+Use version 0.7.7's standard `canyon_racer_0.7.7_mbc5.gb`, downloaded to
+`../test-roms/homebrew/canyon-racer/`. The pinned ROM SHA-256 is
+`19f57c1fefe8ebdcef0ff9def783246a6618d4b822b5c44188a1e9c1e7448c51`
+(32 KiB, type `$1B`, MBC5 + RAM + battery, 8 KiB SRAM). The official ZIP
+SHA-256 is `f913eae23b43bfc87cb3fa44863ed7e97eb77d4356540d69d7656cc6d8ae5d5b`.
+ROM, archive and mixed-license game assets remain outside version control.
+
+The clean-SRAM profile lets the credits/title settle, presses START at frame
+900, dismisses first-run help with A at frame 1500, then holds A for 30 frames
+every 90 frames from 1800 onward. Outputs use `build/test-roms/canyon-racer/`.
+This profile targets the selected release and clean startup; restored progress
+can alter the initial help sequence. It does not require winning the game.
+
+On 2026-10-24, intermediate captures at 1800/2400/3600 frames showed the ship,
+obstacles, HUD and changing canyon scene. The 3,600-frame run completed with
+3,600 video callbacks, 2,893,139 stereo audio frames and an 8 KiB SRAM output.
+These are execution/visible-progress observations, not exact hardware rendering
+or sound-quality acceptance. The game is difficult and the scripted run loses
+lives; this is not a full-level gameplay assertion.
+
+A temporary build of `c13d0f0` (before separate SCY bitplane sampling) was run
+with the same startup/input sequence. At frame 1800 it differed from the
+current frame by 3,463 pixels, mainly canyon texture/row positions. Both
+images were inspected. Artifacts are under `build/canyon-check/`, including
+`scy-comparison.png` (old left/new right) and its JSON metadata. This demonstrates
+the actual game's sensitivity to SCY sampling; it does not establish that
+every current pixel is correct.

@@ -103,8 +103,7 @@ interactive validation. Its [source description](https://github.com/bbbbbr/canyo
 explicitly uses mid-scanline SCY writes for vertical parallax, alongside X
 wave scrolling. Use the official Game Boy MBC5 build, keep its mixed-license
 ROM/assets external, and record the selected release/hash when supplied.
-It has not yet been run here; SCX coarse sampling alone does not establish
-support for its SCY effects.
+The first gameplay check is recorded in [the homebrew procedure](homebrew-check.md#canyon-racer-raster-effect-gameplay-check); exact SCY effect accuracy remains unverified.
 
 ### Measured result after coarse SCX sampling
 
@@ -168,5 +167,16 @@ evidence rather than a requirement to implement every obscure PPU behavior.
 Use Canyon Racer's visible SCY parallax as the next gameplay check, retaining
 Mealybug images to explain deviations. The official ROM is distributed on
 the author's itch.io page; the GitHub release currently has no ROM asset.
-The local Canyon Racer ROM has not yet been supplied, so no compatibility
-result is claimed.
+The official 0.7.7 standard MBC5 ROM is now supplied and has completed a
+scripted gameplay check. See the homebrew procedure for its hash, input
+sequence and limits; no complete compatibility result is claimed.
+
+## First Canyon Racer gameplay observation
+
+The standard 0.7.7 MBC5 ROM reaches gameplay with visible ship, obstacles and
+HUD during the 3,600-frame scripted run. Compared with `c13d0f0` at frame 1800,
+the SCY-stage version changes 3,463 RGB pixels, with the same input and
+startup profile. The canyon textures/rows visibly change between versions.
+This provides a real-game target for the sampling work alongside the still
+failing Mealybug checks; further accuracy claims require a controlled hardware
+or reference comparison. [Procedure and artifacts](homebrew-check.md#canyon-racer-raster-effect-gameplay-check).

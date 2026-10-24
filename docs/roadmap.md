@@ -15,7 +15,8 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   screenshot baseline at the documented software breakpoint, then implement
   one observable SCX/SCY fetch behavior at a time. Retain existing regressions;
   passing the whole suite is not a prerequisite. Use an author-provided
-  Canyon Racer Game Boy ROM for visible-effect acceptance when supplied;
+  Canyon Racer Game Boy ROM for visible-effect acceptance; the first scripted
+  run now reaches gameplay, with exact effect timing still unverified;
   keep the remaining synthetic pixel mismatches as diagnostics, not an
   obligation to close every edge before gameplay. Existing successful game
   checks do not establish compatibility with all popular titles. F-1 Race
@@ -187,3 +188,5 @@ Use Linux as the primary development and CI platform for now. Raspberry Pi runni
 - **SCX coarse tile-fetch checkpoint (2026-10-24):** replace the background line snapshot with per-tile cache fills on the existing simplified fetch clock. Preserve line-start fine discard and move object-behind-BG priority to pixel output. New public-interface tests reproduce the old failure. The selected high-SCX image improves from 6,426 to 84 differing pixels, still FAIL; other selected image counts are unchanged. SCY/bitplane stages, full FIFO occupancy and precise sprite arbitration remain separate work. See [the renderer scope](ppu-scrolling.md#scx-coarse-sampling-implementation).
 
 - **SCY bitplane sampling checkpoint (2026-10-24):** split background tile-number and data-plane reads into separate clock stages. New public PPU tests protect mixed-row bitplanes, already-read data and retained tile numbers. The SCY image improves from 9,873 to 8,330 differing pixels, still FAIL; SCX-high remains at 84. A bounded phase experiment did not establish a correct alternative and was discarded. `make test`, 67/67 Mooneye, GBIT and both homebrew profiles pass with unchanged final frames/player SRAM. Precise FIFO/sprite arbitration remains open; see [the PPU sampling notes](ppu-scrolling.md#separate-scy-bitplane-reads).
+
+- **Canyon Racer gameplay baseline (2026-10-24):** pin the author's 0.7.7 standard MBC5 ROM outside the repository and add `HOMEBREW_GAME=canyon-racer`. START at 900, A at 1500 and later jump holds reach gameplay; captures at 1800/2400/3600 show the ship, obstacles, HUD and changing canyon. The full run completes 3,600 video callbacks and 2,893,139 stereo audio frames. A same-input temporary `c13d0f0` build differs by 3,463 pixels at frame 1800, demonstrating a real-game effect of the SCY stages without claiming hardware-exact output. Keep remaining Mealybug differences as diagnostics. See [the profile and limits](homebrew-check.md#canyon-racer-raster-effect-gameplay-check).
