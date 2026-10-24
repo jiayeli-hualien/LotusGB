@@ -436,6 +436,68 @@ void testEiDelay() {
            "the pending interrupt is accepted at the next instruction boundary");
 }
 
+void testRepeatedEiDoesNotPostponePendingInterrupt() {
+    CpuFixture f{{0x0000, 0xFB}, {0x0001, 0xFB}, {0x0002, 0x04},
+                 {0x0040, 0x00}};
+    auto reg = f.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    reg.getRefB() = 0;
+    f.cpu.setReg(reg);
+    f.cpu.setIME(false);
+    f.interrupts.write(0xFFFF, 1);
+    f.interrupts.write(0xFF0F, 1);
+    expect(f.runUntilNextOpcode() == 1 && !f.cpu.getIME(),
+           "first EI waits for the following instruction");
+    expect(f.runUntilNextOpcode() == 1 && f.cpu.getIME(),
+           "second EI completes the first EI delay instead of postponing it");
+    expect(f.runUntilNextOpcode() == 5, "pending interrupt enters after the second EI");
+    reg = f.cpu.getReg();
+    expect(reg.getRefB() == 0 && reg.getRefPC() == 0x41,
+           "pending interrupt runs before the instruction following EI; EI");
+    expect(f.memory.bytes[0xC0FF] == 0 && f.memory.bytes[0xC0FE] == 2,
+           "EI; EI interrupt return address points after the second EI");
+}
+
+void testDiCancelsEiWithPendingInterruptAcrossFollowingInstructions() {
+    CpuFixture f{{0x0000, 0xFB}, {0x0001, 0xF3}, {0x0002, 0x00},
+                 {0x0003, 0x00}, {0x0004, 0x00}};
+    f.cpu.setIME(false);
+    f.interrupts.write(0xFFFF, 1);
+    f.interrupts.write(0xFF0F, 1);
+    for (unsigned instruction = 0; instruction < 4; ++instruction) {
+        expect(f.runUntilNextOpcode() == 1, "EI; DI sequence continues without handler entry");
+        expect(!f.cpu.getIME(), "DI cancellation persists across following instructions");
+    }
+    expect(f.memory.writes.empty() && (f.interrupts.read(0xFF0F) & 1),
+           "cancelled EI neither pushes a return address nor acknowledges pending IF");
+}
+
+void testRetiImmediatelyServicesAnotherPendingInterrupt() {
+    CpuFixture f{{0x0000, 0xD9}, {0x1234, 0x04}, {0x0050, 0x00}};
+    auto reg = f.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    reg.getRefB() = 0;
+    f.cpu.setReg(reg);
+    f.memory.bytes[0xC100] = 0x34;
+    f.memory.bytes[0xC101] = 0x12;
+    f.cpu.setIME(false);
+    f.interrupts.write(0xFFFF, 4);
+    f.interrupts.write(0xFF0F, 4);
+    expect(f.runUntilNextOpcode() == 4 && f.cpu.getIME(),
+           "RETI restores PC and enables IME without EI's extra-instruction delay");
+    expect(f.cpu.getReg().getRefSP() == 0xC102,
+           "RETI pops the previous handler return address");
+    expect(f.runUntilNextOpcode() == 5, "pending interrupt is accepted immediately after RETI");
+    reg = f.cpu.getReg();
+    expect(reg.getRefB() == 0 && reg.getRefPC() == 0x51 && !f.cpu.getIME(),
+           "new handler starts before executing the resumed INC B instruction");
+    expect(f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+               {0xC101, 0x12}, {0xC100, 0x34}},
+           "new interrupt pushes the unexecuted resumed opcode's address");
+    expect((f.interrupts.read(0xFF0F) & 4) == 0,
+           "new service acknowledges the pending timer interrupt");
+}
+
 void testInterruptEntryPriorityStackAndVector() {
     CpuFixture f{{0x0000, 0x00}, {0x0001, 0x00}, {0x0040, 0x00},
                  {0x0048, 0x00}, {0x0050, 0x00}};
@@ -551,6 +613,9 @@ int main() {
     testMemoryAccessesOccurWithinTheirMCycle();
     testLdhReadThroughCUsesTheHighMemoryPage();
     testEiDelay();
+    testRepeatedEiDoesNotPostponePendingInterrupt();
+    testDiCancelsEiWithPendingInterruptAcrossFollowingInstructions();
+    testRetiImmediatelyServicesAnotherPendingInterrupt();
     testInterruptEntryPriorityStackAndVector();
     testInterruptWaitsUntilCbInstructionCompletes();
     testHaltWakeAndHaltBug();

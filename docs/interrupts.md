@@ -59,10 +59,10 @@ proof of the exact HALT wake phase or intra-cycle IF acknowledgement timing.
 | --- | --- | --- |
 | Startup | `GameBoySystem` post-boot profile sets IME=0. Synthetic CPU reset retains its existing IME=1 convention. | `testPostBootInterruptsWaitForEi` requests IF/IE before EI, checks no handler/stack change, then checks handler execution and return. Synthetic reset is test infrastructure, not a hardware power-on claim. |
 | IF / IE | `InterruptRegisters` latches low-five-bit requests; IF reads upper bits high. IE stores its byte. Request generation is independent of IME. | CPU and system tests exercise software requests and real timer/PPU requests. |
-| EI / DI | CPU defers EI until the next instruction completes; DI cancels a pending enable. | `testEiDelay` includes a multi-cycle following instruction and an already-pending request. |
+| EI / DI | CPU defers EI until the next instruction completes; DI cancels a pending enable. | `testEiDelay` includes a multi-cycle following instruction and an already-pending request. Additional tests check EI; EI return PC and DI cancellation across following instructions; external EI/DI sequence ROMs pass. |
 | Entry / priority | CPU selects the source at acceptance, acknowledges it immediately, then performs two idle M-cycles, two stack writes, and the vector fetch. | `testInterruptEntryPriorityStackAndVector` checks all five steps, return address, stack order and preservation of another IF bit. Priority changes and acknowledgement races during entry remain unverified. |
 | Prefetch / CB | CPU compensates for its prefetched opcode when saving the return address. It does not accept an interrupt between CB bytes. | `testInterruptWaitsUntilCbInstructionCompletes`. Prefetch compensation is internal bookkeeping; software must see the correct return PC. |
-| RETI | The instruction restores PC and enables IME. | System handler-return tests, including timer/HALT and post-boot EI. Back-to-back pending service after RETI needs a dedicated regression. |
+| RETI | The instruction restores PC and enables IME. | `testRetiImmediatelyServicesAnotherPendingInterrupt` checks immediate service before executing the resumed opcode, stack address/order and IF acknowledgement. External `reti_intr_timing` and `reti_timing` pass. |
 | HALT | CPU idles while the shared clock advances peripherals. Pending IF/IE wakes it; IME decides whether to enter a handler. | `testHaltWakeAndHaltBug`, `testStopDecodeAndHaltIdle`, and `testTimerInterruptWakesHaltAndRunsHandler`. Exact wake/entry phase is still under investigation. |
 | STOP | CPU exposes a separate stopped state with zero elapsed CPU T-cycles; explicit wake resumes fetching. | CPU STOP tests and system frame-step exit coverage. Automatic joypad wake and full hardware STOP behavior are not implemented. |
 | Peripheral timing | Timer, PPU and joypad own request generation; CPU owns selection/service. | Component tests plus system integration. Serial transfer completion remains unsupported. |
@@ -99,12 +99,15 @@ for commands and current results.
    makes it pass but breaks five existing PPU timing ROMs, so that experiment
    was discarded. Capture request time, HALT wake, entry cycles, vector code,
    and final LY bus-read time against the same clock before changing behavior.
-2. **EI combinations.** Add focused coverage for EI followed by EI, and
-   EI followed by HALT with pending and later-arriving requests. In particular,
-   the return-PC behavior of EI/HALT must not be inferred from ordinary HALT.
+2. **EI combinations.** EI followed by EI now has focused pending-request
+   coverage and passes the external `ei_sequence` ROM. EI followed by HALT
+   with a later-arriving VBlank passes `halt_ime0_ei`. An already-pending
+   request at EI/HALT still needs separate evidence; its return-PC behavior
+   must not be inferred from ordinary HALT.
 3. **Entry races and RETI.** Check changing IE/IF during the stack writes,
-   cancellation/reprioritization of requests, and another request immediately
-   after RETI. The current acceptance-time selection is not proof of these cases.
+   cancellation/reprioritization of requests. Immediate service after RETI now
+   has unit and external ROM coverage. Acceptance-time selection is still
+   not proof of the remaining entry races.
 4. **Peripheral-specific gaps.** Add evidence for STAT-write glitches and
    line-153 behavior when working on those PPU features. Implement STOP wake
    and serial events with their corresponding system components.
@@ -149,3 +152,32 @@ or a game compatibility issue. The result does not identify which subsystem
 is ultimately wrong, nor does it show that interrupt handling is fully accurate.
 Local experiment sources, logs and per-ROM reports are under
 `build/timing-matrix/`; they are ignored build artifacts.
+
+
+## CPU interrupt acceptance checkpoint (2026-10-24)
+
+Ten additional unchanged Mooneye ROMs pass without changing CPU behavior:
+
+| Area | ROMs |
+| --- | --- |
+| Delayed enable / cancellation | `ei_sequence`, `ei_timing`, `rapid_di_ei`, `di_timing-GS` |
+| Return and immediate pending service | `reti_timing`, `reti_intr_timing` |
+| HALT / IME combinations | `halt_ime0_ei`, `halt_ime0_nointr_timing`, `halt_ime1_timing2-GS` |
+| Request / enable registers | `if_ie_registers` |
+
+Run them with:
+
+```sh
+make test-mooneye MOONEYE_GROUP=interrupt \
+  MOONEYE_SUITE_DIR=/path/to/extracted-suite
+```
+
+The standalone group reports to `build/test-roms/mooneye-interrupt/`; `MOONEYE_GROUP=all`
+now includes these ten cases and totals 40 default checks. All 40 and `make test`
+pass at this checkpoint. ROMs stay external.
+
+References: [EI sequence](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ei_sequence.s),
+[EI before HALT](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/halt_ime0_ei.s),
+and [RETI interrupt timing](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/reti_intr_timing.s).
+The EI/HALT ROM waits for a later interrupt; it does not establish the behavior
+of every already-pending EI/HALT combination. No test expectations were relaxed.

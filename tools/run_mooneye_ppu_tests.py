@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run selected Mooneye DMG PPU/interrupt, timer, or OAM DMA checks and save a local report."""
+"""Run selected Mooneye DMG PPU, CPU interrupt, timer, or OAM DMA checks and save a local report."""
 
 import argparse
 from pathlib import Path
@@ -38,6 +38,13 @@ DMA_TESTS = tuple(f"acceptance/oam_dma/{name}.gb" for name in (
 ))
 
 
+INTERRUPT_TESTS = tuple(f"acceptance/{name}.gb" for name in (
+    "ei_sequence", "ei_timing", "rapid_di_ei", "di_timing-GS",
+    "reti_intr_timing", "reti_timing", "halt_ime0_ei",
+    "halt_ime0_nointr_timing", "halt_ime1_timing2-GS", "if_ie_registers",
+))
+
+
 # Diagnostic coverage: known failures are retained to track unimplemented edges.
 EXTENDED_TESTS = (
     "acceptance/ppu/intr_2_mode0_timing_sprites.gb",
@@ -52,7 +59,7 @@ def main() -> int:
     parser.add_argument("--suite-dir", required=True, type=Path,
                         help="Root of an extracted Mooneye test-suite archive")
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--group", choices=("ppu", "timer", "dma", "all"), default="ppu",
+    parser.add_argument("--group", choices=("ppu", "interrupt", "timer", "dma", "all"), default="ppu",
                         help="Selected regression group (default: ppu)")
     parser.add_argument("--extended", action="store_true",
                         help="Include diagnostic PPU cases with known failures")
@@ -66,6 +73,8 @@ def main() -> int:
         tests += TIMER_TESTS
     if args.group in ("dma", "all"):
         tests += DMA_TESTS
+    if args.group in ("interrupt", "all"):
+        tests += INTERRUPT_TESTS
 
     missing = [name for name in tests if not (args.suite_dir / name).is_file()]
     if missing:
