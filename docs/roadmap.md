@@ -20,6 +20,17 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   changing the fetch phase. Keep other synthetic mismatches as diagnostics,
   not a requirement to close every edge before gameplay. F-1 Race remains a
   later target, not an already-verified result.
+- **Scheduled after the current PPU visual checkpoint: documentation narrative
+  pass.** Reorganize the top-level README and `docs/*.md` around the Minto
+  Pyramid Principle: lead with the conclusion/current status, group the main
+  points, then provide evidence and implementation detail. Keep dated
+  investigation history as history, and keep procedural or ROM-specific
+  instructions task-oriented. Acceptance: README quickly answers what LotusGB
+  supports, how to build/test it, and what comes next; topic documents put
+  current behavior and validation before historical experiments; duplicated
+  status is reduced; links, commands, and test counts are checked. Treat this
+  as an information-organization task, not a change to emulator behavior or
+  hardware claims.
 - **Game acceptance:** wait for the user's additional private dumps. ROMs and
   saves remain external; use the existing homebrew profiles in the meantime.
 - **Save states / rewind / replay:** deferred. The user prefers a pause/rewind
