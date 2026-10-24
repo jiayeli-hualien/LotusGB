@@ -45,7 +45,7 @@ private:
     void renderPixel(size_t screenX);
     void advanceBackgroundFetch();
     uint8_t readBackgroundBitplane(bool high) const;
-    void prepareObjects();
+    void prepareObjects(bool includeFetchPenalties);
     uint8_t getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
                          bool unsignedTileData) const;
     uint8_t getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) const;

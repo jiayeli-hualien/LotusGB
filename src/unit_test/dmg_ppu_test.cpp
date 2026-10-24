@@ -756,6 +756,66 @@ void testBackgroundCanBeEnabledMidScanlineAfterStartingDisabled() {
            "reenabling LCDC.0 reveals background fetched during the hidden interval");
 }
 
+void testObjectEnableIsSampledForEachOutputPixel() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00); // Object color 1.
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 8); // Object begins at screen x=0.
+    ppu.write(OAM + 2, 1);
+    ppu.write(OAM + 3, 0);
+    ppu.write(OBP0, 0xE4);
+    ppu.write(LCDC, 0x93); // LCD on, objects and BG enabled.
+
+    // This object incurs an 11-dot Mode 3 fetch penalty at x=0. Hide objects
+    // through the first two emitted pixels, then re-enable them for later ones.
+    ppu.advanceTCycles(90); // Dot 92, just before the first output dot.
+    ppu.write(LCDC, 0x91); // Disable objects, keep LCD and BG on.
+    ppu.advanceTCycles(13); // Dot 105, after output pixels 0 and 1.
+    ppu.write(LCDC, 0x93);
+    ppu.advanceTCycles(1);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[0] == 0 && frame[1] == 0,
+           "clearing LCDC.1 hides object pixels not yet emitted");
+    expect(frame[2] == 1,
+           "setting LCDC.1 restores object output on later pixels");
+}
+
+void testObjectCanBeEnabledAfterScanlinePreparation() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00); // Object color 1.
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 8); // Object begins at screen x=0.
+    ppu.write(OAM + 2, 1);
+    ppu.write(OAM + 3, 0);
+    ppu.write(OBP0, 0xE4);
+    ppu.write(LCDC, 0x91); // Prepare the scanline with objects hidden.
+
+    ppu.advanceTCycles(78); // Dot 80, after scanline preparation.
+    ppu.write(LCDC, 0x93); // Enable objects during Mode 3.
+    ppu.advanceTCycles(14);
+
+    expect(ppu.getFrameBuffer()[0] == 1,
+           "enabling LCDC.1 during Mode 3 reveals a previously scanned object");
+}
+
+void testDisabledObjectsDoNotAddMode3FetchPenalty() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 11); // An object that would add an eight-dot penalty.
+    ppu.write(LCDC, 0x91); // Keep object output disabled for this scanline.
+
+    ppu.advanceTCycles(249);
+    expect((ppu.read(STAT) & 3) == 3,
+           "the object enable bit does not expose or charge a hidden object stall");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 3) == 0,
+           "Mode 3 still ends at its baseline when objects are disabled");
+}
+
 void testBackgroundDisableAllowsObjectsBehindBackground() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -945,6 +1005,9 @@ int main() {
     testObjectBehindBackgroundUsesFetchedScrollPixels();
     testBackgroundEnableIsSampledForEachOutputPixel();
     testBackgroundCanBeEnabledMidScanlineAfterStartingDisabled();
+    testObjectEnableIsSampledForEachOutputPixel();
+    testObjectCanBeEnabledAfterScanlinePreparation();
+    testDisabledObjectsDoNotAddMode3FetchPenalty();
     testBackgroundDisableAllowsObjectsBehindBackground();
     testBackgroundBitplanesSampleScySeparately();
     testScyTileNumberRemainsLatchedBetweenFetchStages();

@@ -399,8 +399,10 @@ void DmgPpu::prepareScanline() {
         scanlineBgColorIndices[x] = bgColorIndex;
     }
 
-    if ((lcdControl & OBJECT_ENABLE_MASK) != 0)
-        prepareObjects();
+    // OAM has already been scanned for this line, so retain its object pixels
+    // even when LCDC.1 currently hides them. A mid-Mode-3 write can enable the
+    // object output again before its pixels are emitted.
+    prepareObjects((lcdControl & OBJECT_ENABLE_MASK) != 0);
 }
 
 uint8_t DmgPpu::readBackgroundBitplane(bool high) const {
@@ -462,7 +464,7 @@ void DmgPpu::renderPixel(size_t screenX) {
         applyPalette(bgPalette, backgroundColorIndex);
 
     const uint8_t objectColorIndex = scanlineObjectColorIndices[screenX];
-    if (objectColorIndex != 0 &&
+    if ((lcdControl & OBJECT_ENABLE_MASK) != 0 && objectColorIndex != 0 &&
         !(scanlineObjectBehindBg[screenX] && backgroundEnabled &&
           backgroundColorIndex != 0)) {
         const uint8_t palette = scanlineObjectUsesPalette1[screenX]
@@ -496,7 +498,7 @@ uint8_t DmgPpu::getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) co
                         (lcdControl & TILE_DATA_SELECT_MASK) != 0);
 }
 
-void DmgPpu::prepareObjects() {
+void DmgPpu::prepareObjects(bool includeFetchPenalties) {
     struct Object {
         size_t oamIndex;
         uint8_t x;
@@ -536,6 +538,8 @@ void DmgPpu::prepareObjects() {
         const Object &object = selected[selectedIndex];
         const int objectLeft = static_cast<int>(object.x) - 8;
         if (object.x >= FRAME_WIDTH + 8 && object.x != 0)
+            continue;
+        if (!includeFetchPenalties)
             continue;
 
         uint16_t penalty = 0;

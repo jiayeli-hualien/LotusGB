@@ -229,3 +229,26 @@ LCDC.0 composition in the [SameBoy renderer](https://github.com/LIJI32/SameBoy/b
 This does not explain the remaining Mealybug mismatch: that test starts with
 BG enabled and varies sprite positions to shift Mode 3 timing. Its 1,750
 differing pixels remain a separate fetch/sprite timing question.
+
+## Mid-scanline LCDC.1 object enable
+
+LCDC.1 gates object display and can be changed during a frame. LotusGB now
+retains the scanline's selected object pixels even if LCDC.1 is clear when
+Mode 3 starts, then checks the live bit as each pixel is emitted. It only adds
+the simplified object-fetch penalties when LCDC.1 was enabled at scanline
+preparation; turning objects on or off around the actual fetch still needs a
+FIFO-based model. Focused PPU tests cover hiding and restoring upcoming object
+pixels, enabling objects after scanline preparation, and preserving baseline
+Mode 3 timing while objects remain disabled. This follows the basic register
+semantics in [Pan Docs](https://eldred.fr/pandocs/LCDC.html#lcdc1--obj-enable)
+and the separation of OAM scan from the per-pixel LCDC.1 display gate in the
+[SameBoy renderer](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L3202-L3318).
+
+The Mealybug `m3_lcdc_obj_en_change` image remains 146 pixels different and
+did not change with this implementation. Its [test source](https://github.com/mattcurrie/mealybug-tearoom-tests/blob/master/src/ppu/m3_lcdc_obj_en_change.asm)
+uses object tile `$19` as the Nintendo logo pattern without loading that tile;
+the ROM expects the pattern left in VRAM by boot-ROM execution. LotusGB's
+post-boot test profile skips the boot ROM and starts VRAM empty, so those
+pixels do not establish a remaining LCDC.1 mismatch. The Mealybug project
+describes its expected images as its own emulator renders, not raw hardware
+captures; use them as diagnostics only.
