@@ -28,6 +28,18 @@ From the repository root:
 
 GitHub Actions builds the pinned `jiayeli-hualien/gbit` revision, builds LotusGB, runs `make test`, and then runs the GBIT instruction tests. Keep local integration instructions consistent with `.github/workflows/ci.yml`.
 
+## Documentation
+
+- Prefer an answer-first structure based on the Minto Pyramid Principle: state
+  the current conclusion, group the main points, then give supporting evidence
+  and details. Adapt the structure to the document's purpose; keep procedures
+  step-by-step and historical records chronological. See
+  [`docs/documentation-guide.md`](docs/documentation-guide.md).
+- Keep status claims tied to evidence. Distinguish implemented behavior from
+  behavior covered by tests, game compatibility, and hardware verification.
+  Prefer linking to one canonical status description over copying it into
+  multiple documents.
+
 ## Decoder tables
 
 `src/lib/include/instruction_table.csv` and `src/lib/include/decode_table.csv` are the editable opcode metadata. `tools/generate_decode_tables.py` converts them into `src/lib/include/generated_decode_tables.hpp`; runtime code uses the generated C++ table and does not parse CSV files. Do not edit the generated header by hand. When changing the CSV metadata or generator, regenerate the header with:

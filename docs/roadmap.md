@@ -25,12 +25,14 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   Pyramid Principle: lead with the conclusion/current status, group the main
   points, then provide evidence and implementation detail. Keep dated
   investigation history as history, and keep procedural or ROM-specific
-  instructions task-oriented. Acceptance: README quickly answers what LotusGB
-  supports, how to build/test it, and what comes next; topic documents put
-  current behavior and validation before historical experiments; duplicated
-  status is reduced; links, commands, and test counts are checked. Treat this
-  as an information-organization task, not a change to emulator behavior or
-  hardware claims.
+  instructions task-oriented. The writing standard is defined in
+  [`AGENTS.md`](../AGENTS.md) and [`documentation-guide.md`](documentation-guide.md);
+  this scheduled pass applies it to the existing docs. Acceptance: README
+  quickly answers what LotusGB supports, how to build/test it, and what comes
+  next; topic documents put current behavior and validation before historical
+  experiments; duplicated status is reduced; links, commands, and test counts
+  are checked. Treat this as an information-organization task, not a change to
+  emulator behavior or hardware claims.
 - **Game acceptance:** wait for the user's additional private dumps. ROMs and
   saves remain external; use the existing homebrew profiles in the meantime.
 - **Save states / rewind / replay:** deferred. The user prefers a pause/rewind

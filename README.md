@@ -45,6 +45,8 @@ elapsed T-cycles to the hardware components.
 - Verify the libretro core on Steam Deck and Raspberry Pi with Recalbox.
 - Add Windows build and CI coverage after the core behavior is established.
 
+For project documentation, follow the [documentation writing guide](docs/documentation-guide.md).
+
 ## Building
 
 The project uses GNU Make and GCC/G++. From the repository root, run:
