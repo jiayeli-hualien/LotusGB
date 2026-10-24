@@ -212,3 +212,20 @@ The Mealybug `m3_lcdc_bg_en_change` comparison decreases from 2,189 to 1,750
 differing pixels, but remains **FAIL** against its emulator reference image.
 The current change covers output and priority selection; it does not model a
 hardware fetcher/FIFO reset when LCDC.0 changes mid-line.
+
+### Re-enabling BG after it starts disabled
+
+The PPU previously latched LCDC.0 at Mode 3 entry to decide whether the
+background fetch clock would run. If BG was disabled as the scanline began,
+turning it on later could not restore output because no tile data had been
+fetched. LotusGB now keeps the background fetch clock running independently
+of the LCDC.0 output gate. A public PPU test starts the line with BG disabled,
+keeps the first three output pixels blank, then enables it and checks that the
+already fetched tile becomes visible. [Pan Docs](https://github.com/gbdev/pandocs/blob/master/src/LCDC.md#lcdc0--bg-and-window-enablepriority)
+documents the DMG-visible result and that LCDC may be changed mid-scanline.
+This implementation follows the separation between BG fetching and per-pixel
+LCDC.0 composition in the [SameBoy renderer](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L3273-L3399).
+
+This does not explain the remaining Mealybug mismatch: that test starts with
+BG enabled and varies sprite positions to shift Mode 3 timing. Its 1,750
+differing pixels remain a separate fetch/sprite timing question.

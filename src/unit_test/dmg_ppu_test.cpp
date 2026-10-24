@@ -734,6 +734,28 @@ void testBackgroundEnableIsSampledForEachOutputPixel() {
            "setting LCDC.0 restores background output on later pixels");
 }
 
+void testBackgroundCanBeEnabledMidScanlineAfterStartingDisabled() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    for (uint8_t row = 0; row < 8; ++row)
+        writeTileRow(ppu, 0, row, 0x00, 0xFF); // Color 2.
+    for (int x = 0; x < 32; ++x)
+        ppu.write(0x9800 + x, 0);
+    ppu.write(BGP, 0xE4);
+    ppu.write(LCDC, 0x90); // LCD on, unsigned tile data, BG initially disabled.
+
+    ppu.advanceTCycles(90); // Dot 92; tile data has been fetched before output.
+    ppu.advanceTCycles(3); // Output the first three pixels while BG is hidden.
+    ppu.write(LCDC, 0x91); // Re-enable BG at dot 95.
+    ppu.advanceTCycles(361);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[0] == 0 && frame[1] == 0 && frame[2] == 0,
+           "background pixels stay hidden while LCDC.0 is clear");
+    expect(frame[3] == 2,
+           "reenabling LCDC.0 reveals background fetched during the hidden interval");
+}
+
 void testBackgroundDisableAllowsObjectsBehindBackground() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -922,6 +944,7 @@ int main() {
     testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard();
     testObjectBehindBackgroundUsesFetchedScrollPixels();
     testBackgroundEnableIsSampledForEachOutputPixel();
+    testBackgroundCanBeEnabledMidScanlineAfterStartingDisabled();
     testBackgroundDisableAllowsObjectsBehindBackground();
     testBackgroundBitplanesSampleScySeparately();
     testScyTileNumberRemainsLatchedBetweenFetchStages();

@@ -372,7 +372,6 @@ void DmgPpu::prepareScanline() {
     backgroundFetchTile = backgroundFetchLow = backgroundFetchHigh = 0;
 
     const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
-    scanlineBackgroundEnabled = bgWindowEnabled;
     const uint16_t windowTileMapOffset =
         (lcdControl & WINDOW_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
     const bool windowEnabled = bgWindowEnabled && (lcdControl & WINDOW_ENABLE_MASK) &&
@@ -423,7 +422,7 @@ void DmgPpu::advanceBackgroundFetch() {
     // Keep the existing startup/8-dot schedule while splitting the tile-map
     // and bitplane reads into separate two-dot stages. Sprite/window stalls
     // pause this baseline clock; exact FIFO arbitration remains future work.
-    if (backgroundFetchTicks >= 6 && scanlineBackgroundEnabled) {
+    if (backgroundFetchTicks >= 6) {
         const unsigned phase = (backgroundFetchTicks - 6) % 8;
         const unsigned tileColumn = (backgroundFetchTicks - 6) / 8;
         if (phase == 0) {

@@ -81,7 +81,6 @@ private:
     uint8_t backgroundFetchLow = 0;
     uint8_t backgroundFetchHigh = 0;
     uint16_t backgroundFetchTicks = 0;
-    bool scanlineBackgroundEnabled = false;
     uint8_t scanlineOutputX = 0;
     uint8_t scanlineWindowStartX = 0;
     uint8_t windowPenaltyDotsRemaining = 0;
