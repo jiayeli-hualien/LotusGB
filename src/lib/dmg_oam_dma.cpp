@@ -18,8 +18,11 @@ void DmgOamDma::write(uint16_t address, uint8_t value) {
         return;
 
     sourcePage = value;
+    // DMG DMA decodes E0-FF as C0-DF, including FE/FF which the CPU
+    // normally routes to OAM/I/O. Keep FF46's readback unmodified.
+    const uint8_t mappedPage = value >= 0xE0 ? value - 0x20 : value;
     const uint16_t sourceStart =
-        static_cast<uint16_t>(value) << DMA_SOURCE_PAGE_SHIFT;
+        static_cast<uint16_t>(mappedPage) << DMA_SOURCE_PAGE_SHIFT;
     for (size_t offset = 0; offset < DmgPpu::OAM_SIZE; ++offset) {
         const uint8_t byte = bus.read(static_cast<uint16_t>(sourceStart + offset));
         ppu.writeOamFromDma(offset, byte);

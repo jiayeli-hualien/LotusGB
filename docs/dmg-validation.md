@@ -12,7 +12,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. Palette registers are sampled as pixels are emitted. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; `dmg-acid2` exact framebuffer regression passes. | `dmg-acid2` does not cover every mid-scanline effect. F-1 Race remains a scrolling/visual compatibility target. |
 | PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Mid-Mode-3 scroll/tile-fetch changes are also not modeled. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
-| OAM DMA | FF46 copies 160 bytes from the selected source page into OAM. | `make test`: `dmg_oam_dma_test.cpp`. | Transfer is immediate; per-byte timing and CPU blocking during DMA are not modeled. |
+| OAM DMA | FF46 copies 160 bytes from the selected source page into OAM; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. | `make test`: `dmg_oam_dma_test.cpp`; all three Mooneye OAM DMA cases (`basic`, `reg_read`, `sources-GS`) pass. | Transfer is immediate; per-byte timing and CPU blocking during DMA are not modeled. |
 | APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the recorded 2026-10-22 run. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
 | Startup, frame stepping, and libretro | Default startup skips the boot ROM and begins at the DMG post-boot state at `$0100` with IME disabled. `stepFrame()` advances a nominal 70,224 T-cycles. The libretro core provides video, audio, input, save RAM, and MBC3 RTC memory interfaces. | `make test`: system and libretro tests; `dmg-acid2` and GB Pong regressions; the core has been loaded in Ubuntu RetroArch and common-game play has been checked manually. | Boot-ROM execution and model-specific power-on behavior are not implemented. Continue testing selected games end to end; do not treat core loading alone as full compatibility. |
 
@@ -21,7 +21,8 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 - `make test` runs the in-repository CPU, hardware, visual, and libretro tests.
 - `make test-roms` optionally runs the selected Blargg CH3 ROMs when they are available outside the repository. This is not part of GitHub CI.
 - `make test-mooneye MOONEYE_SUITE_DIR=/path/to/extracted-suite` optionally runs eleven selected Mooneye PPU/interrupt timing ROMs. The suite stays outside the repository; logs and a Markdown report go under `build/test-roms/mooneye/`. This is not part of GitHub CI.
-- `make test-mooneye MOONEYE_GROUP=timer MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs all 13 timer cases; `MOONEYE_GROUP=all` runs the eleven default PPU/interrupt cases plus these thirteen. Reports go under `build/test-roms/mooneye-timer/` and `mooneye-all/`, respectively. These optional groups remain outside CI.
+- `make test-mooneye MOONEYE_GROUP=timer MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs all 13 timer cases; `MOONEYE_GROUP=all` runs eleven default PPU/interrupt cases, thirteen timer cases and three OAM DMA cases (27 total). Reports go under `build/test-roms/mooneye-timer/` and `mooneye-all/`, respectively. These optional groups remain outside CI.
+- `make test-mooneye MOONEYE_GROUP=dma MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs the three OAM DMA cases; its report goes under `build/test-roms/mooneye-dma/`. These check copying, register readback and source mapping, not transfer timing or CPU bus blocking.
 - `make test-homebrew` runs the [local Big2Small smoke check](homebrew-check.md), optionally with `HOMEBREW_SAVE=/path/to/big2small.srm`.
 - The GBIT integration executable is a separate CPU comparison check; see the GBIT section in the README for its local command.
 
@@ -177,3 +178,21 @@ All 13 original external timer ROMs now pass.
 References: [Pan Docs timer overflow behavior](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html#timer-overflow-behavior),
 [Mooneye TIMA write test](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/timer/tima_write_reloading.s),
 and [Mooneye TMA write test](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/timer/tma_write_reloading.s).
+
+
+### DMG OAM DMA source decoding (2026-10-24)
+
+The first DMA-specific Mooneye run passed `basic` and `reg_read` but failed
+`sources-GS`. The DMA engine used the CPU address map for every source page,
+so `$FE00` read OAM and `$FF00` read I/O instead of the DMG's `$DE00`/`$DF00`
+source aliases. Translate DMA source pages `$E0`–`$FF` to `$C0`–`$DF`, while
+preserving the written FF46 value and leaving CPU mappings unchanged.
+
+The original hardware-verified
+[`sources-GS` ROM](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/oam_dma/sources-GS.s)
+now passes. Public-interface unit tests cover all 32 high source pages, all
+160 transferred bytes, register readback, and unchanged CPU I/O mapping.
+This is DMG behavior; the ROM explicitly does not pass on CGB. The source
+mapping correction does not implement transfer duration, CPU bus conflicts,
+restart timing, or PPU/DMA contention. Those remain separate work, as described
+in [Pan Docs](https://gbdev.io/pandocs/OAM_DMA_Transfer.html).
