@@ -192,6 +192,25 @@ formula merely to match one test. The expanded set remains twelve passes
 out of fourteen.
 
 
+### SCX / HALT wake follow-up (2026-10-25)
+
+After the sprite Mode 0 timing change, the production model passes 13/14
+expanded PPU diagnostics. The only failure is the official
+[`hblank_ly_scx_timing-GS`](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ppu/hblank_ly_scx_timing-GS.s)
+ROM. Its SCX=0 case expects two LY samples on opposite sides of the line
+increment: the first sample returns the old line as expected, but the second
+test iteration, with one more M-cycle of delay, still returns the old value.
+
+Re-testing the extra-HALT-wake-M-cycle variant against this newer baseline
+makes the SCX ROM pass but lowers the expanded result to 8/14. Six formerly
+passing cases regress: `intr_1_2_timing-GS`, `intr_2_0_timing`,
+`intr_2_mode3_timing`, `intr_2_mode0_timing`, `intr_2_oam_ok_timing`, and
+`intr_2_mode0_timing_sprites`. The experiment is reverted. It does not tell
+us which component owns the edge mismatch; keep the production CPU/PPU timing
+unchanged until the STAT request, HALT wake, interrupt cycles, and LY bus read
+are measured on one clock.
+
+
 ### Timer reload write window (2026-10-24)
 
 The initial external timer run passed 11 of 13 Mooneye cases. Both failures

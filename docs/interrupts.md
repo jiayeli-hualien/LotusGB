@@ -1,7 +1,7 @@
 # DMG interrupt behavior and validation
 
 This is the interrupt contract and implementation audit for LotusGB, as of
-2026-10-24. It separates hardware rules from current implementation evidence.
+2026-10-25. It separates hardware rules from current implementation evidence.
 Passing instruction tests does not establish peripheral-to-CPU timing accuracy.
 
 ## Request, wake, and service
@@ -97,10 +97,14 @@ for commands and current results.
 ## Open audit and investigation order
 
 1. **SCX / HBlank timing conflict.** The original SCX ROM still fails its
-   SCX=0 boundary after correcting startup IME. An extra HALT wake M-cycle
-   makes it pass but breaks five existing PPU timing ROMs, so that experiment
-   was discarded. Capture request time, HALT wake, entry cycles, vector code,
-   and final LY bus-read time against the same clock before changing behavior.
+   SCX=0 boundary after correcting startup IME. In the current 13/14 model,
+   an extra HALT wake M-cycle makes it pass but regresses six previously
+   passing PPU timing ROMs, so that experiment was discarded. The trace shows
+   the first expected-old-LY sample succeeds, while the second test iteration
+   (sampled with one more M-cycle of delay) still reads the old LY. Capture the
+   STAT request dot, HALT wake, each entry cycle,
+   vector fetch, and final LY bus-read phase against the same clock before
+   changing CPU or PPU behavior. See the [follow-up experiment](#scx-halt-wake-follow-up-2026-10-25).
 2. **EI combinations.** EI followed by EI now has focused pending-request
    coverage and passes the external `ei_sequence` ROM. EI followed by HALT
    with a later-arriving VBlank passes `halt_ime0_ei`. An already-pending
@@ -183,3 +187,23 @@ References: [EI sequence](https://github.com/Gekkio/mooneye-test-suite/blob/main
 and [RETI interrupt timing](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/reti_intr_timing.s).
 The EI/HALT ROM waits for a later interrupt; it does not establish the behavior
 of every already-pending EI/HALT combination. No test expectations were relaxed.
+
+
+## SCX / HALT wake follow-up (2026-10-25)
+
+The current production model passes 13/14 expanded PPU diagnostics; only
+[`hblank_ly_scx_timing-GS`](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ppu/hblank_ly_scx_timing-GS.s)
+fails. Its SCX=0 case samples LY twice after the Mode 0 STAT interrupt. The
+first read correctly sees the old line (`$41`); the second test iteration uses
+one more M-cycle of delay but still sees `$41` instead of `$42`.
+
+An isolated experiment added one M-cycle after HALT wake before interrupt
+entry. It made this ROM pass, but the expanded set fell to 8/14: six cases
+that passed in the current model regressed (`intr_1_2_timing-GS`,
+`intr_2_0_timing`, `intr_2_mode3_timing`, `intr_2_mode0_timing`,
+`intr_2_oam_ok_timing`, and `intr_2_mode0_timing_sprites`). The CPU change was
+reverted. This does not establish whether the remaining discrepancy is in
+PPU event timing, interrupt acceptance, or the CPU bus sampling phase. Keep
+HALT behavior unchanged until a same-clock trace isolates the event and read
+edges; do not tune the global LY or Mode 0 boundary to compensate for this one
+ROM.
