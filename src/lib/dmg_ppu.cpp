@@ -39,6 +39,11 @@ constexpr uint8_t STAT_INTERRUPT_ENABLE_MASK = 0x78;
 constexpr uint8_t STAT_COINCIDENCE_MASK = 0x04;
 
 constexpr uint16_t DOTS_PER_SCANLINE = 456;
+// This model's line timeline starts two dots after LY first reports a new
+// line. On the final VBlank line, readable LY resets after four such dots.
+constexpr uint16_t LAST_LINE_LY_RESET_DOT = 2;
+constexpr uint16_t LAST_LINE_153_COMPARISON_END_DOT = 4;
+constexpr uint16_t LAST_LINE_ZERO_COMPARISON_DOT = 8;
 constexpr uint16_t MODE2_DOTS = 80;
 constexpr uint16_t MODE3_DOTS = 172;
 constexpr uint8_t WINDOW_PENALTY_DOTS = 6;
@@ -228,6 +233,8 @@ uint8_t DmgPpu::getMode() const {
 }
 
 uint8_t DmgPpu::reportedLy() const {
+    if (ly == SCANLINES_PER_FRAME - 1 && dot >= LAST_LINE_LY_RESET_DOT)
+        return 0;
     // The readable line counter changes two dots before the mode timeline.
     return dot >= DOTS_PER_SCANLINE - 2
         ? static_cast<uint8_t>((ly + 1) % SCANLINES_PER_FRAME) : ly;
@@ -260,7 +267,19 @@ void DmgPpu::updateStatInterruptLine() {
         return;
     // During the two-dot LY transition neither the old nor the next line
     // compares equal (Mooneye lcdon_timing-GS checks LYC=0 and LYC=1).
-    lycCoincidence = dot < DOTS_PER_SCANLINE - 2 && ly == lyCompare;
+    int comparisonLine = dot < DOTS_PER_SCANLINE - 2 ? ly : -1;
+    if (ly == SCANLINES_PER_FRAME - 1) {
+        // Line 153 briefly compares as 153 after readable LY is already 0,
+        // then blanks comparison before switching to 0. Keep that match
+        // through frame rollover: neither LY nor its comparator changes then.
+        comparisonLine = -1;
+        if (dot >= LAST_LINE_ZERO_COMPARISON_DOT)
+            comparisonLine = 0;
+        else if (dot >= LAST_LINE_LY_RESET_DOT &&
+                 dot < LAST_LINE_153_COMPARISON_END_DOT)
+            comparisonLine = SCANLINES_PER_FRAME - 1;
+    }
+    lycCoincidence = comparisonLine == lyCompare;
     const bool signal = statInterruptSignal();
     if (signal && !statInterruptLine)
         interrupts.requestInterrupt(INTERRUPT_LCD_STAT);

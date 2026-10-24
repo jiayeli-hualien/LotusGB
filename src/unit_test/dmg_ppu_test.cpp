@@ -368,6 +368,91 @@ void testVblankInterruptAndFrameRollover() {
     expect((ppu.read(STAT) & 0x03) == 2, "the next frame begins in mode 2");
 }
 
+void advanceToReadableLine153(DmgPpu &ppu) {
+    // LY changes ahead of the mode timeline; anchor observations to the
+    // publicly visible counter, not the PPU's private line/dot fields.
+    for (unsigned dots = 0; dots < 456U * 154U; ++dots) {
+        if (ppu.read(LY) == 153)
+            return;
+        ppu.advanceTCycles(1);
+    }
+    expect(false, "PPU reaches readable line 153 within one frame");
+}
+
+void testLastVblankLineResetsLyBeforeModeEnds() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    ppu.write(LCDC, 0x80);
+    advanceToReadableLine153(ppu);
+    ppu.advanceTCycles(3);
+    expect(ppu.read(LY) == 153, "LY still reads 153 before its four-dot reset boundary");
+    ppu.advanceTCycles(1);
+    expect(ppu.read(LY) == 0, "LY resets four dots after first becoming readable as 153");
+    expect((ppu.read(STAT) & 3) == 1, "early LY zero does not end VBlank mode");
+    interrupts.write(IF, 0);
+    ppu.advanceTCycles(453);
+    expect(ppu.read(LY) == 0 && (ppu.read(STAT) & 3) == 1,
+           "the remainder of the final scanline is still LY zero in mode 1");
+    expect((interrupts.read(IF) & INTERRUPT_VBLANK) == 0,
+           "early LY reset does not generate another VBlank request");
+    ppu.advanceTCycles(1);
+    expect(ppu.read(LY) == 0 && (ppu.read(STAT) & 3) == 2,
+           "next frame enters mode 2 only at the full scanline boundary");
+}
+
+void testLastVblankLineLycComparisonAndInterruptEdges() {
+    for (uint8_t lyc : {uint8_t(0), uint8_t(153)}) {
+        InterruptRegisters interrupts;
+        DmgPpu ppu(interrupts);
+        ppu.write(LYC, lyc);
+        ppu.write(STAT, STAT_LYC_INTERRUPT);
+        ppu.write(LCDC, 0x80);
+        advanceToReadableLine153(ppu);
+        interrupts.write(IF, 0);
+        expect((ppu.read(STAT) & 4) == 0, "LY transition starts with coincidence clear");
+        ppu.advanceTCycles(4);
+        expect(ppu.read(LY) == 0 && bool(ppu.read(STAT) & 4) == (lyc == 153),
+               "line 153 comparison is delayed relative to the readable LY reset");
+        expect(bool(interrupts.read(IF) & INTERRUPT_LCD_STAT) == (lyc == 153),
+               "LYC=153 requests its edge during the delayed comparison");
+        interrupts.write(IF, 0);
+        ppu.advanceTCycles(4);
+        expect((ppu.read(STAT) & 4) == 0,
+               "comparison has a blank interval between line 153 and line zero");
+        expect((interrupts.read(IF) & INTERRUPT_LCD_STAT) == 0,
+               "blank comparison interval does not request STAT");
+        ppu.advanceTCycles(4);
+        expect(bool(ppu.read(STAT) & 4) == (lyc == 0),
+               "LYC comparison switches to zero during the last VBlank scanline");
+        expect(bool(interrupts.read(IF) & INTERRUPT_LCD_STAT) == (lyc == 0),
+               "LYC=0 requests STAT before VBlank mode ends");
+        interrupts.write(IF, 0);
+        ppu.advanceTCycles(446);
+        expect((ppu.read(STAT) & 3) == 2 && bool(ppu.read(STAT) & 4) == (lyc == 0),
+               "line zero comparison survives the frame boundary without a false mismatch");
+        expect((interrupts.read(IF) & INTERRUPT_LCD_STAT) == 0,
+               "frame rollover does not repeat a continuous LYC=0 request");
+    }
+}
+
+void testModeOneStatBlocksLastLineLycZeroEdge() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    ppu.write(LYC, 0);
+    ppu.write(STAT, 0x10 | STAT_LYC_INTERRUPT);
+    ppu.write(LCDC, 0x80);
+    advanceToReadableLine153(ppu);
+    interrupts.write(IF, 0);
+    ppu.advanceTCycles(12);
+    expect((ppu.read(STAT) & 4) != 0 && (ppu.read(STAT) & 3) == 1,
+           "LYC=0 becomes true while the mode 1 source is active");
+    expect((interrupts.read(IF) & INTERRUPT_LCD_STAT) == 0,
+           "already-high mode 1 source blocks the LYC rising-edge request");
+    ppu.advanceTCycles(446);
+    expect((interrupts.read(IF) & INTERRUPT_LCD_STAT) == 0,
+           "switching from mode 1 to a continuous LYC=0 source does not retrigger STAT");
+}
+
 void testStatInterruptUsesRisingEdgeOfCombinedSources() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -613,6 +698,9 @@ int main() {
     testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty();
     testObjectAtXZeroUsesTheFixedFetchPenalty();
     testVblankInterruptAndFrameRollover();
+    testLastVblankLineResetsLyBeforeModeEnds();
+    testLastVblankLineLycComparisonAndInterruptEdges();
+    testModeOneStatBlocksLastLineLycZeroEdge();
     testStatInterruptUsesRisingEdgeOfCombinedSources();
     testModeTwoStatSourceAtVblankEntry();
     testLycCoincidenceAndStatInterrupt();

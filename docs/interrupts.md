@@ -88,8 +88,10 @@ entry while the reported mode is 1. External evidence includes:
 - [`vblank_stat_intr-GS`](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ppu/vblank_stat_intr-GS.s)
 - LCD-enable read/write timing ROMs and the selected Mode 2/Mode 0 timing ROMs.
 
-These selected ROMs pass; this does not cover every STAT-write glitch,
-line-153 transition, or interrupt-source race. See [the validation matrix](dmg-validation.md)
+These selected ROMs pass; this does not cover every STAT-write glitch or
+interrupt-source race. The final-line early LY reset and delayed comparison
+now have PPU-interface and CPU-handler tests, as described in the validation
+matrix; there is no dedicated external line-153 ROM in the local archive. See [the validation matrix](dmg-validation.md)
 for commands and current results.
 
 ## Open audit and investigation order
@@ -108,8 +110,8 @@ for commands and current results.
    cancellation/reprioritization of requests. Immediate service after RETI now
    has unit and external ROM coverage. Acceptance-time selection is still
    not proof of the remaining entry races.
-4. **Peripheral-specific gaps.** Add evidence for STAT-write glitches and
-   line-153 behavior when working on those PPU features. Implement STOP wake with joypad evidence. Unconnected serial completion now
+4. **Peripheral-specific gaps.** Add evidence for STAT-write glitches. Line-153 early LY reset and comparison
+   now have focused PPU and CPU-handler tests; finer hardware races remain open. Implement STOP wake with joypad evidence. Unconnected serial completion now
    has component/system coverage; exact serial boot phase and link peers remain separate work.
 
 Items 2–4 are coverage gaps, not confirmed bugs or prerequisites for all other

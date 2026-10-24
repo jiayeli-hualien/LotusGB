@@ -89,3 +89,14 @@ Clearing SC bit 7 aborts without completing or requesting an interrupt.
 The synthetic serial clock starts at phase zero; exact model-specific
 post-boot phase, SC-write edge races, link cables, accessories and CGB fast
 serial are not covered by this baseline.
+
+
+## Readable LY versus PPU progress
+
+The internal scanline and dot position determine rendering and PPU modes.
+Readable LY can advance before a mode boundary and resets to zero early on
+the last VBlank line, while Mode 1 continues. LYC comparison is a separate
+clocked signal; it briefly compares 153 after readable LY is already zero,
+then changes to zero. Preserve the LYC=0 signal through frame rollover so a
+continuous match does not create another STAT rising edge. Do not derive
+rendering/mode progression directly from the value returned by the LY register.

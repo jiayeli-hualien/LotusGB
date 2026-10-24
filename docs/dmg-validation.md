@@ -12,7 +12,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. | `make test`: `dmg_serial_test.cpp` checks register and bit/completion boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. | No real peer, external clock input, accessories or CGB fast clock. The model-specific `boot_sclk_align-dmgABCmgb` ROM still fails; exact post-boot clock phase and SC-write edge races remain unresolved. Component/system tests do not establish full hardware serial conformance. |
 | Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. Palette registers are sampled as pixels are emitted. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; `dmg-acid2` exact framebuffer regression passes. | `dmg-acid2` does not cover every mid-scanline effect. F-1 Race remains a scrolling/visual compatibility target. |
-| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Mid-Mode-3 scroll/tile-fetch changes are also not modeled. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
+| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests, final-line early LY reset and delayed LYC comparison, and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Mid-Mode-3 scroll/tile-fetch changes are also not modeled. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
 | OAM DMA | FF46 schedules 160 bytes at one byte per M-cycle after startup, supports delayed restart, and arbitrates CPU OAM/source-bus access; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. | `make test`: `dmg_oam_dma_test.cpp`; six Mooneye OAM DMA cases pass: `basic`, `reg_read`, `sources-GS`, `oam_dma_start`, `oam_dma_timing`, `oam_dma_restart`. | Basic read contention is modeled; exact write-induced bus corruption, PPU/DMA rendering contention, and sub-M-cycle bus effects remain unmodeled. |
 | APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the recorded 2026-10-22 run. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
 | Startup, frame stepping, and libretro | Default startup skips the boot ROM and begins at the DMG post-boot state at `$0100` with IME disabled. `stepFrame()` advances a nominal 70,224 T-cycles. The libretro core provides video, audio, input, save RAM, and MBC3 RTC memory interfaces. | `make test`: system and libretro tests; `dmg-acid2` and GB Pong regressions; the core has been loaded in Ubuntu RetroArch and common-game play has been checked manually. | Boot-ROM execution and model-specific power-on behavior are not implemented. Continue testing selected games end to end; do not treat core loading alone as full compatibility. |
@@ -341,3 +341,46 @@ References: [Mooneye mapper ROMs](https://github.com/Gekkio/mooneye-test-suite/t
 and [8 MiB MBC5 test](https://github.com/Gekkio/mooneye-test-suite/blob/main/emulator-only/mbc5/rom_64Mb.s).
 Although these live in the `emulator-only` directory, the cited source files
 report verification with configurable flash cartridges using genuine MBC chips.
+
+
+### Final VBlank line: LY and comparison (2026-10-24)
+
+The readable LY register resets to zero during line 153, before the scanline
+and VBlank mode end. The old PPU kept LY at 153 until the end of that line,
+which also delayed LYC=0 requests until the next frame. Keep internal scanline
+progress separate from the readable counter so early LY=0 does not start
+rendering, reset the window counter, or enter Mode 2 prematurely.
+
+Public-interface tests anchor to the first readable LY=153 value and check
+the following sampled states from the DMG timing model:
+
+| Dots after the first readable 153 | Readable LY | LYC comparator | STAT mode |
+| ---: | ---: | --- | ---: |
+| 0 | 153 | No match | 1 |
+| 4 | 0 | Compares as 153 | 1 |
+| 8 | 0 | No match | 1 |
+| 12 | 0 | Compares as 0 | 1 |
+
+LYC=0 remains matched across frame rollover, so clearing IF during that
+continuous match does not create a duplicate request at Mode 2 entry. Tests
+also check that the active Mode 1 STAT source blocks a new LYC request, that
+VBlank is not requested a second time, and that the full scanline completes
+before the next frame starts. A CPU-driven system test accepts LYC=0 and reads
+LY=0 with STAT still reporting Mode 1 from the handler.
+
+References: [AntonioND's DMG timing tables, section 8.9.1, PDF pages 31–32](https://github.com/AntonioND/giibiiadvance/blob/master/docs/TCAGBD.pdf),
+[Pan Docs LY reset discussion](https://github.com/gbdev/pandocs/issues/646),
+and [SameBoy's last-line implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c).
+The hardware notes sample at four-dot resolution; SameBoy was consulted to
+cross-check the finer transitions in the current model, not as independent
+hardware proof of every dot. These focused tests do not establish complete
+STAT-write race or CGB timing accuracy; the local Mooneye archive has no
+specific line-153 acceptance ROM.
+
+
+At this checkpoint, `make build` and `make test` pass, including dmg-acid2 and
+the generated Mooneye result-protocol probes. The combined default 67-ROM set
+and corrected GBIT (244/244 ordinary + 256/256 CB) pass. Big2Small completes
+3,600 frames with the same final frame hash and unchanged original SRAM. The
+expanded PPU diagnostics remain 12/14, with the same SCX/HBlank and object
+timing failures. No new external line-153 acceptance result is claimed.

@@ -451,9 +451,40 @@ void testSerialClockIsIndependentOfDividerWrites() {
            "serial completion latches IF even with IME and serial IE disabled");
 }
 
+void testLycZeroHandlerRunsBeforeVblankEnds() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {
+        0xF3, 0xAF, 0xE0, 0x0F, // DI; clear IF
+        0x3E, 0x02, 0xEA, 0xFF, 0xFF, // enable LCD STAT IRQ
+        0x3E, 0x40, 0xE0, 0x41, // enable LYC source, LYC defaults to 0
+        0xFB, 0x00, // EI; NOP
+        0x76, 0x18, 0xFD, // HALT; loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+    const uint8_t handler[] = {
+        0xF0, 0x41, 0xE6, 0x03, // A = STAT mode
+        0xFE, 0x01, 0x20, 0x06, // CP 1; skip observations outside VBlank
+        0x47,                   // B = mode 1
+        0xF0, 0x44, 0x4F,       // C = readable LY
+        0x16, 0x99,             // D = completion marker
+        0xD9,                   // RETI, including startup LYC interrupts
+    };
+    for (size_t i = 0; i < sizeof(handler); ++i)
+        rom[0x48 + i] = handler[i];
+    GameBoySystem system(std::move(rom));
+    for (unsigned cycle = 0; cycle < 20000 && system.getCpuRegisters().getRefD() != 0x99;
+         ++cycle)
+        expect(system.stepOneCycle().success, "LYC-zero interrupt system program executes");
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefD() == 0x99 && registers.getRefB() == 1 && registers.getRefC() == 0,
+           "CPU receives LYC=0 while readable LY is zero and STAT is still in VBlank");
+}
+
 }
 
 int main() {
+    testLycZeroHandlerRunsBeforeVblankEnds();
     testDisconnectedSerialWakesHaltAndRunsHandler();
     testSerialClockIsIndependentOfDividerWrites();
     testCpuRunsHramDmaRoutineAndReturnsToRom();
