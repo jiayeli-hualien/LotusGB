@@ -43,3 +43,33 @@ pressed, try releasing all keys and pressing the same pause key once, and
 check whether the frontend menu still opens. A responsive menu plus a stuck
 game calls for a core trace; an unresponsive frontend needs frontend/host
 logs before blaming the emulator.
+
+## Core diagnostics in RetroArch
+
+The core requests libretro's log interface during initialization. When the
+frontend supplies it, content-load failures appear in the frontend log with
+`[LotusGB]`; otherwise they go to standard error. Messages distinguish
+missing/invalid-sized content, unsupported cartridge type/ROM size and
+cartridge initialization errors (for example, an unsupported RAM header).
+No ROM path or contents are included by these diagnostics.
+
+A CPU execution failure or stopped clock before frame completion is also
+reported with PC and elapsed T-cycles for that frame. Consecutive incomplete
+frames produce only one report; successful progress, reset or new content
+re-arms reporting. STOP is a warning, not proof of a crash. This adds
+observability without changing input, interrupt, STOP or frame behavior.
+A frontend pause prevents `retro_run()` from being called, so it cannot
+produce a core stopped-frame warning. An internal game pause can keep
+executing complete frames and likewise does not generate that warning.
+
+Frontend-interface tests cover invalid content, mapper/size reporting,
+cartridge exception details, STOP report suppression, reset re-arming and
+normal complete frames without warnings. Both homebrew profiles also run
+with a frontend that does not offer the logging interface.
+
+For a local RetroArch session, enable verbose logs and retain a file:
+
+```sh
+retroarch --verbose --log-file "$PWD/build/retroarch.log" \
+  -L "$PWD/build/lotusgb_libretro.so" /absolute/path/to/game.gb
+```

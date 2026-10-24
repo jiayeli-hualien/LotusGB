@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <cstdio>
+#include <exception>
 #include <cstdint>
 #include <fstream>
 #include <memory>
@@ -24,6 +26,15 @@ constexpr size_t VIDEO_PIXEL_COUNT = VIDEO_WIDTH * VIDEO_HEIGHT;
 constexpr double DMG_FRAME_RATE = 4194304.0 / GameBoySystem::DMG_FRAME_T_CYCLES;
 
 retro_environment_t environmentCallback = nullptr;
+retro_log_printf_t logCallback = nullptr;
+bool frameProblemReported = false;
+
+void logMessage(retro_log_level level, const char *message) {
+    if (logCallback)
+        logCallback(level, "[LotusGB] %s\n", message);
+    else
+        std::fprintf(stderr, "[LotusGB] %s\n", message);
+}
 retro_video_refresh_t videoRefreshCallback = nullptr;
 retro_audio_sample_t audioSampleCallback = nullptr;
 retro_audio_sample_batch_t audioSampleBatchCallback = nullptr;
@@ -249,7 +260,12 @@ unsigned retro_api_version(void) {
 
 void retro_init(void) {
     useXrgb8888 = false;
+    logCallback = nullptr;
+    frameProblemReported = false;
     if (environmentCallback) {
+        retro_log_callback logging{};
+        if (environmentCallback(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
+            logCallback = logging.log;
         unsigned pixelFormat = RETRO_PIXEL_FORMAT_XRGB8888;
         useXrgb8888 = environmentCallback(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT,
                                           &pixelFormat);
@@ -259,6 +275,7 @@ void retro_init(void) {
 }
 
 void retro_deinit(void) {
+    logCallback = nullptr;
     audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
@@ -301,7 +318,12 @@ void retro_reset(void) {
         auto newSystem =
             std::make_unique<GameBoySystem>(loadedRom, saveRam, saveRtc);
         emulatorSystem = std::move(newSystem);
+        frameProblemReported = false;
+    } catch (const std::exception &error) {
+        logMessage(RETRO_LOG_ERROR, error.what());
+        emulatorSystem.reset();
     } catch (...) {
+        logMessage(RETRO_LOG_ERROR, "Unexpected error resetting the core");
         emulatorSystem.reset();
     }
 }
@@ -311,7 +333,22 @@ void retro_run(void) {
         return;
 
     pollInput();
-    emulatorSystem->stepFrame();
+    const auto step = emulatorSystem->stepFrame();
+    if (!step.success || !step.frameCompleted) {
+        if (!frameProblemReported) {
+            char message[192];
+            auto registers = emulatorSystem->getCpuRegisters();
+            std::snprintf(message, sizeof(message), "%s; PC=0x%04X frame_tcycles=%llu",
+                          step.success ? "CPU clock stopped before frame completion (STOP)"
+                                       : "CPU execution failed before frame completion",
+                          static_cast<unsigned>(registers.getRefPC()),
+                          static_cast<unsigned long long>(step.tCyclesElapsed));
+            logMessage(step.success ? RETRO_LOG_WARN : RETRO_LOG_ERROR, message);
+        }
+        frameProblemReported = true;
+    } else {
+        frameProblemReported = false;
+    }
     renderFrame();
     submitAudio();
 }
@@ -336,19 +373,32 @@ bool retro_load_game(const retro_game_info *game) {
     constexpr size_t MINIMUM_ROM_SIZE = 0x150;
     constexpr size_t MAXIMUM_ROM_SIZE = 0x800000;
     if (!game || !game->data || game->size < MINIMUM_ROM_SIZE ||
-        game->size > MAXIMUM_ROM_SIZE)
+        game->size > MAXIMUM_ROM_SIZE) {
+        logMessage(RETRO_LOG_ERROR, "Missing ROM content or ROM size outside 336 bytes to 8 MiB");
         return false;
+    }
 
     const auto *data = static_cast<const uint8_t *>(game->data);
     try {
         std::vector<uint8_t> rom(data, data + game->size);
-        if (!isSupportedRom(rom))
+        if (!isSupportedRom(rom)) {
+            char message[128];
+            std::snprintf(message, sizeof(message),
+                          "Unsupported cartridge type/ROM size: type=0x%02X bytes=%zu",
+                          static_cast<unsigned>(rom[0x147]), rom.size());
+            logMessage(RETRO_LOG_ERROR, message);
             return false;
+        }
         std::unique_ptr<GameBoySystem> newSystem =
             std::make_unique<GameBoySystem>(rom);
         loadedRom = std::move(rom);
         emulatorSystem = std::move(newSystem);
+        frameProblemReported = false;
+    } catch (const std::exception &error) {
+        logMessage(RETRO_LOG_ERROR, error.what());
+        return false;
     } catch (...) {
+        logMessage(RETRO_LOG_ERROR, "Unexpected error loading cartridge");
         return false;
     }
     return true;

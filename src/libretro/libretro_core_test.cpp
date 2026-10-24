@@ -4,6 +4,8 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -44,7 +46,24 @@ std::vector<uint8_t> readBinary(const std::string &path) {
                                 std::istreambuf_iterator<char>());
 }
 
+std::vector<std::string> logMessages;
+std::vector<retro_log_level> logLevels;
+
+void frontendLog(retro_log_level level, const char *format, ...) {
+    char buffer[512];
+    va_list arguments;
+    va_start(arguments, format);
+    std::vsnprintf(buffer, sizeof(buffer), format, arguments);
+    va_end(arguments);
+    logMessages.emplace_back(buffer);
+    logLevels.push_back(level);
+}
+
 bool environmentCallback(unsigned command, void *data) {
+    if (command == RETRO_ENVIRONMENT_GET_LOG_INTERFACE) {
+        static_cast<retro_log_callback *>(data)->log = frontendLog;
+        return true;
+    }
     if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT) {
         const unsigned pixelFormat = *static_cast<unsigned *>(data);
         expect(pixelFormat == RETRO_PIXEL_FORMAT_XRGB8888,
@@ -475,6 +494,53 @@ void testLibretroExposesAndPreservesMbc3RtcMemory() {
     retro_unload_game();
 }
 
+void testLibretroReportsLoadAndStoppedFrameDiagnostics() {
+    logMessages.clear();
+    logLevels.clear();
+    expect(!retro_load_game(nullptr), "missing content fails with a diagnostic");
+    expect(logMessages.size() == 1 && logLevels.back() == RETRO_LOG_ERROR,
+           "frontend receives content error logging");
+
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x147] = 0x22;
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(!retro_load_game(&game), "unsupported mapper load fails");
+    expect(logMessages.back().find("type=0x22 bytes=32768") != std::string::npos,
+           "load diagnostic identifies mapper and ROM size");
+    rom[0x147] = 0x03;
+    rom[0x149] = 0xFF;
+    expect(!retro_load_game(&game), "invalid mapper RAM header fails");
+    expect(logMessages.back().find("unsupported MBC1 RAM size") != std::string::npos,
+           "cartridge initialization error reaches frontend logging");
+
+    rom[0x147] = 0;
+    rom[0x149] = 0;
+    rom[0x100] = 0x10; // STOP; ignore its zero padding byte.
+    expect(retro_load_game(&game), "STOP diagnostic ROM loads");
+    logMessages.clear();
+    logLevels.clear();
+    retro_run();
+    retro_run();
+    expect(logMessages.size() == 1 && logLevels.back() == RETRO_LOG_WARN &&
+               logMessages.back().find("STOP") != std::string::npos,
+           "stopped clock is reported once without flooding each frame");
+    retro_reset();
+    retro_run();
+    expect(logMessages.size() == 2,
+           "reset re-arms stopped-frame reporting for the new execution");
+    retro_unload_game();
+
+    rom[0x100] = 0x18; // JR -2: ordinary active execution.
+    rom[0x101] = 0xFE;
+    expect(retro_load_game(&game), "ordinary diagnostic ROM loads");
+    logMessages.clear();
+    retro_run();
+    expect(logMessages.empty(), "normal complete frames produce no warnings");
+    retro_unload_game();
+}
+
 void testLibretroReportsApiAndVideoTiming() {
     expect(retro_api_version() == RETRO_API_VERSION,
            "core reports the libretro API version");
@@ -518,6 +584,7 @@ int main() {
     testLibretroPersistsMbc5BatteryRamAcrossFrontendReload();
     testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();
     testLibretroExposesAndPreservesMbc3RtcMemory();
+    testLibretroReportsLoadAndStoppedFrameDiagnostics();
 
     retro_unload_game();
     retro_deinit();
