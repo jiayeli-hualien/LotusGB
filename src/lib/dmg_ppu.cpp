@@ -372,8 +372,6 @@ void DmgPpu::prepareScanline() {
     backgroundFetchTile = backgroundFetchLow = backgroundFetchHigh = 0;
 
     const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
-    const uint16_t bgTileMapOffset = (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
-    scanlineBackgroundMap = bgTileMapOffset;
     scanlineBackgroundEnabled = bgWindowEnabled;
     const uint16_t windowTileMapOffset =
         (lcdControl & WINDOW_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
@@ -431,7 +429,9 @@ void DmgPpu::advanceBackgroundFetch() {
         if (phase == 0) {
             const uint8_t sourceX = static_cast<uint8_t>((scrollX & 0xF8) + tileColumn * 8);
             const uint8_t sourceY = static_cast<uint8_t>(scrollY + ly);
-            backgroundFetchTile = videoRam[scanlineBackgroundMap +
+            const uint16_t backgroundMap =
+                (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
+            backgroundFetchTile = videoRam[backgroundMap +
                                            (sourceY / 8) * 32 + sourceX / 8];
         } else if (phase == 2) {
             backgroundFetchLow = readBackgroundBitplane(false);

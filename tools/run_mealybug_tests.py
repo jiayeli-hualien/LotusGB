@@ -7,7 +7,13 @@ from pathlib import Path
 import subprocess
 import zipfile
 
-TESTS = ('m3_bgp_change', 'm3_scx_low_3_bits', 'm3_scx_high_5_bits', 'm3_scy_change')
+TESTS = (
+    'm3_bgp_change',
+    'm3_scx_low_3_bits',
+    'm3_scx_high_5_bits',
+    'm3_scy_change',
+    'm3_lcdc_bg_map_change',
+)
 
 
 def main():

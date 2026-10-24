@@ -42,7 +42,9 @@ CPU failure, STOP and output errors fail capture. The Python comparison maps
 shade indices to the documented `$FF/$AA/$55/$00` grayscale values and returns
 failure for any differing pixel.
 
-`--test m3_scx_high_5_bits` selects one case. Outputs default to
+`--test m3_scx_high_5_bits` selects one case. The default set also includes
+`m3_lcdc_bg_map_change`, which toggles LCDC's background-map select during
+Mode 3. Outputs default to
 `build/test-roms/mealybug/`: ROM copies, shade buffers, PNGs, red mismatch maps,
 logs and `report.json`. The report hashes the archive, each selected ROM and
 reference image, and runner executable. The output directory must remain
@@ -180,3 +182,19 @@ startup profile. The canyon textures/rows visibly change between versions.
 This provides a real-game target for the sampling work alongside the still
 failing Mealybug checks; further accuracy claims require a controlled hardware
 or reference comparison. [Procedure and artifacts](homebrew-check.md#canyon-racer-raster-effect-gameplay-check).
+
+## Mid-scanline background tile-map select
+
+The first background renderer latched LCDC bit 3 when Mode 3 began, so a
+mid-scanline map change could not affect any later background tile. The DMG
+Mealybug `m3_lcdc_bg_map_change` test toggles this bit during Mode 3 while
+sprites create different fetch delays. The renderer now samples the selected
+map at each background tile-map fetch. A public PPU test writes different
+tiles into both maps, changes LCDC after the first tile is fetched, and checks
+that the first tile stays unchanged while the next tile uses the new map.
+
+Against the selected `DMG-blob` reference image, the difference count changes
+from 1,234 to 1,082 pixels, so this case remains **FAIL**. The reference is an
+author-provided emulator render, not a raw hardware capture. The remaining
+sprite-dependent timing differences are not resolved by shifting the map-read
+phase globally; exact FIFO/fetch arbitration needs separate evidence.

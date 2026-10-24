@@ -11,9 +11,9 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 
 ## Current route (2026-10-24)
 
-- **Active: PPU mid-scanline scrolling.** Establish a selected Mealybug DMG
-  screenshot baseline at the documented software breakpoint, then implement
-  one observable SCX/SCY fetch behavior at a time. Retain existing regressions;
+- **Active: PPU mid-scanline raster effects.** Establish selected Mealybug DMG
+  screenshot baselines at the documented software breakpoint, then implement
+  one observable SCX/SCY/LCDC fetch behavior at a time. Retain existing regressions;
   passing the whole suite is not a prerequisite. Use an author-provided
   Canyon Racer Game Boy ROM for visible-effect acceptance; the first scripted
   run now reaches gameplay, with exact effect timing still unverified;
@@ -190,3 +190,5 @@ Use Linux as the primary development and CI platform for now. Raspberry Pi runni
 - **SCY bitplane sampling checkpoint (2026-10-24):** split background tile-number and data-plane reads into separate clock stages. New public PPU tests protect mixed-row bitplanes, already-read data and retained tile numbers. The SCY image improves from 9,873 to 8,330 differing pixels, still FAIL; SCX-high remains at 84. A bounded phase experiment did not establish a correct alternative and was discarded. `make test`, 67/67 Mooneye, GBIT and both homebrew profiles pass with unchanged final frames/player SRAM. Precise FIFO/sprite arbitration remains open; see [the PPU sampling notes](ppu-scrolling.md#separate-scy-bitplane-reads).
 
 - **Canyon Racer gameplay baseline (2026-10-24):** pin the author's 0.7.7 standard MBC5 ROM outside the repository and add `HOMEBREW_GAME=canyon-racer`. START at 900, A at 1500 and later jump holds reach gameplay; captures at 1800/2400/3600 show the ship, obstacles, HUD and changing canyon. The full run completes 3,600 video callbacks and 2,893,139 stereo audio frames. A same-input temporary `c13d0f0` build differs by 3,463 pixels at frame 1800, demonstrating a real-game effect of the SCY stages without claiming hardware-exact output. Keep remaining Mealybug differences as diagnostics. See [the profile and limits](homebrew-check.md#canyon-racer-raster-effect-gameplay-check).
+
+- **Mid-scanline background-map selection (2026-10-24):** sample LCDC bit 3 when each background tile-map entry is fetched instead of once at Mode 3 entry. A focused PPU-interface test confirms an already-fetched tile stays unchanged and the next tile uses the newly selected map. Add Mealybug `m3_lcdc_bg_map_change` to the optional visual set; the reference difference improves from 1,234 to 1,082 pixels, still FAIL, due to unresolved sprite/fetch timing. `make test` and all three 3,600-frame homebrew profiles pass; Big2Small's frame matches a run from the unmodified parent revision. See [the PPU investigation](ppu-scrolling.md#mid-scanline-background-tile-map-select).

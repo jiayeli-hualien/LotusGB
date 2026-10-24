@@ -668,6 +668,28 @@ void testScyTileNumberRemainsLatchedBetweenFetchStages() {
            "the next tile-map read samples the new SCY tile row");
 }
 
+void testBackgroundTileMapSelectIsSampledAtEachTileFetch() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    for (uint8_t row = 0; row < 8; ++row) {
+        writeTileRow(ppu, 0, row, 0x00, 0x00); // Color 0.
+        writeTileRow(ppu, 1, row, 0xFF, 0xFF); // Color 3.
+    }
+    for (int x = 0; x < 32; ++x) {
+        ppu.write(0x9800 + x, 0); // Map 0 selects the white tile.
+        ppu.write(0x9C00 + x, 1); // Map 1 selects the dark tile.
+    }
+    ppu.write(BGP, 0xE4);
+    ppu.write(LCDC, 0x91); // LCD on, unsigned tile data, map 0, BG on.
+    ppu.advanceTCycles(91); // Dot 93: tile 0 is fetched; tile 1 is not.
+    ppu.write(LCDC, 0x99); // Select map 1 before tile 1's map fetch at dot 94.
+    ppu.advanceTCycles(363);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[0] == 0, "already fetched tile retains its original map entry");
+    expect(frame[8] == 3, "later tile fetch samples the updated LCDC map select");
+}
+
 void testObjectBehindBackgroundUsesFetchedScrollPixels() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -857,6 +879,7 @@ int main() {
     testObjectBehindBackgroundUsesFetchedScrollPixels();
     testBackgroundBitplanesSampleScySeparately();
     testScyTileNumberRemainsLatchedBetweenFetchStages();
+    testBackgroundTileMapSelectIsSampledAtEachTileFetch();
     testWindowYTriggerAndHiddenRows();
     testWindowYRequiresScanlineStartEquality();
     testObjectsUseTransparencyPaletteAndPriority();
