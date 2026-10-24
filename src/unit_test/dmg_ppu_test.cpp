@@ -956,6 +956,45 @@ void testObjectsUseTransparencyPaletteAndPriority() {
     expect(frame[32] == 1, "object behind a nonzero BG leaves the BG visible");
 }
 
+void testOffscreenObjectsConsumeTheTenObjectScanlineLimit() {
+    InterruptRegisters firstTenInterrupts;
+    DmgPpu firstTen(firstTenInterrupts);
+    writeTileRow(firstTen, 2, 0, 0x00, 0xFF); // Opaque object color 2.
+    firstTen.write(BGP, 0xE4);
+    firstTen.write(OBP0, 0xE4);
+
+    // X=168 hides each object horizontally, but OAM scan still selects them.
+    for (uint16_t index = 0; index < 10; ++index) {
+        const uint16_t entry = static_cast<uint16_t>(OAM + index * 4);
+        firstTen.write(entry, 16);
+        firstTen.write(static_cast<uint16_t>(entry + 1), 168);
+    }
+    firstTen.write(OAM + 40, 16);
+    firstTen.write(OAM + 41, 8); // The eleventh object would cover screen x=0.
+    firstTen.write(OAM + 42, 2);
+    renderFirstScanline(firstTen, 0x93);
+    expect(firstTen.getFrameBuffer()[0] == 0,
+           "ten earlier off-screen objects prevent the eleventh object from being selected");
+
+    InterruptRegisters nineInterrupts;
+    DmgPpu nine(nineInterrupts);
+    writeTileRow(nine, 2, 0, 0x00, 0xFF);
+    nine.write(BGP, 0xE4);
+    nine.write(OBP0, 0xE4);
+    for (uint16_t index = 0; index < 10; ++index) {
+        const uint16_t entry = static_cast<uint16_t>(OAM + index * 4);
+        nine.write(entry, 16);
+        nine.write(static_cast<uint16_t>(entry + 1), 168);
+    }
+    nine.write(OAM, 0); // One earlier object is outside the scanline vertically.
+    nine.write(OAM + 40, 16);
+    nine.write(OAM + 41, 8);
+    nine.write(OAM + 42, 2);
+    renderFirstScanline(nine, 0x93);
+    expect(nine.getFrameBuffer()[0] == 2,
+           "an off-screen Y object does not consume a slot, so the next object is drawn");
+}
+
 void testSixteenPixelObjectsUsePairedTiles() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -1015,6 +1054,7 @@ int main() {
     testWindowYTriggerAndHiddenRows();
     testWindowYRequiresScanlineStartEquality();
     testObjectsUseTransparencyPaletteAndPriority();
+    testOffscreenObjectsConsumeTheTenObjectScanlineLimit();
     testSixteenPixelObjectsUsePairedTiles();
     std::cout << "DMG PPU tests passed\n";
 }
