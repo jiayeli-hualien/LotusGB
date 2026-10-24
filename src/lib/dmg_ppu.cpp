@@ -455,13 +455,17 @@ void DmgPpu::advanceBackgroundFetch() {
 
 void DmgPpu::renderPixel(size_t screenX) {
     const size_t frameOffset = static_cast<size_t>(ly) * FRAME_WIDTH + screenX;
+    const bool backgroundEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
+    const uint8_t backgroundColorIndex = backgroundEnabled
+                                             ? scanlineBgColorIndices[screenX]
+                                             : 0;
     frameBuffer[frameOffset] =
-        applyPalette(bgPalette, scanlineBgColorIndices[screenX]);
+        applyPalette(bgPalette, backgroundColorIndex);
 
     const uint8_t objectColorIndex = scanlineObjectColorIndices[screenX];
     if (objectColorIndex != 0 &&
-        !(scanlineObjectBehindBg[screenX] && scanlineBackgroundEnabled &&
-          scanlineBgColorIndices[screenX] != 0)) {
+        !(scanlineObjectBehindBg[screenX] && backgroundEnabled &&
+          backgroundColorIndex != 0)) {
         const uint8_t palette = scanlineObjectUsesPalette1[screenX]
                                     ? objectPalette1
                                     : objectPalette0;

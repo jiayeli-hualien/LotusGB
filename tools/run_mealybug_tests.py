@@ -13,6 +13,7 @@ TESTS = (
     'm3_scx_high_5_bits',
     'm3_scy_change',
     'm3_lcdc_bg_map_change',
+    'm3_lcdc_bg_en_change',
 )
 
 

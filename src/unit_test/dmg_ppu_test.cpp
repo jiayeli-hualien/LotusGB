@@ -711,6 +711,50 @@ void testObjectBehindBackgroundUsesFetchedScrollPixels() {
            "object priority compares the fetched background, not a stale line snapshot");
 }
 
+void testBackgroundEnableIsSampledForEachOutputPixel() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    for (uint8_t row = 0; row < 8; ++row)
+        writeTileRow(ppu, 0, row, 0x00, 0xFF); // Color 2.
+    for (int x = 0; x < 32; ++x)
+        ppu.write(0x9800 + x, 0);
+    ppu.write(BGP, 0xE4);
+    ppu.write(LCDC, 0x91); // LCD on, unsigned tile data, BG enabled.
+
+    ppu.advanceTCycles(90); // Dot 92; visible output begins on the next dot.
+    ppu.write(LCDC, 0x90); // Disable BG for the first three output pixels.
+    ppu.advanceTCycles(3);
+    ppu.write(LCDC, 0x91);
+    ppu.advanceTCycles(361);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[0] == 0 && frame[1] == 0 && frame[2] == 0,
+           "clearing LCDC.0 makes upcoming DMG background pixels color zero");
+    expect(frame[3] == 2,
+           "setting LCDC.0 restores background output on later pixels");
+}
+
+void testBackgroundDisableAllowsObjectsBehindBackground() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    writeTileRow(ppu, 0, 0, 0xFF, 0x00); // Opaque BG color 1.
+    writeTileRow(ppu, 1, 0, 0x00, 0xFF); // Object color 2.
+    ppu.write(0x9800, 0);
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 8); // Object begins at screen x=0.
+    ppu.write(OAM + 2, 1);
+    ppu.write(OAM + 3, 0x80); // Behind BG while the DMG BG is enabled.
+    ppu.write(BGP, 0xE4);
+    ppu.write(OBP0, 0xE4);
+    ppu.write(LCDC, 0x93);
+    ppu.advanceTCycles(101); // Dot 103; the first object pixel follows its fetch stall.
+    ppu.write(LCDC, 0x92); // Turn off BG before the object pixel is emitted.
+    ppu.advanceTCycles(1);
+
+    expect(ppu.getFrameBuffer()[0] == 2,
+           "DMG object remains visible when LCDC.0 disables the BG priority layer");
+}
+
 void testWindowPositionAndWindowTileMap() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -877,6 +921,8 @@ int main() {
     testWindowPositionAndWindowTileMap();
     testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard();
     testObjectBehindBackgroundUsesFetchedScrollPixels();
+    testBackgroundEnableIsSampledForEachOutputPixel();
+    testBackgroundDisableAllowsObjectsBehindBackground();
     testBackgroundBitplanesSampleScySeparately();
     testScyTileNumberRemainsLatchedBetweenFetchStages();
     testBackgroundTileMapSelectIsSampledAtEachTileFetch();

@@ -43,8 +43,8 @@ shade indices to the documented `$FF/$AA/$55/$00` grayscale values and returns
 failure for any differing pixel.
 
 `--test m3_scx_high_5_bits` selects one case. The default set also includes
-`m3_lcdc_bg_map_change`, which toggles LCDC's background-map select during
-Mode 3. Outputs default to
+`m3_lcdc_bg_map_change` and `m3_lcdc_bg_en_change`, which toggle LCDC's
+background-map and BG enable bits during Mode 3. Outputs default to
 `build/test-roms/mealybug/`: ROM copies, shade buffers, PNGs, red mismatch maps,
 logs and `report.json`. The report hashes the archive, each selected ROM and
 reference image, and runner executable. The output directory must remain
@@ -198,3 +198,17 @@ from 1,234 to 1,082 pixels, so this case remains **FAIL**. The reference is an
 author-provided emulator render, not a raw hardware capture. The remaining
 sprite-dependent timing differences are not resolved by shifting the map-read
 phase globally; exact FIFO/fetch arbitration needs separate evidence.
+
+## Mid-scanline LCDC.0 background enable
+
+On DMG, clearing LCDC.0 blanks the background/window while leaving objects
+visible. LotusGB now checks this bit at each pixel output and uses the live
+value for object-behind-background priority. Public PPU tests cover pixels
+emitted while the bit is clear and an object marked “behind BG” becoming
+visible when the BG priority layer is disabled. This follows the
+[Pan Docs LCDC.0 description](https://github.com/gbdev/pandocs/blob/master/src/LCDC.md#lcdc0--bg-and-window-enablepriority).
+
+The Mealybug `m3_lcdc_bg_en_change` comparison decreases from 2,189 to 1,750
+differing pixels, but remains **FAIL** against its emulator reference image.
+The current change covers output and priority selection; it does not model a
+hardware fetcher/FIFO reset when LCDC.0 changes mid-line.
