@@ -43,6 +43,7 @@ private:
     void advanceDot();
     void prepareScanline();
     void renderPixel(size_t screenX);
+    void advanceBackgroundFetch();
     void prepareObjects();
     uint8_t getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
                          bool unsignedTileData) const;
@@ -56,6 +57,7 @@ private:
     std::array<uint8_t, FRAME_WIDTH> scanlineBgColorIndices{};
     std::array<uint8_t, FRAME_WIDTH> scanlineObjectColorIndices{};
     std::array<bool, FRAME_WIDTH> scanlineObjectUsesPalette1{};
+    std::array<bool, FRAME_WIDTH> scanlineObjectBehindBg{};
     std::array<uint16_t, FRAME_WIDTH> scanlineObjectPenaltyAtX{};
 
     uint8_t lcdControl = 0;
@@ -74,6 +76,10 @@ private:
     uint16_t dot = 0;
     uint16_t mode3Duration = 172;
     uint8_t scanlineFineScroll = 0;
+    uint8_t scanlineBackgroundY = 0;
+    uint16_t backgroundFetchTicks = 0;
+    uint16_t scanlineBackgroundMap = 0;
+    bool scanlineBackgroundEnabled = false;
     uint8_t scanlineOutputX = 0;
     uint8_t scanlineWindowStartX = 0;
     uint8_t windowPenaltyDotsRemaining = 0;

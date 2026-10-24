@@ -604,6 +604,53 @@ void testSignedBackgroundTileAddressing() {
            "signed tile index addresses tile data relative to 0x9000");
 }
 
+void testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard() {
+    for (uint8_t fine : {uint8_t{0}, uint8_t{3}}) {
+        InterruptRegisters interrupts;
+        DmgPpu ppu(interrupts);
+        writeTileRow(ppu, 0, 0, 0xFF, 0x00); // Color 1.
+        writeTileRow(ppu, 1, 0, 0x00, 0xFF); // Color 2.
+        writeTileRow(ppu, 2, 0, 0xFF, 0xFF); // Color 3.
+        writeTileRow(ppu, 3, 0, 0x00, 0x00); // Color 0.
+        for (int x = 0; x < 32; ++x)
+            ppu.write(0x9800 + x, x % 4);
+        ppu.write(BGP, 0xE4);
+        ppu.write(SCX, fine);
+        ppu.write(LCDC, 0x91);
+        ppu.advanceTCycles(94); // Dot 96; the second tile is already fetched.
+        ppu.write(SCX, 0x0F); // Change coarse offset and low bits together.
+        ppu.advanceTCycles(360);
+        const auto &frame = ppu.getFrameBuffer();
+        expect(frame[0] == 1, "already emitted pixels retain the old scroll");
+        expect(frame[8 - fine] == 2,
+               "already fetched tile retains its old coarse scroll");
+        expect(frame[16 - fine] == 0,
+               "later tile samples new SCX high bits and retains initial fine discard");
+        expect(frame[24 - fine] == 1, "coarse scroll remains active on subsequent tiles");
+    }
+}
+
+void testObjectBehindBackgroundUsesFetchedScrollPixels() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    writeTileRow(ppu, 0, 0, 0xFF, 0xFF); // Opaque background.
+    writeTileRow(ppu, 1, 0, 0x00, 0x00); // Transparent background color 0.
+    writeTileRow(ppu, 2, 0, 0xFF, 0x00); // Object color 1.
+    ppu.write(0x9803, 1);
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 24); // Object begins at screen x=16.
+    ppu.write(OAM + 2, 2);
+    ppu.write(OAM + 3, 0x80); // Behind nonzero BG pixels.
+    ppu.write(BGP, 0xE4);
+    ppu.write(OBP0, 0xE4);
+    ppu.write(LCDC, 0x93);
+    ppu.advanceTCycles(94);
+    ppu.write(SCX, 8);
+    ppu.advanceTCycles(360);
+    expect(ppu.getFrameBuffer()[16] == 1,
+           "object priority compares the fetched background, not a stale line snapshot");
+}
+
 void testWindowPositionAndWindowTileMap() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -768,6 +815,8 @@ int main() {
     testBackgroundPaletteWriteAffectsOnlyFuturePixels();
     testSignedBackgroundTileAddressing();
     testWindowPositionAndWindowTileMap();
+    testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard();
+    testObjectBehindBackgroundUsesFetchedScrollPixels();
     testWindowYTriggerAndHiddenRows();
     testWindowYRequiresScanlineStartEquality();
     testObjectsUseTransparencyPaletteAndPriority();

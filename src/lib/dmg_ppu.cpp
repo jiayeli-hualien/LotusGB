@@ -298,10 +298,10 @@ void DmgPpu::advanceDot() {
     // writes affect only pixels not yet sent to the LCD.
     const uint16_t firstPixelDot =
         MODE2_DOTS + 13 + scanlineFineScroll;
-    if (ly < VISIBLE_SCANLINES && scanlineOutputX < FRAME_WIDTH &&
-        dot >= firstPixelDot &&
-        dot < MODE2_DOTS + mode3Duration + 1) {
-        bool outputStalled = false;
+    bool outputStalled = false;
+    const bool outputReady = ly < VISIBLE_SCANLINES && scanlineOutputX < FRAME_WIDTH &&
+        dot >= firstPixelDot && dot < MODE2_DOTS + mode3Duration + 1;
+    if (outputReady) {
         if (scanlineWindowPenaltyPending &&
             scanlineOutputX == scanlineWindowStartX) {
             scanlineWindowPenaltyPending = false;
@@ -319,10 +319,12 @@ void DmgPpu::advanceDot() {
             scanlineObjectPenaltyAtX[scanlineOutputX] = 0;
             outputStalled = true;
         }
-
-        if (!outputStalled)
-            renderPixel(scanlineOutputX++);
     }
+    if (ly < VISIBLE_SCANLINES && dot >= MODE2_DOTS &&
+        scanlineOutputX < FRAME_WIDTH && !outputStalled)
+        advanceBackgroundFetch();
+    if (outputReady && !outputStalled)
+        renderPixel(scanlineOutputX++);
 
     if (ly < VISIBLE_SCANLINES &&
         dot == MODE2_DOTS + mode3Duration &&
@@ -365,9 +367,14 @@ void DmgPpu::prepareScanline() {
     scanlineBgColorIndices.fill(0);
     scanlineObjectColorIndices.fill(0);
     scanlineObjectUsesPalette1.fill(false);
+    scanlineObjectBehindBg.fill(false);
+    backgroundFetchTicks = 0;
+    scanlineBackgroundY = static_cast<uint8_t>(scrollY + ly);
 
     const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const uint16_t bgTileMapOffset = (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
+    scanlineBackgroundMap = bgTileMapOffset;
+    scanlineBackgroundEnabled = bgWindowEnabled;
     const uint16_t windowTileMapOffset =
         (lcdControl & WINDOW_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
     const bool windowEnabled = bgWindowEnabled && (lcdControl & WINDOW_ENABLE_MASK) &&
@@ -390,11 +397,6 @@ void DmgPpu::prepareScanline() {
                 bgColorIndex = getTileMapPixel(windowTileMapOffset, windowPixelX,
                                                windowLineCounter);
                 scanlineDrewWindow = true;
-            } else {
-                bgColorIndex = getTileMapPixel(
-                    bgTileMapOffset,
-                    static_cast<uint8_t>(scrollX + static_cast<uint8_t>(x)),
-                    static_cast<uint8_t>(scrollY + ly));
             }
         }
         scanlineBgColorIndices[x] = bgColorIndex;
@@ -404,13 +406,37 @@ void DmgPpu::prepareScanline() {
         prepareObjects();
 }
 
+void DmgPpu::advanceBackgroundFetch() {
+    // Six startup dots precede the first useful tile fetch. Later BG tiles
+    // start eight dots apart; object/window stalls pause this baseline clock.
+    // Only SCX coarse sampling is modeled here. SCY/bitplane and LCDC fetch
+    // stages remain separate work, rather than sampling registers per pixel.
+    if (backgroundFetchTicks >= 6 && (backgroundFetchTicks - 6) % 8 == 0 &&
+        scanlineBackgroundEnabled) {
+        const unsigned tileColumn = (backgroundFetchTicks - 6) / 8;
+        const uint8_t sourceX = static_cast<uint8_t>((scrollX & 0xF8) + tileColumn * 8);
+        for (int pixel = 0; pixel < 8; ++pixel) {
+            const int screenX = static_cast<int>(tileColumn * 8) + pixel - scanlineFineScroll;
+            if (screenX < 0 || screenX >= static_cast<int>(FRAME_WIDTH) ||
+                (scanlineDrewWindow && screenX >= scanlineWindowStartX))
+                continue;
+            scanlineBgColorIndices[screenX] = getTileMapPixel(
+                scanlineBackgroundMap, static_cast<uint8_t>(sourceX + pixel),
+                scanlineBackgroundY);
+        }
+    }
+    ++backgroundFetchTicks;
+}
+
 void DmgPpu::renderPixel(size_t screenX) {
     const size_t frameOffset = static_cast<size_t>(ly) * FRAME_WIDTH + screenX;
     frameBuffer[frameOffset] =
         applyPalette(bgPalette, scanlineBgColorIndices[screenX]);
 
     const uint8_t objectColorIndex = scanlineObjectColorIndices[screenX];
-    if (objectColorIndex != 0) {
+    if (objectColorIndex != 0 &&
+        !(scanlineObjectBehindBg[screenX] && scanlineBackgroundEnabled &&
+          scanlineBgColorIndices[screenX] != 0)) {
         const uint8_t palette = scanlineObjectUsesPalette1[screenX]
                                     ? objectPalette1
                                     : objectPalette0;
@@ -556,13 +582,9 @@ void DmgPpu::prepareObjects() {
             if (colorIndex == 0)
                 continue;
 
-            const bool behindBackground = (attributes & 0x80) != 0;
-            if (!(behindBackground && (lcdControl & BG_WINDOW_ENABLE_MASK) &&
-                  scanlineBgColorIndices[screenX] != 0)) {
-                scanlineObjectColorIndices[screenX] = colorIndex;
-                scanlineObjectUsesPalette1[screenX] =
-                    (attributes & 0x10) != 0;
-            }
+            scanlineObjectColorIndices[screenX] = colorIndex;
+            scanlineObjectUsesPalette1[screenX] = (attributes & 0x10) != 0;
+            scanlineObjectBehindBg[screenX] = (attributes & 0x80) != 0;
             // A higher-priority opaque object still masks lower-priority objects
             // when its behind-BG flag leaves the background visible.
             break;

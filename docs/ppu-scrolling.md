@@ -76,3 +76,50 @@ coverage gaps, not evidence that this tooling change broke emulation.
 4. Retain dmg-acid2, unit tests, the selected Mooneye regressions and both
    homebrew profiles before accepting the renderer change. Extend SCY and
    sprite/window fetch interactions as separate steps when evidence requires.
+
+## SCX coarse sampling implementation
+
+The first renderer step introduces a background tile-cache update on the
+existing simplified fetch clock. It samples SCX bits 3–7 for each subsequent
+8-pixel tile and retains the scanline-start SCX bits 0–2 for initial discard.
+Already-emitted pixels and already-fetched tiles are preserved. SCY remains
+latched for the line at this step; individual bitplane reads, exact FIFO
+occupancy and sprite/fetcher arbitration remain unresolved timing work.
+
+Object selection still happens at Mode 3 entry, but behind-BG priority is now
+applied when each pixel is emitted, against the actual fetched background
+color. Window pixels retain their existing path. This avoids deciding object
+visibility from a stale background snapshot after SCX changes.
+
+Focused public-interface tests cover SCX writes after a tile fetch, retained
+fine discard for initial offsets 0 and 3, and behind-BG object visibility over
+newly fetched color-zero background. The old implementation fails the new
+coarse-scroll test. Exact external visual acceptance is tracked separately;
+this cache clock is not a claim of a full hardware fetcher/FIFO implementation.
+
+### Gameplay target
+
+[Canyon Racer](https://bbbbbr.itch.io/canyon-racer) is a candidate for later
+interactive validation. Its [source description](https://github.com/bbbbbr/canyon-racer#about-the-effects)
+explicitly uses mid-scanline SCY writes for vertical parallax, alongside X
+wave scrolling. Use the official Game Boy MBC5 build, keep its mixed-license
+ROM/assets external, and record the selected release/hash when supplied.
+It has not yet been run here; SCX coarse sampling alone does not establish
+support for its SCY effects.
+
+### Measured result after coarse SCX sampling
+
+`m3_scx_high_5_bits` decreases from 6,426 to **84 differing pixels**, still
+FAIL. Remaining differences are confined to x=16–23 on selected rows, so
+fetch/sprite interactions need further investigation rather than assuming
+complete timing accuracy. BGP (3,642), SCX-low (540) and SCY (9,873) remain
+unchanged. The source of those differences has not been established by this
+checkpoint.
+
+Validation at this checkpoint: `make test` passes, including dmg-acid2 and
+both protocol test tools. The default combined Mooneye set remains 67/67;
+GBIT reports 244/244 ordinary and 256/256 CB opcodes. Big2Small and Tobu Tobu
+Girl both complete 3,600 frames with their preceding final frame hashes;
+the supplied Big2Small player SRAM remains unchanged. The rebuilt libretro
+`.so` includes the change. These regressions supplement, rather than replace,
+the still-failing Mealybug timing measurements above.
