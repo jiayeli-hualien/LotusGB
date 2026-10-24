@@ -8,7 +8,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | --- | --- | --- | --- |
 | CPU instructions and timing | CPU advances in M-cycles and reports T-cycles. Focused behavior includes DAA and `ADD SP,e8` flags, stack/jump bus sequences, EI delay, interrupt entry, STOP/HALT distinction, HALT wake-up and HALT bug. | `make test`: `cpu_instruction_test.cpp`, `cpu_cycle_test.cpp`; GBIT instruction integration runs separately and in CI. | This is not a claim that every instruction timing edge is independently verified on hardware. Add a focused ROM only when a real disagreement or game exposes a gap. |
 | Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp`, `game_boy_system_test.cpp`, `cpu_instruction_test.cpp`. | All 13 Mooneye `acceptance/timer` ROMs pass, including TIMA/TMA writes during reload. The PPU group includes interrupt-entry and HALT timing ROMs, and the interrupt group adds ten EI/DI, RETI, HALT and IF/IE checks. This does not cover every interrupt race. |
-| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23: the user confirmed progress survived a restart. This covers an MBC5 + RAM + battery cartridge; it does not establish disk persistence for every mapper. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. Actual `.rtc` disk persistence also remains unverified. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
+| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; 27 Mooneye standard MBC1/MBC2/MBC5 cases pass. Libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23: the user confirmed progress survived a restart. This covers an MBC5 + RAM + battery cartridge; it does not establish disk persistence for every mapper. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. Actual `.rtc` disk persistence also remains unverified. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
 | Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. | `make test`: `dmg_serial_test.cpp` checks register and bit/completion boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. | No real peer, external clock input, accessories or CGB fast clock. The model-specific `boot_sclk_align-dmgABCmgb` ROM still fails; exact post-boot clock phase and SC-write edge races remain unresolved. Component/system tests do not establish full hardware serial conformance. |
 | Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. Palette registers are sampled as pixels are emitted. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; `dmg-acid2` exact framebuffer regression passes. | `dmg-acid2` does not cover every mid-scanline effect. F-1 Race remains a scrolling/visual compatibility target. |
@@ -22,9 +22,10 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 - `make test` runs the in-repository CPU, hardware, visual, and libretro tests.
 - `make test-roms` optionally runs the selected Blargg CH3 ROMs when they are available outside the repository. This is not part of GitHub CI.
 - `make test-mooneye MOONEYE_SUITE_DIR=/path/to/extracted-suite` optionally runs eleven selected Mooneye PPU/interrupt timing ROMs. The suite stays outside the repository; logs and a Markdown report go under `build/test-roms/mooneye/`. This is not part of GitHub CI.
-- `make test-mooneye MOONEYE_GROUP=timer MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs all 13 timer cases; `MOONEYE_GROUP=all` runs eleven default PPU/interrupt cases, thirteen timer cases and six OAM DMA cases and ten CPU interrupt cases (40 total). Reports go under `build/test-roms/mooneye-timer/` and `mooneye-all/`, respectively. These optional groups remain outside CI.
+- `make test-mooneye MOONEYE_GROUP=timer MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs all 13 timer cases; `MOONEYE_GROUP=all` runs eleven default PPU/interrupt cases, thirteen timer cases and six OAM DMA cases, ten CPU interrupt cases and 27 standard mapper cases (67 total). Reports go under `build/test-roms/mooneye-timer/` and `mooneye-all/`, respectively. These optional groups remain outside CI.
 - `make test-mooneye MOONEYE_GROUP=dma MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs the six OAM DMA cases; its report goes under `build/test-roms/mooneye-dma/`. These check copying, register readback, source mapping, start/end timing and restart timing; they do not establish full bus-corruption or rendering-contention accuracy.
 - `make test-mooneye MOONEYE_GROUP=interrupt MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs ten EI/DI, RETI, HALT and IF/IE ROMs, with a report under `build/test-roms/mooneye-interrupt/`. See [the interrupt checkpoint](interrupts.md#cpu-interrupt-acceptance-checkpoint-2026-10-24) for scope.
+- `make test-mooneye MOONEYE_GROUP=mapper MOONEYE_SUITE_DIR=/path/to/extracted-suite` runs 27 standard MBC1/MBC2/MBC5 cases; logs and the report go under `build/test-roms/mooneye-mapper/`. Each report records the ROM SHA-256. MBC1M is excluded because it is not implemented.
 - `make test-homebrew` runs the [local Big2Small smoke check](homebrew-check.md), optionally with `HOMEBREW_SAVE=/path/to/big2small.srm`.
 - The GBIT integration executable is a separate CPU comparison check; see the GBIT section in the README for its local command.
 
@@ -303,3 +304,40 @@ set still passes, and the expanded PPU set still has its same two known
 failures (SCX/HBlank and object timing). The serial boot-alignment diagnostic
 now reaches its genuine failure marker; its early 490-cycle result was not
 valid evidence of hardware behavior.
+
+
+### Common mapper acceptance (2026-10-24)
+
+The available Mooneye mapper ROMs pass without changing the cartridge
+implementation. The explicit `mapper` group selects only standard wiring:
+
+| Mapper | Cases | Coverage |
+| --- | ---: | --- |
+| MBC1 | 12 | Four register/address tests, 8/32 KiB RAM, ROM sizes 64 KiB–2 MiB |
+| MBC2 | 7 | Register/address and unused-bit tests, internal nibble RAM, ROM sizes 64–256 KiB |
+| MBC5 | 8 | ROM banking across sizes 64 KiB–8 MiB, including the ninth bank bit |
+
+The suite names use bit units: for example, `rom_16Mb` is 2 MiB and
+`rom_64Mb` is 8 MiB. These tests support the existing capacity claims; the
+emulator is not limited to 32 KiB when a supported mapper is present.
+
+The combined `all` group now has 67 passing cases; the default `ppu` group
+remains eleven. This optional external-ROM workflow is outside GitHub CI.
+Reports include each selected ROM's SHA-256 for repeatability; the recorded
+hash identifies the supplied file and does not verify it against an official
+release checksum manifest. Logs retain the suite-relative directory names so
+repeated names such as `rom_512kb` from different mappers cannot overwrite one another.
+
+`multicart_rom_8Mb` is deliberately excluded: MBC1M uses different wiring and
+remains outside the supported standard-MBC1 scope. The local archive has no
+MBC3 mapper group; existing MBC3/RTC evidence remains the unit, frontend and
+recorded game checks. Passing mapper ROMs is not a claim of full gameplay,
+RTC disk persistence, all MBC5 RAM/rumble behavior or every cartridge variant.
+The harness also continues to assume fixed reporting code as documented above.
+
+References: [Mooneye mapper ROMs](https://github.com/Gekkio/mooneye-test-suite/tree/main/emulator-only),
+[MBC1 register test](https://github.com/Gekkio/mooneye-test-suite/blob/main/emulator-only/mbc1/bits_bank1.s),
+[MBC2 register test](https://github.com/Gekkio/mooneye-test-suite/blob/main/emulator-only/mbc2/bits_romb.s),
+and [8 MiB MBC5 test](https://github.com/Gekkio/mooneye-test-suite/blob/main/emulator-only/mbc5/rom_64Mb.s).
+Although these live in the `emulator-only` directory, the cited source files
+report verification with configurable flash cartridges using genuine MBC chips.

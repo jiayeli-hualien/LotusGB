@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Run selected Mooneye DMG PPU, CPU interrupt, timer, or OAM DMA checks and save a local report."""
+"""Run selected Mooneye DMG PPU, CPU interrupt, timer, OAM DMA, or mapper checks and save a local report."""
 
 import argparse
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
@@ -45,6 +46,20 @@ INTERRUPT_TESTS = tuple(f"acceptance/{name}.gb" for name in (
 ))
 
 
+# Standard MBC1/MBC2/MBC5 only. MBC1M multicarts use different wiring and
+# remain outside the implemented common-cartridge baseline.
+MAPPER_TESTS = tuple(f"emulator-only/{mapper}/{name}.gb"
+                     for mapper, names in (
+    ("mbc1", ("bits_bank1", "bits_bank2", "bits_mode", "bits_ramg",
+              "ram_64kb", "ram_256kb", "rom_512kb", "rom_1Mb",
+              "rom_2Mb", "rom_4Mb", "rom_8Mb", "rom_16Mb")),
+    ("mbc2", ("bits_ramg", "bits_romb", "bits_unused", "ram",
+              "rom_512kb", "rom_1Mb", "rom_2Mb")),
+    ("mbc5", ("rom_512kb", "rom_1Mb", "rom_2Mb", "rom_4Mb",
+              "rom_8Mb", "rom_16Mb", "rom_32Mb", "rom_64Mb")),
+) for name in names)
+
+
 # Diagnostic coverage: known failures are retained to track unimplemented edges.
 EXTENDED_TESTS = (
     "acceptance/ppu/intr_2_mode0_timing_sprites.gb",
@@ -59,7 +74,7 @@ def main() -> int:
     parser.add_argument("--suite-dir", required=True, type=Path,
                         help="Root of an extracted Mooneye test-suite archive")
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--group", choices=("ppu", "interrupt", "timer", "dma", "all"), default="ppu",
+    parser.add_argument("--group", choices=("ppu", "interrupt", "timer", "dma", "mapper", "all"), default="ppu",
                         help="Selected regression group (default: ppu)")
     parser.add_argument("--extended", action="store_true",
                         help="Include diagnostic PPU cases with known failures")
@@ -75,6 +90,8 @@ def main() -> int:
         tests += DMA_TESTS
     if args.group in ("interrupt", "all"):
         tests += INTERRUPT_TESTS
+    if args.group in ("mapper", "all"):
+        tests += MAPPER_TESTS
 
     missing = [name for name in tests if not (args.suite_dir / name).is_file()]
     if missing:
@@ -88,7 +105,12 @@ def main() -> int:
     failed = False
     for name in tests:
         rom_path = args.suite_dir / name
-        log_path = args.output_dir / f"{rom_path.stem}.log"
+        # Different mapper groups reuse names such as rom_512kb and bits_ramg.
+        # Preserve the suite-relative path so their logs cannot overwrite each other.
+        relative_log = Path(name).with_suffix(".log")
+        log_path = args.output_dir / relative_log
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(rom_path.read_bytes()).hexdigest()
         started = time.monotonic()
         result = subprocess.run(
             [str(args.runner), str(rom_path)],
@@ -102,7 +124,7 @@ def main() -> int:
         log_path.write_text(output + "\n", encoding="utf-8")
         status = "PASS" if result.returncode == 0 else "FAIL"
         failed |= result.returncode != 0
-        rows.append((name, status, elapsed, log_path.name, output))
+        rows.append((name, status, elapsed, relative_log.as_posix(), digest))
         print(f"{status:4} {name} ({elapsed:.2f}s)")
         if output:
             print(f"     {output.splitlines()[-1]}")
@@ -113,12 +135,12 @@ def main() -> int:
         "Run with the local LotusGB system runner and externally supplied ROMs.",
         "The ROM archive is not copied into this repository.",
         "",
-        "| Test | Result | Runtime | Log |",
-        "| --- | --- | ---: | --- |",
+        "| Test | Result | Runtime | Log | ROM SHA-256 |",
+        "| --- | --- | ---: | --- | --- |",
     ]
     report.extend(
-        f"| `{name}` | **{status}** | {elapsed:.2f}s | [`{log}`]({log}) |"
-        for name, status, elapsed, log, _ in rows
+        f"| `{name}` | **{status}** | {elapsed:.2f}s | [`{log}`]({log}) | `{digest}` |"
+        for name, status, elapsed, log, digest in rows
     )
     report.append("")
     (args.output_dir / "report.md").write_text("\n".join(report), encoding="utf-8")

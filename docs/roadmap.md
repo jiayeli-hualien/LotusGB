@@ -144,3 +144,6 @@ Use Linux as the primary development and CI platform for now. Steam Deck, Raspbe
 
 
 - **Mooneye result-marker correction (2026-10-24):** the serial boot-alignment ROM temporarily sets all six result registers to `$42` during ordinary counting, exposing a false failure in our runner. Require the protocol's `LD B,B` marker alongside the register signature. Seven generated-ROM probes now run in `make test` and cover temporary signatures and marker lookalikes. The corrected runner preserves the default 40 passes and the expanded PPU set's two known failures; the serial boot-alignment ROM still reaches a genuine failure and remains a separate timing gap. Test-register values alone are not completion events.
+
+
+- **Common mapper external acceptance (2026-10-24):** standard MBC1, MBC2 and MBC5 pass 27 independent Mooneye cases without runtime changes, including the advertised maximum ROM sizes (2 MiB, 256 KiB and 8 MiB respectively). Add `MOONEYE_GROUP=mapper`; `all` now contains 67 passing checks, and reports record each ROM's SHA-256. MBC1M multicarts remain explicitly excluded; the archive supplies no equivalent MBC3 group. Keep RTC persistence, rumble output and actual gameplay acceptance separate from bank-selection coverage. See [the mapper checkpoint](dmg-validation.md#common-mapper-acceptance-2026-10-24).
