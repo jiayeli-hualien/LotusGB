@@ -52,7 +52,12 @@ class HomebrewOutputTests(unittest.TestCase):
             (output / 'frame.rgb').write_bytes(self.rgb)
             (output / 'output.srm').write_bytes(self.ram)
             (output / 'frame.ppm').write_bytes(b'stale preview')
+            core = root / 'core.so'
+            runner = root / 'runner'
+            core.write_bytes(b'synthetic core')
+            runner.write_bytes(b'synthetic runner')
             command = ['run_homebrew_check.py', '--rom', str(rom),
+                       '--core', str(core), '--runner', str(runner),
                        '--output-dir', str(output)]
             digest = '59c096333f93c12c8eb25a5fcffa2be15001abcd5d20b9a82c2bc2dae7e625b2'
             completed = subprocess.CompletedProcess([], 0, self.summary, '')
