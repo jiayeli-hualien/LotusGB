@@ -14,7 +14,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Mid-Mode-3 scroll/tile-fetch changes are also not modeled. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
 | OAM DMA | FF46 copies 160 bytes from the selected source page into OAM. | `make test`: `dmg_oam_dma_test.cpp`. | Transfer is immediate; per-byte timing and CPU blocking during DMA are not modeled. |
 | APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the recorded 2026-10-22 run. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
-| Startup, frame stepping, and libretro | Default startup skips the boot ROM and begins at the DMG post-boot state at `$0100`. `stepFrame()` advances a nominal 70,224 T-cycles. The libretro core provides video, audio, input, save RAM, and MBC3 RTC memory interfaces. | `make test`: system and libretro tests; `dmg-acid2` and GB Pong regressions; the core has been loaded in Ubuntu RetroArch and common-game play has been checked manually. | Boot-ROM execution and model-specific power-on behavior are not implemented. Continue testing selected games end to end; do not treat core loading alone as full compatibility. |
+| Startup, frame stepping, and libretro | Default startup skips the boot ROM and begins at the DMG post-boot state at `$0100` with IME disabled. `stepFrame()` advances a nominal 70,224 T-cycles. The libretro core provides video, audio, input, save RAM, and MBC3 RTC memory interfaces. | `make test`: system and libretro tests; `dmg-acid2` and GB Pong regressions; the core has been loaded in Ubuntu RetroArch and common-game play has been checked manually. | Boot-ROM execution and model-specific power-on behavior are not implemented. Continue testing selected games end to end; do not treat core loading alone as full compatibility. |
 
 ## Test commands
 
@@ -135,3 +135,23 @@ VBlank and STAT interrupt timing. It joins the default eleven-case set.
 The expanded 14-case set now has twelve passes; sprite Mode 0 timing and
 SCX/HBlank timing remain the two failures. The source event does not imply
 that the PPU actually enters Mode 2 during VBlank.
+
+
+### Post-boot IME and SCX investigation (2026-10-24)
+
+The skipped-boot startup profile now disables IME at `$0100`, as specified by
+[Pan Docs](https://github.com/gbdev/pandocs/blob/master/src/Interrupts.md).
+The synthetic CPU test reset profile is unchanged. A system-interface test
+sets IF and IE before EI, verifies that the handler has not run and SP is
+unchanged, then confirms that EI permits service and RETI restores execution.
+`make test` passes.
+
+The SCX diagnostic exposed this independent startup error: IME had been true,
+so the ROM could enter STAT handling during setup, before its explicit EI.
+Fixing startup does not by itself pass `hblank_ly_scx_timing-GS`; the first
+SCX=0 boundary still fails (233,928 M-cycles). A diagnostic experiment adding
+one M-cycle on HALT wake passes that ROM but breaks five existing PPU timing
+ROMs. That experiment was reverted. Keep the SCX failure open and investigate
+interrupt sampling/entry and bus phase together; do not change the SCX delay
+formula merely to match one test. The expanded set remains twelve passes
+out of fourteen.

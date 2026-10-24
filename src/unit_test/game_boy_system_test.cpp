@@ -327,9 +327,41 @@ void testFrameSteppingReturnsWhenCpuStops() {
            "frame stepping returns instead of looping forever during STOP");
 }
 
+void testPostBootInterruptsWaitForEi() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {
+        0x3E, 0x01,       // LD A, VBlank interrupt mask
+        0xE0, 0x0F,       // LDH [IF], A
+        0xEA, 0xFF, 0xFF, // LD [IE], A
+        0x06, 0x42,       // LD B, marker before EI
+        0xFB, 0x00,       // EI; NOP
+        0x16, 0x99,       // LD D, marker after interrupt return
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+    rom[0x40] = 0x0E; // LD C, handler marker; RETI
+    rom[0x41] = 0x77;
+    rom[0x42] = 0xD9;
+    GameBoySystem system(std::move(rom));
+    for (unsigned i = 0; i < 40 && system.getCpuRegisters().getRefB() != 0x42; ++i)
+        expect(system.stepOneCycle().success, "post-boot interrupt setup executes");
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefB() == 0x42 && registers.getRefC() == 0x13,
+           "post-boot IME keeps pending IE/IF from entering a handler before EI");
+    expect(registers.getRefSP() == 0xFFFE,
+           "pending interrupts do not change the post-boot stack before EI");
+    for (unsigned i = 0; i < 40 && system.getCpuRegisters().getRefD() != 0x99; ++i)
+        expect(system.stepOneCycle().success, "EI and pending handler execute");
+    registers = system.getCpuRegisters();
+    expect(registers.getRefC() == 0x77 && registers.getRefD() == 0x99,
+           "EI permits the pending handler and returns to the main program");
+    expect(registers.getRefSP() == 0xFFFE, "RETI restores the post-boot stack");
+}
+
 }
 
 int main() {
+    testPostBootInterruptsWaitForEi();
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
     testEchoRamReadsAndWritesWorkRam();
     testTimerInterruptWakesHaltAndRunsHandler();

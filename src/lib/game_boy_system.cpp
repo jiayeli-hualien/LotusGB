@@ -154,7 +154,8 @@ void GameBoySystem::initializeDmgPostBootState() {
     registers.getRefSP() = 0xFFFE;
     registers.getRefPC() = 0x0100;
     cpu.setReg(registers);
-    cpu.setIME(true);
+    // The boot ROM hands control to the cartridge with interrupts disabled.
+    cpu.setIME(false);
 
     timer.initializeDmgPostBootState();
     apu.initializeDmgPostBootState();
