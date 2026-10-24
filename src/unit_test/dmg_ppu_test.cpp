@@ -622,6 +622,65 @@ void testWindowPositionAndWindowTileMap() {
     expect(frame[3] == 0, "window pixels advance from the clipped source position");
 }
 
+void testWindowYTriggerAndHiddenRows() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    // Distinct window rows expose both the trigger latch and row counter.
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00);
+    writeTileRow(ppu, 1, 1, 0x00, 0xFF);
+    ppu.write(0x9C00, 1);
+    ppu.write(BGP, 0xE4);
+    ppu.write(WX, 7);
+    ppu.write(WY, 0);
+    ppu.write(LCDC, 0xF1);
+    ppu.advanceTCycles(454); // Finish startup line 0 exactly.
+    expect(ppu.getFrameBuffer()[0] == 1, "WY equality triggers the first window row");
+    ppu.write(WY, 100);
+    ppu.write(WX, 167); // Hide line 1 without losing the Y condition.
+    ppu.advanceTCycles(456);
+    expect(ppu.getFrameBuffer()[160] == 0, "off-screen WX hides the window");
+    ppu.write(WX, 7);
+    ppu.advanceTCycles(456);
+    expect(ppu.getFrameBuffer()[320] == 2,
+           "WY changes preserve the trigger and hidden lines preserve the row counter");
+
+    ppu.write(WY, 200); // No equality in the following visible frame.
+    ppu.advanceTCycles((154 - 3) * 456 + 456);
+    expect(ppu.getFrameBuffer()[0] == 0, "VBlank clears the window Y condition");
+    ppu.write(LCDC, 0);
+    ppu.write(WY, 0);
+    ppu.write(LCDC, 0xF1);
+    ppu.advanceTCycles(454);
+    expect(ppu.getFrameBuffer()[0] == 1, "LCD restart resets the window row counter");
+}
+
+void testWindowYRequiresScanlineStartEquality() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00);
+    ppu.write(0x9C00, 1);
+    ppu.write(BGP, 0xE4);
+    ppu.write(WX, 7);
+    ppu.write(WY, 100);
+    ppu.write(LCDC, 0xF1);
+    ppu.advanceTCycles(454 + 20); // Line 1 has already started.
+    ppu.write(WY, 1);
+    ppu.advanceTCycles(436);
+    expect(ppu.getFrameBuffer()[160] == 0,
+           "writing WY equal to LY after scanline start does not trigger the window");
+    ppu.write(WY, 0);
+    ppu.advanceTCycles(456);
+    expect(ppu.getFrameBuffer()[320] == 0,
+           "moving WY behind LY does not retroactively trigger the window");
+    ppu.write(WY, 4); // Arrange equality at the next scanline start.
+    ppu.write(LCDC, 0xD1); // DMG Y condition can trigger while window is disabled.
+    ppu.advanceTCycles(456);
+    ppu.write(LCDC, 0xF1);
+    ppu.advanceTCycles(456);
+    expect(ppu.getFrameBuffer()[640] == 1,
+           "DMG tracks WY equality independently of window enable");
+}
+
 void testObjectsUseTransparencyPaletteAndPriority() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -709,6 +768,8 @@ int main() {
     testBackgroundPaletteWriteAffectsOnlyFuturePixels();
     testSignedBackgroundTileAddressing();
     testWindowPositionAndWindowTileMap();
+    testWindowYTriggerAndHiddenRows();
+    testWindowYRequiresScanlineStartEquality();
     testObjectsUseTransparencyPaletteAndPriority();
     testSixteenPixelObjectsUsePairedTiles();
     std::cout << "DMG PPU tests passed\n";

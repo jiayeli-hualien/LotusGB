@@ -70,6 +70,7 @@ private:
     uint8_t windowY = 0;
     uint8_t windowX = 0;
     uint8_t windowLineCounter = 0;
+    bool windowYTriggered = false;
     uint16_t dot = 0;
     uint16_t mode3Duration = 172;
     uint8_t scanlineFineScroll = 0;

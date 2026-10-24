@@ -71,6 +71,7 @@ void DmgPpu::initializeDmgPostBootState() {
     windowY = 0;
     windowX = 0;
     windowLineCounter = 0;
+    windowYTriggered = windowY == ly;
     dot = 0;
     scanlineDrewWindow = false;
     frameBuffer.fill(0);
@@ -153,6 +154,7 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 dot = startupScanline ? 2 : 0;
                 ly = 0;
                 windowLineCounter = 0;
+                windowYTriggered = lcdEnabled() && windowY == 0;
                 mode3Duration = MODE3_DOTS;
                 scanlineFineScroll = 0;
                 scanlineOutputX = 0;
@@ -332,6 +334,7 @@ void DmgPpu::advanceDot() {
         startupScanline = false;
         dot = 0;
         if (ly == VISIBLE_SCANLINES) {
+            windowYTriggered = false;
             // DMG also clocks the Mode 2 STAT source at VBlank entry,
             // although STAT's mode field becomes 1. Respect the combined
             // line's existing level, just as for ordinary STAT edges.
@@ -344,6 +347,9 @@ void DmgPpu::advanceDot() {
             ly = 0;
             windowLineCounter = 0;
         }
+        // DMG retains this condition until VBlank, even if LCDC.5 is clear.
+        if (ly < VISIBLE_SCANLINES && ly == windowY)
+            windowYTriggered = true;
     }
     updateStatInterruptLine();
 }
@@ -365,7 +371,7 @@ void DmgPpu::prepareScanline() {
     const uint16_t windowTileMapOffset =
         (lcdControl & WINDOW_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
     const bool windowEnabled = bgWindowEnabled && (lcdControl & WINDOW_ENABLE_MASK) &&
-                               ly >= windowY && windowX <= 166;
+                               windowYTriggered && windowX <= 166;
     const int windowLeft = static_cast<int>(windowX) - 7;
     scanlineDrewWindow = false;
     if (windowEnabled && windowLeft < static_cast<int>(FRAME_WIDTH)) {
@@ -464,7 +470,7 @@ void DmgPpu::prepareObjects() {
     const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const bool windowEnabled = bgWindowEnabled &&
                                (lcdControl & WINDOW_ENABLE_MASK) &&
-                               ly >= windowY && windowX <= 166;
+                               windowYTriggered && windowX <= 166;
     const int windowLeft = static_cast<int>(windowX) - 7;
     // Track BG and window tile columns separately. The first object that
     // interrupts a tile fetch pays the alignment wait; later objects in that

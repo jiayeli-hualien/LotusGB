@@ -384,3 +384,28 @@ and corrected GBIT (244/244 ordinary + 256/256 CB) pass. Big2Small completes
 3,600 frames with the same final frame hash and unchanged original SRAM. The
 expanded PPU diagnostics remain 12/14, with the same SCX/HBlank and object
 timing failures. No new external line-153 acceptance result is claimed.
+
+## Window Y condition and hidden rows (2026-10-24)
+
+The DMG window now remembers equality between WY and the internal visible
+scanline at line start. Later WY writes cannot undo that condition or trigger
+it retroactively by moving WY above the current line. VBlank clears it; LCD
+restart resets both the condition and the window row counter. The condition
+is tracked even while LCDC.5 is clear on DMG. Rendering and object-fetch
+penalties use the same condition.
+
+Public PPU tests cover retained equality after WY changes, off-screen WX
+hiding without advancing the window row, frame reset, LCD restart, missed
+line-start equality, and equality while the window is disabled.
+This is a scanline-level correction, not complete mid-scanline window
+emulation: WX=0/166 quirks, repeated window starts and precisely timed LCDC
+changes remain outside this checkpoint.
+
+Reference: [Pan Docs window rendering criteria](https://gbdev.io/pandocs/Window.html).
+
+Validation: `make build`, `make test` (including dmg-acid2), all 67 default
+Mooneye cases and corrected GBIT (244/244 ordinary, 256/256 CB) pass.
+Big2Small completes 3,600 frames with the same final frame SHA-256 and the
+original player SRAM unchanged. These existing ROM regressions supplement
+the focused window tests; they are not independent coverage of every window
+edge case.
