@@ -126,3 +126,26 @@ all relevant evidence instead of adjusting one subsystem to satisfy one ROM.
 | LYC comparison recomputed while LCD off | Peripheral request generation | Retained-flag and edge-history tests |
 | Missing Mode 2 STAT event at VBlank | Peripheral event / shared signal | Entry-dot, blocking, and external DIV-based timing checks |
 | SCX passes only after an extra HALT cycle | Cross-component timing, unresolved | Keep the conflicting ROM results; do not retain the experimental delay |
+
+
+## Bounded SCX timing experiment (2026-10-24)
+
+Four isolated library builds varied only the CPU bus-access phase and an
+experimental extra IME-enabled HALT wake M-cycle. Production sources and
+core behavior were not changed by the matrix run. Each build ran the same
+14 unmodified Mooneye ROMs from `mts-20240926-1737-443f6e1`.
+
+| Bus access phase within M-cycle | Extra HALT wake M-cycle | Passes / 14 | SCX / HBlank | Additional failures relative to current model |
+| --- | --- | --- | --- | --- |
+| End of T4 (current) | 0 | 12 | FAIL | None |
+| End of T3 | 0 | 9 | FAIL | Mode 2→3, Mode 2→0, OAM access timing |
+| End of T4 | 1 | 8 | PASS | Five existing PPU mode/interrupt timing cases |
+| End of T3 | 1 | 11 | PASS | Mode 1→2 and Mode 2→0 interrupt interval |
+
+The sprite timing ROM fails in all four builds. There is no uniformly better
+setting in this matrix. Keep the current model and defer further SCX tuning
+until there is new independent evidence, a more discriminating reproducer,
+or a game compatibility issue. The result does not identify which subsystem
+is ultimately wrong, nor does it show that interrupt handling is fully accurate.
+Local experiment sources, logs and per-ROM reports are under
+`build/timing-matrix/`; they are ignored build artifacts.
