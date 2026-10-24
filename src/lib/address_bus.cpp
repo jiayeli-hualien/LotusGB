@@ -30,6 +30,10 @@ void AddressBus::setCpuBusAccessCallback(std::function<void()> callback) {
     cpuBusAccessCallback = std::move(callback);
 }
 
+void AddressBus::setCpuBusArbiter(ICpuBusArbiter &arbiter) {
+    cpuBusArbiter = &arbiter;
+}
+
 void AddressBus::onCpuBusAccess() {
     if (cpuBusAccessCallback)
         cpuBusAccessCallback();
@@ -37,6 +41,12 @@ void AddressBus::onCpuBusAccess() {
 
 uint8_t AddressBus::read(uint16_t address) {
     onCpuBusAccess();
+    if (cpuBusArbiter && cpuBusArbiter->ownsCpuAddress(address))
+        return cpuBusArbiter->readConflictedCpuAddress(address);
+    return readForDma(address);
+}
+
+uint8_t AddressBus::readForDma(uint16_t address) {
     for (const Mapping &mapping : mappings) {
         if (address >= mapping.start && address <= mapping.end)
             return mapping.region->read(static_cast<uint16_t>(
@@ -47,6 +57,8 @@ uint8_t AddressBus::read(uint16_t address) {
 
 void AddressBus::write(uint16_t address, uint8_t value) {
     onCpuBusAccess();
+    if (cpuBusArbiter && cpuBusArbiter->ownsCpuAddress(address))
+        return;
     for (const Mapping &mapping : mappings) {
         if (address >= mapping.start && address <= mapping.end) {
             mapping.region->write(static_cast<uint16_t>(

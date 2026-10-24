@@ -33,6 +33,8 @@ TIMER_TESTS = tuple(f"acceptance/timer/{name}.gb" for name in (
 
 DMA_TESTS = tuple(f"acceptance/oam_dma/{name}.gb" for name in (
     "basic", "reg_read", "sources-GS",
+)) + tuple(f"acceptance/{name}.gb" for name in (
+    "oam_dma_start", "oam_dma_timing", "oam_dma_restart",
 ))
 
 

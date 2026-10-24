@@ -38,7 +38,18 @@ flowchart TD
     LR -->|video and audio callbacks| RA
 ```
 
-`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. On the first bus access during the step, it advances the timer, APU, and PPU through four T-cycles before dispatching the transaction. A step without a bus access advances all reported T-cycles after the CPU step. The timer sends the APU a clock event when divider bit 12 falls, including when a DIV write resets that bit from high to low; the APU uses this to clock its frame sequencer. A zero-time CPU step does not advance system time or peripherals.
+`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. On the first bus access during the step, it advances the timer, APU, PPU, and OAM DMA through four T-cycles before dispatching the transaction. A step without a bus access advances all reported T-cycles after the CPU step. The timer sends the APU a clock event when divider bit 12 falls, including when a DIV write resets that bit from high to low; the APU uses this to clock its frame sequencer. A zero-time CPU step does not advance system time or peripherals.
+
+DMA is a separate bus master. `AddressBus::read()`/`write()` advance to the CPU
+bus phase and then consult the borrowed `ICpuBusArbiter`. The DMA device uses
+`readForDma()` to dispatch source reads without re-entering CPU timing or CPU
+arbitration. FF46 schedules a transfer; the shared clock moves one byte per
+M-cycle after the startup delay. CPU OAM reads return `$FF` while DMA owns OAM;
+HRAM and I/O remain accessible, including FF46 for restarting the transfer.
+The basic DMG conflict model distinguishes VRAM from the shared cartridge/WRAM
+bus: CPU reads on the occupied bus see the latest DMA byte, and CPU writes to
+that bus are discarded. Write-induced corruption and PPU/DMA rendering
+contention are not implemented. This is DMG behavior, not a CGB bus model.
 
 `GameBoySystem` owns the hardware components. `AddressBus` routes CPU accesses to mapped regions and borrows those regions; the system keeps them alive. RetroArch callbacks and lifecycle handling stay in the libretro adapter, outside CPU and hardware components.
 

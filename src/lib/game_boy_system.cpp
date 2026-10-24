@@ -41,6 +41,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
       systemClock(cpu) {
     bus.setCpuBusAccessCallback(
         [this] { systemClock.advanceToCpuBusAccess(); });
+    bus.setCpuBusArbiter(oamDma);
     timer.setDividerApuClockCallback([this] { apu.onDividerApuFallingEdge(); });
 
     bus.map(0x0000, 0x7FFF, cartridge);
@@ -62,6 +63,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     systemClock.addClockedComponent(timer);
     systemClock.addClockedComponent(apu);
     systemClock.addClockedComponent(ppu);
+    systemClock.addClockedComponent(oamDma);
     cpu.reset();
     if (startupProfile == StartupProfile::DmgPostBoot)
         initializeDmgPostBootState();

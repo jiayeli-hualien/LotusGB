@@ -358,9 +358,47 @@ void testPostBootInterruptsWaitForEi() {
     expect(registers.getRefSP() == 0xFFFE, "RETI restores the post-boot stack");
 }
 
+void testCpuRunsHramDmaRoutineAndReturnsToRom() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t routine[] = {
+        0x3E, 0xC0,       // LD A, source page
+        0xE0, 0x46,       // LDH [DMA], A
+        0x3E, 40,         // LD A, wait counter
+        0x3D,             // DEC A
+        0x20, 0xFD,       // JR NZ, wait
+        0xC9,             // RET to ROM after DMA releases the bus
+    };
+    for (size_t i = 0; i < sizeof(routine); ++i)
+        rom[0x200 + i] = routine[i];
+    const uint8_t program[] = {
+        0xF3, 0xAF, 0xE0, 0x40, // DI; XOR A; disable LCD
+        0x3E, 0x42, 0xEA, 0x00, 0xC0, // source first byte
+        0x3E, 0x73, 0xEA, 0x9F, 0xC0, // source final byte
+        0x21, 0x00, 0x02, // LD HL, ROM routine
+        0x11, 0x80, 0xFF, // LD DE, HRAM destination
+        0x06, static_cast<uint8_t>(sizeof(routine)), // LD B, byte count
+        0x2A, 0x12, 0x13, 0x05, 0x20, 0xFA, // copy loop
+        0xCD, 0x80, 0xFF, // CALL HRAM DMA routine
+        0xFA, 0x00, 0xFE, 0x47, // LD A, [OAM]; LD B, A
+        0xFA, 0x9F, 0xFE, 0x4F, // LD A, [OAM+159]; LD C, A
+        0x16, 0x99, 0x18, 0xFE, // completion marker; loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+    GameBoySystem system(std::move(rom));
+    for (unsigned i = 0; i < 1500 && system.getCpuRegisters().getRefD() != 0x99; ++i)
+        expect(system.stepOneCycle().success, "HRAM DMA program executes");
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefD() == 0x99, "CPU returns from HRAM DMA into ROM");
+    expect(registers.getRefB() == 0x42 && registers.getRefC() == 0x73,
+           "shared system clock completes DMA before the routine returns");
+    expect(registers.getRefSP() == 0xFFFE, "HRAM wait routine preserves the call stack");
+}
+
 }
 
 int main() {
+    testCpuRunsHramDmaRoutineAndReturnsToRom();
     testPostBootInterruptsWaitForEi();
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
     testEchoRamReadsAndWritesWorkRam();

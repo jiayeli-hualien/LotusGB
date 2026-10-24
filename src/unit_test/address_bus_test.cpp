@@ -37,6 +37,36 @@ public:
     std::vector<std::pair<uint16_t, uint8_t>> writes;
 };
 
+void testBusArbitrationFollowsCpuTimeAndDmaBypassesIt() {
+    class Arbiter final : public ICpuBusArbiter {
+    public:
+        bool active = true;
+        bool ownsCpuAddress(uint16_t) const override { return active; }
+        uint8_t readConflictedCpuAddress(uint16_t) const override { return 0xA5; }
+    } arbiter;
+    AddressBus bus;
+    TestRegion ram;
+    ram.value = 0x42;
+    bus.map(0xC000, 0xC0FF, ram);
+    bus.setCpuBusArbiter(arbiter);
+    unsigned callbacks = 0;
+    bus.setCpuBusAccessCallback([&] { ++callbacks; });
+    expect(bus.read(0xC000) == 0xA5 && ram.reads.empty(),
+           "arbitrated CPU read bypasses the addressed region");
+    bus.write(0xC000, 0x99);
+    expect(ram.writes.empty(), "arbitrated CPU write does not reach the region");
+    const auto previousCallbacks = callbacks;
+    expect(bus.readForDma(0xC000) == 0x42 && callbacks == previousCallbacks,
+           "DMA reads bypass CPU arbitration and CPU timing callbacks");
+    bus.setCpuBusAccessCallback([&] { arbiter.active = false; ++callbacks; });
+    expect(bus.read(0xC000) == 0x42,
+           "clock advancement may release DMA before the CPU read is dispatched");
+    arbiter.active = true;
+    bus.write(0xC000, 0x77);
+    expect(ram.value == 0x77,
+           "clock advancement may release DMA before the CPU write is dispatched");
+}
+
 void testAddressBusRoutesMappedRanges() {
     AddressBus bus;
     TestRegion workRam;
@@ -634,6 +664,7 @@ void testMbc3SupportsSmallExternalRamSizes() {
 }
 
 int main() {
+    testBusArbitrationFollowsCpuTimeAndDmaBypassesIt();
     testAddressBusRoutesMappedRanges();
     testAddressBusRoutesAliasedRanges();
     testAddressBusRejectsInvalidMappings();
