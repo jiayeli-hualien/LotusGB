@@ -9,18 +9,17 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - Once behavior is tested and stable, measure performance before optimizing. Implementation and storage choices must not define emulation behavior or rely on operating-system-specific semantics in the core.
 - Keep platform-specific file access behind a narrow boundary so the emulator core can use portable ROM storage and support alternate backends when profiling justifies them.
 
-## Current route (2026-10-24)
+## Current route (2026-10-25)
 
-- **Active: PPU mid-scanline raster effects.** Establish selected Mealybug DMG
-  screenshot baselines at the documented software breakpoint, then implement
-  one observable SCX/SCY/LCDC fetch behavior at a time. Retain existing regressions;
-  passing the whole suite is not a prerequisite. Use an author-provided
-  Canyon Racer Game Boy ROM for visible-effect acceptance; the first scripted
-  run now reaches gameplay, with exact effect timing still unverified;
-  keep the remaining synthetic pixel mismatches as diagnostics, not an
-  obligation to close every edge before gameplay. Existing successful game
-  checks do not establish compatibility with all popular titles. F-1 Race
-  remains the eventual gameplay target, not an already-verified result.
+- **Active: PPU visual and raster-effect accuracy.** Continue using selected
+  Mealybug DMG images and the author's Canyon Racer homebrew, changing one
+  observable fetch behavior at a time. The expanded PPU timing group now passes
+  14/14 after correcting the normal-line LY read edge; do not add a global HALT
+  delay to address that case. The next measured visual gap is 84 pixels in
+  `m3_scx_high_5_bits`; investigate its tile-fetch/sprite interaction before
+  changing the fetch phase. Keep other synthetic mismatches as diagnostics,
+  not a requirement to close every edge before gameplay. F-1 Race remains a
+  later target, not an already-verified result.
 - **Game acceptance:** wait for the user's additional private dumps. ROMs and
   saves remain external; use the existing homebrew profiles in the meantime.
 - **Save states / rewind / replay:** deferred. The user prefers a pause/rewind
@@ -203,4 +202,4 @@ Use Linux as the primary development and CI platform for now. Raspberry Pi runni
 
 - **Sprite Mode 0 timing (2026-10-25):** calibrate the modeled first OBJ-fetch overlap against the full Mooneye `intr_2_mode0_timing_sprites` matrix. The ROM now passes after accounting for one dot of overlap between the scanline's first OBJ fetch and initial BG-fetch phase; repeated X=0 objects at the same fetch position pay the flat six-dot cost. Add PPU-interface boundary regressions for X=0 and ten X=10 objects. `make test` passes, and the expanded 14-case PPU run improves from 12/14 to 13/14; only `hblank_ly_scx_timing-GS` remains. The overlap explains the external timing result but is not independently verified on hardware, and Pan Docs describes X=0 as an 11-dot penalty. Keep the discrepancy and incomplete FIFO/sprite arbitration visible in [the validation matrix](dmg-validation.md#sprite-to-mode-0-timing-2026-10-25).
 
-- **SCX / HALT wake conflict (2026-10-25):** test an extra M-cycle between HALT wake and interrupt entry against the current 13/14 PPU set. It makes `hblank_ly_scx_timing-GS` pass but regresses six previously passing timing ROMs, reducing coverage to 8/14; revert it. The failing ROM's first LY sample is correct; its second test iteration, sampled with one more M-cycle of delay, still reads the old value. Do not change global HALT or LY timing yet. Next isolate the STAT request dot, HALT wake, interrupt-entry cycles, and CPU LY read phase on one trace; see [the interrupt audit](interrupts.md#scx-halt-wake-follow-up-2026-10-25).
+- **SCX/HBlank LY timing resolution (2026-10-25):** a same-clock trace placed the SCX=0 LY read at dot 452 while normal-line LY still changed at dot 454. Move only the PPU's normal-line readable LY edge to dot 452; preserve the dot-454 LCD-start edge and line-153 comparison sequence. The extra HALT-cycle candidate remains rejected because it regressed six passing ROMs. Focused PPU tests, `make test`, and the expanded Mooneye PPU set pass; 14/14 external cases pass. The timing-change workflow and evidence are in the [validation matrix](dmg-validation.md#timing-change-workflow) and [LY edge follow-up](dmg-validation.md#normal-line-ly-edge-follow-up-2026-10-25). Commit `5d42e95` is pushed, and its GitHub CI run passed.
