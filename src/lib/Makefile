@@ -32,3 +32,9 @@ $(lotus_gb_lib_build_path): $(OBJS)
 $(mooneye_runner): ../integration_test/mooneye_rom_runner.cpp $(lotus_gb_lib_build_path)
 	$(CC) $(CPPFLAGS) -Iinclude -o $@ $< -L$(build_dir) -llotusgb \
 		-Wl,-rpath,'$$ORIGIN'
+
+.PHONY: ppu-frame-runner
+ppu-frame-runner: $(build_dir)/ppu_frame_runner
+
+$(build_dir)/ppu_frame_runner: ../integration_test/ppu_frame_runner.cpp $(build_dir)/liblotusgb.so
+	$(CC) $(CPPFLAGS) -Iinclude -o $@ $< -L$(build_dir) -llotusgb -Wl,-rpath,'$$ORIGIN'

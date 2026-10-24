@@ -162,3 +162,7 @@ ordinary opcodes and 256/256 CB opcodes.
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+For the active Mode 3 scrolling work, see the [PPU baseline and targeted
+implementation plan](docs/ppu-scrolling.md). The selected Mealybug visual
+checks are optional local diagnostics and currently report known differences.

@@ -28,6 +28,8 @@ test: $(build_dir)
 	$(MAKE) -C $(src_dir)/lib mooneye-runner build_dir=$(build_dir)
 	python3 tools/test_mooneye_runner.py --runner "$(build_dir)/mooneye_rom_runner"
 	python3 tools/test_homebrew_check.py
+	$(MAKE) -C $(src_dir)/lib ppu-frame-runner build_dir=$(build_dir)
+	python3 tools/test_ppu_frame_runner.py --runner "$(build_dir)/ppu_frame_runner"
 
 test-roms:
 	$(MAKE) -C $(src_dir)/libretro build build_dir=$(build_dir)

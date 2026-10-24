@@ -9,6 +9,23 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - Once behavior is tested and stable, measure performance before optimizing. Implementation and storage choices must not define emulation behavior or rely on operating-system-specific semantics in the core.
 - Keep platform-specific file access behind a narrow boundary so the emulator core can use portable ROM storage and support alternate backends when profiling justifies them.
 
+## Current route (2026-10-24)
+
+- **Active: PPU mid-scanline scrolling.** Establish a selected Mealybug DMG
+  screenshot baseline at the documented software breakpoint, then implement
+  one observable SCX/SCY fetch behavior at a time. Retain existing regressions;
+  passing the whole suite is not a prerequisite. F-1 Race remains the eventual
+  gameplay target, not an already-verified result.
+- **Game acceptance:** wait for the user's additional private dumps. ROMs and
+  saves remain external; use the existing homebrew profiles in the meantime.
+- **Save states / rewind / replay:** deferred. The user prefers a pause/rewind
+  experience over manual quick-load controls. Rewind generally needs internal
+  state snapshots too; discuss the user flow separately from that mechanism.
+  No rewind implementation is approved by this note.
+- **Platform preference:** Raspberry Pi with Recalbox is the preferred next
+  device after the Ubuntu RetroArch baseline; Steam Deck and Windows remain
+  later targets without an immediate delivery deadline.
+
 ## Completed foundation
 
 - CPU instruction execution advances in M-cycle steps.
@@ -34,8 +51,8 @@ The first playable milestone is running a Game Boy ROM in RetroArch on Ubuntu. B
 
 1. **First playable milestone: Ubuntu RetroArch core.** Implement the shared clock and bus, address map and initial cartridge loading, timer and interrupts, then a minimal PPU, input path, and libretro adapter. Acceptance: build a Linux libretro shared library; RetroArch loads a supported homebrew ROM; the game produces video frames and responds to input through a short gameplay loop. Use [GB Pong Clone](https://github.com/AlexMGiroux/gb-pong-clone), now confirmed as a 32 KiB ROM-only cartridge under MIT, as the acceptance game. RetroArch 1.7.3 loaded the core and ran Pong for 60 frames under Xvfb; the in-process libretro test verifies that Up visibly changes the Pong frame. Interactive controller verification remains the final check. Audio and save persistence are not required for this milestone.
 2. **Common-game compatibility — active mainline.** Build an end-to-end acceptance set from a small number of commonly played DMG games. For each selected game, verify that it loads, reaches its title screen, starts gameplay, responds visibly to controls, and sustains video and audio; verify save/load when the cartridge supports battery-backed saves. Keep commercial ROMs outside the repository. Use SameBoy as a comparison point when behavior differs, and use hardware references plus focused tests to determine fixes. Refine APU and PPU timing as real games expose problems; retain Game Boy F-1 Race as a targeted PPU scrolling and visual test. Boot-ROM execution remains deferred.
-3. **Steam Deck.** Build and verify the libretro core in RetroArch on SteamOS, including controls, display scaling, and audio.
-4. **Raspberry Pi with Recalbox.** Build and verify the core for the supported Raspberry Pi model and Recalbox environment, including controls, video, and audio.
+3. **Raspberry Pi with Recalbox.** Build and verify the core for the supported Raspberry Pi model and Recalbox environment, including controls, video, and audio.
+4. **Steam Deck.** Build and verify the libretro core in RetroArch on SteamOS, including controls, display scaling, and audio.
 5. **Windows.** Add a Windows build and CI job for the libretro core, then verify it in a Windows RetroArch installation.
 
 ## Next work, in order
@@ -100,7 +117,7 @@ For each step, state what externally observable behavior changes, add a focused 
 
 ## Platform support
 
-Use Linux as the primary development and CI platform for now. Steam Deck, Raspberry Pi running Recalbox, and Windows are target platforms. Build the portable emulator core and libretro adapter first, then add platform-specific build and integration checks. Keep code and build configuration portable where practical; defer dedicated checks for each target until the core and libretro adapter are established.
+Use Linux as the primary development and CI platform for now. Raspberry Pi running Recalbox is the preferred next target, followed by Steam Deck and Windows. Build the portable emulator core and libretro adapter first, then add platform-specific build and integration checks. Keep code and build configuration portable where practical; defer dedicated checks for each target until the core and libretro adapter are established.
 
 - **Big2Small battery-save acceptance (2026-10-23):** the user played the locally supplied, freely available [Big2Small ROM](https://mdsteele.itch.io/big2small), kept outside the repository at `../test-roms/homebrew/big2small.gb`. Its header declares 64 KiB ROM, MBC5 + RAM + battery (`$1B`), and 8 KiB RAM. RetroArch created an 8 KiB `big2small.srm`; the user confirmed that game progress remained after reopening the game. This completes the actual RetroArch disk-save/reload check for this MBC5 game. Existing `testLibretroPersistsMbc5BatteryRamAcrossFrontendReload` covers SRAM writes and frontend restoration with a synthetic ROM; retain both forms of evidence. MBC3 RTC disk persistence and broader game compatibility remain separate follow-up work.
 
@@ -160,3 +177,5 @@ Use Linux as the primary development and CI platform for now. Steam Deck, Raspbe
 - **Reported rapid-pause freeze triage (2026-10-24):** prioritize the user's Tetris/WSL report over unrelated feature work. Four headless START burst rates and a baseline complete; longer system probes confirm complete frames and resumed visual progress after one extra START. Some burst sequences end on the game's normal pause screen. The original report remains unreproduced because the exact key and frontend responsiveness were not retained. No runtime workaround or host-setting change was made. See [the diagnostic procedure and remaining evidence](runtime-troubleshooting.md#rapid-pause-report-2026-10-24).
 
 - **Libretro diagnostics (2026-10-24):** connect the frontend log interface, retain stderr fallback, and report rejected content/mapper sizes plus cartridge initialization exceptions. Observe incomplete frame execution with PC/elapsed cycles and suppress repeated warnings until progress, reset or reload. Focused frontend tests cover rejection reasons, normal execution, STOP warning suppression and reset. This improves real-game issue diagnosis; it is not a STOP implementation or a fix for the unreproduced pause report.
+
+- **Mode 3 scrolling baseline (2026-10-24):** pin a Mealybug source checkout and capture selected visual ROMs at their documented LD B,B marker. Measure exact DMG-blob PNG differences and retain mismatch maps/hashes. Initial BGP/SCX-low/SCX-high/SCY results remain failures (3,642 / 540 / 6,426 / 9,873 differing pixels). ROM-free marker/CB/immediate/STOP probes join `make test`; external image comparisons remain optional. No renderer change is claimed at this checkpoint. The next implementation boundary is background tile-fetch/cache sampling; see [the PPU scrolling plan and baseline](ppu-scrolling.md).
