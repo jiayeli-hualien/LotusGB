@@ -122,7 +122,7 @@ ordinary opcodes and 256/256 CB opcodes.
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
 - [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs and the result-marker protocol used by the local runner
-- [Tobu Tobu Girl](https://tangramgames.itch.io/tobutobugirl) — freely downloadable DMG homebrew; source code is MIT and game assets are CC BY 4.0. Its MBC1 battery-backed save makes it a useful local RetroArch save-persistence target.
+- [Tobu Tobu Girl](https://tangramgames.itch.io/tobutobugirl) — freely downloadable DMG homebrew; source code is MIT and game assets are CC BY 4.0. An MBC1 action-game smoke target; Big2Small remains the required manual save-persistence check.
 - [Tobu Tobu Girl source and build settings](https://github.com/SimonLarsen/tobutobugirl) — build declares MBC1 + RAM + battery, 16 ROM banks, and one RAM bank.
 - [Pan Docs: Serial Data Transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_(Link_Cable).html) — SB/SC, disconnected input, internal/external clocks and completion IRQ
 - [The Cycle-Accurate Game Boy Docs](https://github.com/AntonioND/giibiiadvance/blob/master/docs/TCAGBD.pdf) — AntonioND’s hardware notes, including serial clock independence from DIV

@@ -51,3 +51,29 @@ combinations. Intervals must fit within the requested run. Restored SRAM must
 match the cartridge's exposed SRAM size. An output cannot alias the restored
 save, including through a symlink or hard link. To restore without input, supply
 an empty input file.
+
+## Tobu Tobu Girl gameplay smoke check
+
+```sh
+make test-homebrew HOMEBREW_GAME=tobutobugirl
+```
+
+The default ROM is `../test-roms/homebrew/tobutobugirl/tobu.gb`, obtained from
+[the author's page](https://tangramgames.itch.io/tobutobugirl). The pinned
+SHA-256 is `5d3871cae77db2287807e8914fd21f76203e73aa3fec20955489d45cb4571d8f`
+(256 KiB, MBC1 + RAM + battery, 8 KiB SRAM). Source and assets have separate
+licenses; keep the downloaded ROM external. See [the source project](https://github.com/SimonLarsen/tobutobugirl).
+
+This profile starts without player SRAM, presses START during the opening
+scenes, confirms a stage with A, then exercises rightward movement, A dash
+and B upward boost. The 3,600-frame run writes the same artifact types under
+`build/test-roms/tobutobugirl/`. Review `frame.ppm` for actual gameplay; the
+exit status checks execution and callbacks, not scene recognition. Timing is
+pinned to this ROM release and may need adjustment if restored progress is
+supplied. Big2Small remains the manual battery-save acceptance game; this
+profile does not require beating a Tobu Tobu Girl level or writing a high score.
+
+On 2026-10-24, the scripted run reached a visible gameplay scene with the
+character, enemies and HUD. The neutral-input run remained in the opening
+scene. These observations demonstrate a limited startup/input path, not
+complete level compatibility, precise rendering or sound quality.

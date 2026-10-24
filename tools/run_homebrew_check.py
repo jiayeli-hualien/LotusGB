@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local Big2Small callback/input smoke check; ROM and saves remain external."""
+"""Local homebrew callback/input smoke checks; ROM and saves remain external."""
 import argparse
 import hashlib
 import json
@@ -13,13 +13,14 @@ def sha256(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--game', choices=('big2small', 'tobutobugirl'), default='big2small')
     parser.add_argument('--rom', type=Path, required=True)
     parser.add_argument('--save', type=Path, help='Optional SRAM to restore read-only')
     parser.add_argument('--core', type=Path, default=Path('build/lotusgb_libretro.so'))
     parser.add_argument('--runner', type=Path, default=Path('build/libretro_rom_runner'))
-    parser.add_argument('--output-dir', type=Path, default=Path('build/test-roms/big2small'))
+    parser.add_argument('--output-dir', type=Path, help='Default: build/test-roms/<game>')
     args = parser.parse_args()
-    output = args.output_dir.resolve()
+    output = (args.output_dir or Path('build/test-roms') / args.game).resolve()
     # Prevent any generated artifact from replacing a supplied ROM/save/core/runner.
     artifacts = [output / name for name in ('input.txt', 'frame.rgb', 'frame.ppm',
                                           'output.srm', 'runner.log', 'report.json')]
@@ -29,15 +30,29 @@ def main():
                           for target in artifacts):
             parser.error('input path conflicts with an output artifact')
     rom = args.rom.read_bytes()
-    if hashlib.sha256(rom).hexdigest() != '59c096333f93c12c8eb25a5fcffa2be15001abcd5d20b9a82c2bc2dae7e625b2':
-        parser.error('expected the pinned Big2Small ROM; see docs/homebrew-check.md')
+    expected_hash = {
+        'big2small': '59c096333f93c12c8eb25a5fcffa2be15001abcd5d20b9a82c2bc2dae7e625b2',
+        'tobutobugirl': '5d3871cae77db2287807e8914fd21f76203e73aa3fec20955489d45cb4571d8f',
+    }[args.game]
+    if hashlib.sha256(rom).hexdigest() != expected_hash:
+        parser.error(f'expected the pinned {args.game} ROM; see docs/homebrew-check.md')
     output.mkdir(parents=True, exist_ok=True)
     events = ['# zero-based start end(exclusive) button']
-    events += [f'{start} {start + 5} A' for start in (180, 360, 540)]
-    keys = ('RIGHT', 'DOWN', 'LEFT', 'UP')
-    for start in range(960, 3600, 240):
-        events += [f'{start} {start + 4} A',
-                   f'{start + 60} {start + 68} {keys[(start // 240) % 4]}']
+    if args.game == 'big2small':
+        events += [f'{start} {start + 5} A' for start in (180, 360, 540)]
+        keys = ('RIGHT', 'DOWN', 'LEFT', 'UP')
+        for start in range(960, 3600, 240):
+            events += [f'{start} {start + 4} A',
+                       f'{start + 60} {start + 68} {keys[(start // 240) % 4]}']
+    else:
+        # Skip the opening scenes, confirm a stage, then exercise movement,
+        # dash (A) and upward boost (B). No START presses during gameplay.
+        events += [f'{start} {start + 5} START' for start in range(180, 1500, 180)]
+        events += ['1620 1625 A', '1800 1805 A']
+        for start in range(1920, 3600, 120):
+            events += [f'{start} {start + 5} A',
+                       f'{start + 30} {start + 80} B',
+                       f'{start + 30} {start + 70} RIGHT']
     (output / 'input.txt').write_text('\n'.join(events) + '\n')
     original_save_hash = sha256(args.save) if args.save else None
     command = [str(args.runner.resolve()), str(args.core.resolve()),
@@ -48,11 +63,11 @@ def main():
     result = subprocess.run(command, capture_output=True, text=True)
     (output / 'runner.log').write_text(result.stdout + result.stderr)
     unchanged = not args.save or sha256(args.save) == original_save_hash
-    report = dict(rom_sha256=sha256(args.rom), core_sha256=sha256(args.core),
+    report = dict(game=args.game, rom_sha256=sha256(args.rom), core_sha256=sha256(args.core),
                   restored_save_sha256=original_save_hash, original_save_unchanged=unchanged,
                   runner_exit_code=result.returncode, command=command,
                   scope='Callback delivery and scripted execution only; inspect frame.ppm manually. '
-                        'Not an audio-quality, puzzle-completion or save-persistence assertion.')
+                        'Not an audio-quality, level-completion or save-persistence assertion.')
     if result.returncode == 0:
         rgb = (output / 'frame.rgb').read_bytes()
         if len(rgb) != 160 * 144 * 3:

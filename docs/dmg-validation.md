@@ -409,3 +409,19 @@ Big2Small completes 3,600 frames with the same final frame SHA-256 and the
 original player SRAM unchanged. These existing ROM regressions supplement
 the focused window tests; they are not independent coverage of every window
 edge case.
+
+## Second homebrew gameplay profile (2026-10-24)
+
+The optional local homebrew script now supports the original Tobu Tobu Girl
+in addition to the default Big2Small profile. A 3,600-frame clean-SRAM run
+publishes 3,600 video callbacks, 2,893,139 stereo audio frames and an 8 KiB
+SRAM block. Its inspected final frame shows an action scene with character,
+enemies and HUD; a neutral-input run remains in the opening scene.
+The initial input attempt pressed START too early and stayed in the opening;
+repeated START presses during opening scenes followed by stage confirmation
+corrected the test procedure, without changing emulator code.
+
+The final RGB SHA-256 is
+`260f1d3926acb5a2db9b2ec757b6a493158dc4f9de3b98b7e939df484e35c8f4`.
+This is a recorded observation, not an enforced reference image or proof of
+complete gameplay compatibility. See [the procedure, ROM hash and sources](homebrew-check.md#tobu-tobu-girl-gameplay-smoke-check).

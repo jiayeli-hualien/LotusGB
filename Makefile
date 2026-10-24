@@ -8,7 +8,8 @@ build_dir := $(CURDIR)/build
 
 TEST_ROM_DIR ?= ../test-roms/dmg_sound
 TEST_ROM_FRAMES ?= 1200
-HOMEBREW_ROM ?= ../test-roms/homebrew/big2small.gb
+HOMEBREW_GAME ?= big2small
+HOMEBREW_ROM ?= ../test-roms/homebrew/$(if $(filter tobutobugirl,$(HOMEBREW_GAME)),tobutobugirl/tobu.gb,big2small.gb)
 HOMEBREW_SAVE ?=
 MOONEYE_GROUP ?= ppu
 MOONEYE_OUTPUT_DIR ?= $(build_dir)/test-roms/mooneye$(if $(filter ppu,$(MOONEYE_GROUP)),,-$(MOONEYE_GROUP))
@@ -48,6 +49,7 @@ test-mooneye:
 test-homebrew:
 	$(MAKE) -C $(src_dir)/libretro build rom-test-runner build_dir=$(build_dir)
 	python3 tools/run_homebrew_check.py \
+		--game "$(HOMEBREW_GAME)" \
 		--core "$(build_dir)/lotusgb_libretro.so" \
 		--runner "$(build_dir)/libretro_rom_runner" \
 		--rom "$(HOMEBREW_ROM)" \
