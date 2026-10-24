@@ -14,7 +14,8 @@ support the RTC and expose its state through libretro's RTC memory interface.
 MBC5 rumble cartridges can run, but their motor output is not exposed yet.
 Battery-backed RAM and RTC state are exposed through libretro memory interfaces
 for RetroArch to persist. The core also supports joypad input, a partial DMG
-PPU, and all four DMG APU channels. The default startup profile skips the boot ROM.
+PPU, all four DMG APU channels, and basic serial behavior with no cable
+connected (actual multiplayer links are not implemented). The default startup profile skips the boot ROM.
 Other cartridge mappers, boot-ROM execution, and more exact PPU/APU timing
 remain future work.
 
@@ -64,7 +65,8 @@ make test
 ```
 
 These tests cover CPU interfaces and instructions, hardware components, and
-the libretro adapter. They do not require GBIT.
+the libretro adapter. Generated-ROM probes also check the Mooneye runner’s
+result-marker handling. They do not require GBIT or downloaded test ROMs.
 
 ### Optional Blargg APU ROM checks
 
@@ -119,9 +121,11 @@ ordinary opcodes and 256/256 CB opcodes.
 ### Game Boy development and hardware
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
-- [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs used for targeted timing checks
+- [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs and the result-marker protocol used by the local runner
 - [Tobu Tobu Girl](https://tangramgames.itch.io/tobutobugirl) — freely downloadable DMG homebrew; source code is MIT and game assets are CC BY 4.0. Its MBC1 battery-backed save makes it a useful local RetroArch save-persistence target.
 - [Tobu Tobu Girl source and build settings](https://github.com/SimonLarsen/tobutobugirl) — build declares MBC1 + RAM + battery, 16 ROM banks, and one RAM bank.
+- [Pan Docs: Serial Data Transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_(Link_Cable).html) — SB/SC, disconnected input, internal/external clocks and completion IRQ
+- [The Cycle-Accurate Game Boy Docs](https://github.com/AntonioND/giibiiadvance/blob/master/docs/TCAGBD.pdf) — AntonioND’s hardware notes, including serial clock independence from DIV
 - [Pan Docs: OAM DMA Transfer](https://gbdev.io/pandocs/OAM_DMA_Transfer.html) — FF46 transfers, duration, HRAM execution, and bus conflicts
 - [Pan Docs: Timer obscure behaviour](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html) — divider edges, overflow delay, and TIMA/TMA reload-write interactions
 - [Pan Docs: Rendering](https://gbdev.io/pandocs/Rendering.html) — PPU modes, pixel output, and mode 3 timing penalties

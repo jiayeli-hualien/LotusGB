@@ -65,7 +65,7 @@ proof of the exact HALT wake phase or intra-cycle IF acknowledgement timing.
 | RETI | The instruction restores PC and enables IME. | `testRetiImmediatelyServicesAnotherPendingInterrupt` checks immediate service before executing the resumed opcode, stack address/order and IF acknowledgement. External `reti_intr_timing` and `reti_timing` pass. |
 | HALT | CPU idles while the shared clock advances peripherals. Pending IF/IE wakes it; IME decides whether to enter a handler. | `testHaltWakeAndHaltBug`, `testStopDecodeAndHaltIdle`, and `testTimerInterruptWakesHaltAndRunsHandler`. Exact wake/entry phase is still under investigation. |
 | STOP | CPU exposes a separate stopped state with zero elapsed CPU T-cycles; explicit wake resumes fetching. | CPU STOP tests and system frame-step exit coverage. Automatic joypad wake and full hardware STOP behavior are not implemented. |
-| Peripheral timing | Timer, PPU and joypad own request generation; CPU owns selection/service. | Component tests plus system integration. Serial transfer completion remains unsupported. |
+| Peripheral timing | Timer, PPU and joypad own request generation; CPU owns selection/service. | Component tests plus system integration. Unconnected serial internal-clock completion now requests IF bit 3, with component and CPU/HALT system tests. Actual link peers and external clock input are unsupported. |
 | Bus phase | `SystemClock` advances components to the end of an M-cycle before a CPU bus access. | Existing CPU bus-access tests and external timing ROMs. This is a model with limited validation, not a guarantee for every register conflict. |
 
 CPU tests are in `src/unit_test/cpu_instruction_test.cpp`; system tests are in
@@ -109,8 +109,8 @@ for commands and current results.
    has unit and external ROM coverage. Acceptance-time selection is still
    not proof of the remaining entry races.
 4. **Peripheral-specific gaps.** Add evidence for STAT-write glitches and
-   line-153 behavior when working on those PPU features. Implement STOP wake
-   and serial events with their corresponding system components.
+   line-153 behavior when working on those PPU features. Implement STOP wake with joypad evidence. Unconnected serial completion now
+   has component/system coverage; exact serial boot phase and link peers remain separate work.
 
 Items 2–4 are coverage gaps, not confirmed bugs or prerequisites for all other
 emulator work. Choose an item when a reproducer or active feature needs it.

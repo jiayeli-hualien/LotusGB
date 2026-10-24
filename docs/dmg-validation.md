@@ -9,6 +9,7 @@ The current system starts from a DMG post-boot profile and skips boot-ROM execut
 | CPU instructions and timing | CPU advances in M-cycles and reports T-cycles. Focused behavior includes DAA and `ADD SP,e8` flags, stack/jump bus sequences, EI delay, interrupt entry, STOP/HALT distinction, HALT wake-up and HALT bug. | `make test`: `cpu_instruction_test.cpp`, `cpu_cycle_test.cpp`; GBIT instruction integration runs separately and in CI. | This is not a claim that every instruction timing edge is independently verified on hardware. Add a focused ROM only when a real disagreement or game exposes a gap. |
 | Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp`, `game_boy_system_test.cpp`, `cpu_instruction_test.cpp`. | All 13 Mooneye `acceptance/timer` ROMs pass, including TIMA/TMA writes during reload. The PPU group includes interrupt-entry and HALT timing ROMs, and the interrupt group adds ten EI/DI, RETI, HALT and IF/IE checks. This does not cover every interrupt race. |
 | Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23: the user confirmed progress survived a restart. This covers an MBC5 + RAM + battery cartridge; it does not establish disk persistence for every mapper. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. Actual `.rtc` disk persistence also remains unverified. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
+| Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. | `make test`: `dmg_serial_test.cpp` checks register and bit/completion boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. | No real peer, external clock input, accessories or CGB fast clock. The model-specific `boot_sclk_align-dmgABCmgb` ROM still fails; exact post-boot clock phase and SC-write edge races remain unresolved. Component/system tests do not establish full hardware serial conformance. |
 | Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. Palette registers are sampled as pixels are emitted. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; `dmg-acid2` exact framebuffer regression passes. | `dmg-acid2` does not cover every mid-scanline effect. F-1 Race remains a scrolling/visual compatibility target. |
 | PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. | `make test`: `dmg_ppu_test.cpp` checks selected mode boundaries, access restrictions, SCX/window/object penalties, and frame behavior. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. | The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Mid-Mode-3 scroll/tile-fetch changes are also not modeled. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
@@ -254,3 +255,51 @@ joypad/interrupt entry races or other exceptional STOP paths.
 
 Source for normal two-byte STOP with ignored padding:
 [Pan Docs](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction).
+
+
+### Unconnected serial baseline (2026-10-24)
+
+SB/SC are now mapped to a serial component rather than unmapped `$FF` reads.
+The component owns a separate free-running serial divider; do not clock it
+from Timer's DIV counter. Internal transfers shift eight incoming high bits,
+clear SC bit 7 and request IF bit 3 on completion. External transfers do not
+complete with no peer attached. Unit tests check every bit boundary, partial
+SB values, unused SC bits, interrupt timing/non-repetition, abort/restart, and
+starting partway through the free-running clock period. CPU-driven system
+tests check handler dispatch at `$0058`, HALT wake, RETI stack restoration,
+and completion despite repeatedly resetting DIV.
+
+This adds disconnected-port behavior, not multiplayer support. The initial
+phase is a deterministic synthetic profile, not a claim about physical
+DMG/MGB boot timing. In particular, the model-specific Mooneye
+`boot_sclk_align-dmgABCmgb` ROM targets that boot-phase detail and is separate
+from the existing default regression set. It still fails with the current
+profile (183,809 M-cycles at the actual result marker); do not claim independent
+hardware ROM acceptance for serial timing from the component/system tests.
+
+References: [Pan Docs serial transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_(Link_Cable).html),
+[AntonioND's cycle-accurate hardware notes, section 5.1](https://github.com/AntonioND/giibiiadvance/blob/master/docs/TCAGBD.pdf),
+and [Mooneye serial boot alignment source](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/serial/boot_sclk_align-dmgABCmgb.s).
+
+
+### Mooneye result-marker regression (2026-10-24)
+
+The serial alignment diagnostic exposed a false failure at 490 M-cycles:
+its counter loop temporarily has `$42` in B/C/D/E/H/L. The old runner treated
+that register pattern alone as completion. The
+[official protocol](https://github.com/Gekkio/mooneye-test-suite#passfail-reporting)
+also requires an `LD B,B` breakpoint. The runner now checks signatures only
+when a complete instruction has prefetched that marker from the selected
+ROM's fixed reporting code. A is not part of the protocol signature.
+Bank-switched reporting code and reporting from RAM/HRAM are outside this
+runner's current scope.
+
+`make test` now runs seven generated-ROM protocol probes, without external
+ROM dependencies: temporary success/failure patterns, actual failure, an
+unrelated marker, nonzero A on success, and `$40` as a CB opcode or immediate
+operand. The temporary-failure probe failed before the runner correction.
+All seven now pass. With corrected reporting, the default 40-case Mooneye
+set still passes, and the expanded PPU set still has its same two known
+failures (SCX/HBlank and object timing). The serial boot-alignment diagnostic
+now reaches its genuine failure marker; its early 490-cycle result was not
+valid evidence of hardware behavior.

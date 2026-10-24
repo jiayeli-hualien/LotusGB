@@ -12,7 +12,8 @@ csv_sources := $(wildcard ../lib/include/*.csv)
 test_executables := $(build_dir)/cpu_interface_test $(build_dir)/cpu_instruction_test \
 	$(build_dir)/adapter_lifetime_test $(build_dir)/system_clock_test \
 	$(build_dir)/address_bus_test $(build_dir)/game_boy_system_test \
-	$(build_dir)/timer_test $(build_dir)/joypad_test $(build_dir)/dmg_ppu_test \
+	$(build_dir)/timer_test $(build_dir)/dmg_serial_test \
+	$(build_dir)/joypad_test $(build_dir)/dmg_ppu_test \
 	$(build_dir)/dmg_oam_dma_test \
 	$(build_dir)/dmg_apu_test \
 	$(build_dir)/dmg_acid2_test
@@ -30,6 +31,7 @@ test: $(test_executables)
 	$(build_dir)/address_bus_test
 	$(build_dir)/game_boy_system_test
 	$(build_dir)/timer_test
+	$(build_dir)/dmg_serial_test
 	$(build_dir)/joypad_test
 	$(build_dir)/dmg_ppu_test
 	$(build_dir)/dmg_oam_dma_test
@@ -62,6 +64,10 @@ $(build_dir)/game_boy_system_test: game_boy_system_test.cpp $(wildcard ../lib/*.
 $(build_dir)/timer_test: timer_test.cpp ../lib/timer.cpp \
 		../lib/interrupt_registers.cpp $(test_headers) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/timer.cpp ../lib/interrupt_registers.cpp -o $@
+
+$(build_dir)/dmg_serial_test: dmg_serial_test.cpp ../lib/dmg_serial.cpp \
+		../lib/interrupt_registers.cpp $(test_headers) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< ../lib/dmg_serial.cpp ../lib/interrupt_registers.cpp -o $@
 
 $(build_dir)/joypad_test: joypad_test.cpp ../lib/joypad.cpp \
 		../lib/interrupt_registers.cpp $(test_headers) | $(build_dir)

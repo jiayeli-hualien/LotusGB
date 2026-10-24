@@ -395,9 +395,67 @@ void testCpuRunsHramDmaRoutineAndReturnsToRom() {
     expect(registers.getRefSP() == 0xFFFE, "HRAM wait routine preserves the call stack");
 }
 
+void testDisconnectedSerialWakesHaltAndRunsHandler() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {
+        0xF3, 0xAF,       // DI; XOR A
+        0xE0, 0x0F,       // clear IF
+        0xE0, 0x01,       // SB = 0
+        0x1E, 0x00,       // E = handler count
+        0x3E, 0x08, 0xEA, 0xFF, 0xFF, // enable serial IRQ
+        0x3E, 0x81, 0xE0, 0x02, // request internal-clock transfer
+        0xFB, 0x76,       // EI; HALT until completion
+        0xF0, 0x02, 0x47, // B = completed SC
+        0xF0, 0x01, 0x4F, // C = received SB
+        0xF0, 0x0F, 0xE6, 0x08, 0x67, // H = serial IF after acknowledgement
+        0x16, 0x99, 0x18, 0xFE, // completion marker; loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+    rom[0x58] = 0x1C; // INC E
+    rom[0x59] = 0xD9; // RETI
+    GameBoySystem system(std::move(rom));
+    for (unsigned i = 0; i < 2000 && system.getCpuRegisters().getRefD() != 0x99; ++i)
+        expect(system.stepOneCycle().success, "serial/HALT system program executes");
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefD() == 0x99 && registers.getRefE() == 1,
+           "serial completion wakes HALT and executes the serial vector once");
+    expect(registers.getRefB() == 0x7F && registers.getRefC() == 0xFF,
+           "CPU sees completed internal transfer and disconnected FF data");
+    expect(registers.getRefH() == 0 && registers.getRefSP() == 0xFFFE,
+           "serial handler acknowledges IF and RETI restores the stack");
+    expect(system.getElapsedTCycles() >= 4000 && system.getElapsedTCycles() < 6000,
+           "serial byte completes at the normal DMG clock rate while CPU is halted");
+}
+
+void testSerialClockIsIndependentOfDividerWrites() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {
+        0xF3, 0xAF, 0xE0, 0x01, // DI; SB = 0
+        0x3E, 0x81, 0xE0, 0x02, // start serial
+        // Repeatedly reset DIV while polling for serial completion.
+        0xAF, 0xE0, 0x04, 0xF0, 0x02, 0xCB, 0x7F, 0x20, 0xF7,
+        0xF0, 0x01, 0x4F, // C = received data
+        0xF0, 0x0F, 0xE6, 0x08, 0x67, // H = serial request with IME disabled
+        0x16, 0x99, 0x18, 0xFE,
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+    GameBoySystem system(std::move(rom));
+    for (unsigned i = 0; i < 2000 && system.getCpuRegisters().getRefD() != 0x99; ++i)
+        expect(system.stepOneCycle().success, "serial/DIV polling system program executes");
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefD() == 0x99 && registers.getRefC() == 0xFF,
+           "frequent DIV resets do not prevent serial transfer completion");
+    expect(registers.getRefH() == 8,
+           "serial completion latches IF even with IME and serial IE disabled");
+}
+
 }
 
 int main() {
+    testDisconnectedSerialWakesHaltAndRunsHandler();
+    testSerialClockIsIndependentOfDividerWrites();
     testCpuRunsHramDmaRoutineAndReturnsToRom();
     testPostBootInterruptsWaitForEi();
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();

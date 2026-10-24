@@ -6,7 +6,7 @@ This document describes the implemented emulator, not a target design. Update it
 
 LotusGB currently runs ROM-only DMG cartridges up to 32 KiB, MBC1 types `$01`–`$03`, MBC2 types `$05`–`$06` with up to 256 KiB of ROM and built-in 512×4-bit RAM, MBC3 types `$0F`–`$13` with up to 2 MiB of ROM and 32 KiB of external RAM, and MBC5 types `$19`–`$1E` with up to 8 MiB of ROM and 128 KiB of external RAM. MBC2 battery RAM is exposed as 512 bytes, one nibble per byte; reads return `$F` in the unspecified upper nibble as a deterministic model choice. MBC3 timer types `$0F` and `$10` implement the five RTC registers, latch behavior, HALT, and the 9-bit day counter. The clock catches up against host wall time on RTC access, including time while the frontend is paused or closed. Its versioned 24-byte state is exposed through libretro's RTC memory interface; the frontend owns disk persistence. MBC5 rumble cartridges are supported for banking, but the motor output is not exposed. MBC30-sized RAM and other mapper types are not supported. Battery-backed cartridge RAM uses libretro's save RAM memory interface. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
 
-The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, a partial PPU, OAM DMA, and an initial APU implementation. The PPU prepares background/object color indices at mode 3 entry and emits pixels over the visible 160-dot interval, applying BGP/OBP palettes as each pixel is emitted. Mode 3 starts from 172 dots, adds `SCX & 7` fine-scroll dots, adds six dots when the window emits visible pixels, and stalls at object fetch positions for the documented DMG 6–11-dot penalties. Mid-mode-3 tile-fetch/register changes are not modeled yet. The APU generates audio for pulse channels 1 and 2, wave channel 3, and noise channel 4. LotusGB schedules CPU bus transactions at the end of each four-T-cycle M-cycle. This phase passes the current selected Mooneye PPU/interrupt timing ROMs and Blargg CH3 test 09; other bus-sensitive tests should be rechecked as coverage grows. Other cartridge mappers, boot-ROM execution, and more complete PPU/APU timing are not implemented.
+The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, an unconnected serial port, a partial PPU, OAM DMA, and an initial APU implementation. The PPU prepares background/object color indices at mode 3 entry and emits pixels over the visible 160-dot interval, applying BGP/OBP palettes as each pixel is emitted. Mode 3 starts from 172 dots, adds `SCX & 7` fine-scroll dots, adds six dots when the window emits visible pixels, and stalls at object fetch positions for the documented DMG 6–11-dot penalties. Mid-mode-3 tile-fetch/register changes are not modeled yet. The APU generates audio for pulse channels 1 and 2, wave channel 3, and noise channel 4. LotusGB schedules CPU bus transactions at the end of each four-T-cycle M-cycle. This phase passes the current selected Mooneye PPU/interrupt timing ROMs and Blargg CH3 test 09; other bus-sensitive tests should be rechecked as coverage grows. Other cartridge mappers, boot-ROM execution, and more complete PPU/APU timing are not implemented.
 
 ## Runtime flow
 
@@ -25,20 +25,23 @@ flowchart TD
     BUS --> IO[Mapped hardware registers]
     IO --> JOY[Joypad and interrupts]
     IO --> TIMER[Timer]
+    IO --> SERIAL[DMG serial SB/SC, no peer]
     IO --> APU[DMG APU, pulse channels 1 and 2, wave channel 3, noise channel 4]
     IO --> PPU[DMG PPU, VRAM and OAM]
     IO --> DMA[OAM DMA]
 
+    CLOCK -->|elapsed T-cycles| SERIAL
     CLOCK -->|elapsed T-cycles| TIMER
     CLOCK -->|elapsed T-cycles| APU
     CLOCK -->|elapsed T-cycles| PPU
+    CLOCK -->|elapsed T-cycles| DMA
 
     SYS -->|framebuffer and PCM samples| LR
     RA <-->|save RAM and RTC memory interfaces| LR
     LR -->|video and audio callbacks| RA
 ```
 
-`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. On the first bus access during the step, it advances the timer, APU, PPU, and OAM DMA through four T-cycles before dispatching the transaction. A step without a bus access advances all reported T-cycles after the CPU step. The timer sends the APU a clock event when divider bit 12 falls, including when a DIV write resets that bit from high to low; the APU uses this to clock its frame sequencer. A zero-time CPU step does not advance system time or peripherals.
+`retro_run()` polls input, advances the system by one frame, then submits video and audio. `SystemClock` asks the CPU to execute one M-cycle. On the first bus access during the step, it advances the timer, serial port, APU, PPU, and OAM DMA through four T-cycles before dispatching the transaction. A step without a bus access advances all reported T-cycles after the CPU step. The timer sends the APU a clock event when divider bit 12 falls, including when a DIV write resets that bit from high to low; the APU uses this to clock its frame sequencer. A zero-time CPU step does not advance system time or peripherals.
 
 DMA is a separate bus master. `AddressBus::read()`/`write()` advance to the CPU
 bus phase and then consult the borrowed `ICpuBusArbiter`. The DMA device uses
@@ -72,3 +75,17 @@ contention are not implemented. This is DMG behavior, not a CGB bus model.
 5. Update the roadmap when milestone status, known limits, or implementation order changes. Update this document when ownership or runtime flow changes.
 
 `make test` covers the in-repository unit and libretro adapter tests. GBIT integration is a separate check; see the repository's development notes for its local setup and the CI workflow for the pinned revision.
+
+
+## Serial scope
+
+`DmgSerial` owns `$FF01` (SB) and `$FF02` (SC) and advances from the system
+clock, including while the CPU is in HALT. Its free-running 512-T-cycle bit
+clock is independent of Timer/DIV and is not restarted by SC writes.
+In internal-clock mode it shifts in one high bit per edge with no connected
+peer; after eight bits it clears SC bit 7 and requests the serial interrupt.
+External-clock mode remains pending because no peer supplies a clock.
+Clearing SC bit 7 aborts without completing or requesting an interrupt.
+The synthetic serial clock starts at phase zero; exact model-specific
+post-boot phase, SC-write edge races, link cables, accessories and CGB fast
+serial are not covered by this baseline.

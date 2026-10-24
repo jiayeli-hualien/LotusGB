@@ -12,6 +12,7 @@
 #include "decoder.hpp"
 #include "dmg_apu.hpp"
 #include "dmg_ppu.hpp"
+#include "dmg_serial.hpp"
 #include "dmg_oam_dma.hpp"
 #include "interrupt_registers.hpp"
 #include "joypad.hpp"
@@ -72,6 +73,7 @@ private:
     RamRegion highRam;
     InterruptRegisters interruptRegisters;
     Joypad joypad;
+    DmgSerial serial;
     Timer timer;
     DmgApu apu;
     DmgPpu ppu;
