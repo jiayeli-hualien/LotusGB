@@ -27,6 +27,7 @@ test: $(build_dir)
 	$(MAKE) -C $(src_dir) test build_dir=$(build_dir)
 	$(MAKE) -C $(src_dir)/lib mooneye-runner build_dir=$(build_dir)
 	python3 tools/test_mooneye_runner.py --runner "$(build_dir)/mooneye_rom_runner"
+	python3 tools/test_homebrew_check.py
 
 test-roms:
 	$(MAKE) -C $(src_dir)/libretro build build_dir=$(build_dir)

@@ -77,3 +77,20 @@ On 2026-10-24, the scripted run reached a visible gameplay scene with the
 character, enemies and HUD. The neutral-input run remained in the opening
 scene. These observations demonstrate a limited startup/input path, not
 complete level compatibility, precise rendering or sound quality.
+
+## Automated output checks
+
+For both pinned profiles, success requires a runner summary reporting 3,600
+requested/video frames, nonzero delivered audio frames, 160×144 RGB output
+of the matching size, and an 8,192-byte SRAM output matching the reported
+size. The report includes `validation_error` (null on success). Old RGB,
+preview and SRAM outputs are removed before execution so a failed attempt
+cannot reuse the preceding frame as fresh evidence. A zero runner exit with
+missing or inconsistent artifacts still fails and records the reason.
+
+`make test` runs `tools/test_homebrew_check.py` without external ROMs. It
+checks valid output and rejects missing/duplicated summaries, wrong counts,
+missing audio, wrong dimensions and truncated/oversized artifacts. A mocked
+runner also verifies that a zero exit without fresh artifacts cannot pass
+using stale files. These checks establish output delivery, not audible audio
+quality, correct scene contents or disk-save persistence.

@@ -1,2 +1,5 @@
 build
 build/*
+
+# Python tooling caches
+__pycache__/

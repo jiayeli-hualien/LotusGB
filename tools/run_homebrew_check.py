@@ -3,12 +3,31 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_run(summary, rgb, save_ram):
+    """Check the runner's public output contract for these two profiles."""
+    match = re.fullmatch(
+        r'frames_requested=(\d+) video_frames=(\d+) audio_frames=(\d+) '
+        r'save_ram_bytes=(\d+) width=(\d+) height=(\d+)\s*', summary)
+    if not match:
+        raise ValueError('missing or malformed runner callback summary')
+    requested, video, audio, ram_size, width, height = map(int, match.groups())
+    if requested != 3600 or video != requested:
+        raise ValueError('expected 3600 video frames')
+    if audio == 0:
+        raise ValueError('core did not deliver audio frames')
+    if (width, height) != (160, 144) or len(rgb) != width * height * 3:
+        raise ValueError('invalid RGB output dimensions or size')
+    if ram_size != 8192 or len(save_ram) != ram_size:
+        raise ValueError('expected an 8192-byte cartridge SRAM output')
 
 
 def main():
@@ -60,6 +79,9 @@ def main():
                str(output / 'output.srm'), str(output / 'input.txt')]
     if args.save:
         command.append(str(args.save.resolve()))
+    # A successful exit must produce fresh artifacts, never reuse an old run.
+    for name in ('frame.rgb', 'frame.ppm', 'output.srm'):
+        (output / name).unlink(missing_ok=True)
     result = subprocess.run(command, capture_output=True, text=True)
     (output / 'runner.log').write_text(result.stdout + result.stderr)
     unchanged = not args.save or sha256(args.save) == original_save_hash
@@ -68,17 +90,22 @@ def main():
                   runner_exit_code=result.returncode, command=command,
                   scope='Callback delivery and scripted execution only; inspect frame.ppm manually. '
                         'Not an audio-quality, level-completion or save-persistence assertion.')
+    validation_error = None
     if result.returncode == 0:
-        rgb = (output / 'frame.rgb').read_bytes()
-        if len(rgb) != 160 * 144 * 3:
-            raise RuntimeError('invalid RGB output size')
-        (output / 'frame.ppm').write_bytes(b'P6\n160 144\n255\n' + rgb)
-        report['frame_sha256'] = hashlib.sha256(rgb).hexdigest()
-        report['callbacks'] = result.stdout.strip()
+        try:
+            rgb = (output / 'frame.rgb').read_bytes()
+            save_ram = (output / 'output.srm').read_bytes()
+            validate_run(result.stdout, rgb, save_ram)
+            (output / 'frame.ppm').write_bytes(b'P6\n160 144\n255\n' + rgb)
+            report['frame_sha256'] = hashlib.sha256(rgb).hexdigest()
+            report['callbacks'] = result.stdout.strip()
+        except (OSError, ValueError) as error:
+            validation_error = str(error)
+    report['validation_error'] = validation_error
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(result.stdout, end='')
     print(f'Report: {output / "report.json"}')
-    if result.returncode or not unchanged:
+    if result.returncode or not unchanged or validation_error:
         raise SystemExit('Homebrew check failed; inspect runner.log and report.json')
 
 
