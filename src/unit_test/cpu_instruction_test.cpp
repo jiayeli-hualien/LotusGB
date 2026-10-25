@@ -257,6 +257,61 @@ void testCbHlReadModifyWritePhases() {
     }
 }
 
+void testHlAluReadsBeforeUpdatingAccumulatorAndFlags() {
+    struct Case {
+        uint8_t opcode;
+        uint8_t accumulator;
+        uint8_t memoryValue;
+        uint8_t expectedAccumulator;
+        bool z;
+        bool n;
+        bool h;
+        bool c;
+    };
+    const Case cases[] = {
+        {0x86, 0xFF, 0x01, 0x00, true, false, true, true},  // ADD A,(HL)
+        {0x8E, 0x0F, 0x00, 0x10, false, false, true, false}, // ADC A,(HL), C=1
+        {0x96, 0x00, 0x01, 0xFF, false, true, true, true},  // SUB (HL)
+        {0x9E, 0x10, 0x00, 0x0F, false, true, true, false}, // SBC A,(HL), C=1
+        {0xA6, 0xF0, 0x0F, 0x00, true, false, true, false}, // AND (HL)
+        {0xAE, 0xAA, 0xAA, 0x00, true, false, false, false}, // XOR (HL)
+        {0xB6, 0x80, 0x01, 0x81, false, false, false, false}, // OR (HL)
+        {0xBE, 0x10, 0x10, 0x10, true, true, false, false}, // CP (HL)
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, test.opcode}, {0x0001, 0x00},
+                     {0xC000, test.memoryValue}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefA() = test.accumulator;
+        reg.getRefH() = 0xC0;
+        reg.getRefL() = 0x00;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto dataRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(dataRead.success && !dataRead.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{0xC000} &&
+                   f.memory.writes.empty() && reg.getRefA() == test.accumulator &&
+                   flags.Z && flags.N && flags.H && flags.C,
+               "ALU (HL) reads its operand before changing A or flags in M2");
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{0xC000, 0x0001} &&
+                   f.memory.writes.empty() && reg.getRefA() == test.expectedAccumulator &&
+                   reg.getRefHL() == 0xC000 && reg.getRefPC() == 2,
+               "ALU (HL) updates A with the next-opcode fetch in M3");
+        expect(flags.Z == test.z && flags.N == test.n && flags.H == test.h &&
+                   flags.C == test.c,
+               "ALU (HL) commits the operation-specific flags at the final phase");
+    }
+}
+
 void testDaaBoundaryCases() {
     struct Case { uint8_t a; bool n; bool h; bool c; uint8_t result; bool z; bool outC; };
     const Case cases[] = {
@@ -1181,6 +1236,7 @@ int main() {
     testBitHlUsesReadAndNextFetchCycles();
     testIncDecHlReadModifyWritePhases();
     testCbHlReadModifyWritePhases();
+    testHlAluReadsBeforeUpdatingAccumulatorAndFlags();
     testDaaBoundaryCases();
     testSpOffsetFlagsAndCycles();
     testLdSpFromHlMcycle();
