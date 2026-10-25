@@ -28,6 +28,12 @@ From the repository root:
 
 GitHub Actions builds the pinned `jiayeli-hualien/gbit` revision, builds LotusGB, runs `make test`, and then runs the GBIT instruction tests. Keep local integration instructions consistent with `.github/workflows/ci.yml`.
 
+## Error handling
+
+- Do not silently swallow unexpected errors or report success after an operation fails. Propagate the failure, report it through the relevant interface/logging boundary, or make the test fail.
+- If a failure is intentionally ignored (for example, an optional frontend capability is unavailable), document why and test the intended fallback. Do not turn exceptions or failed operations into success-looking default values.
+- At C and libretro callback boundaries, catch exceptions before they cross the ABI, log useful context, and set an explicit failure state when execution cannot continue.
+
 ## Documentation
 
 - Prefer an answer-first structure based on the Minto Pyramid Principle: state
