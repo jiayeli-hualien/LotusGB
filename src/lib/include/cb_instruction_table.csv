@@ -16,7 +16,7 @@ SWAP_HL, 3, MemReadIndirectHL, SWAP_MEMVAL_MemWriteIndirectHL, NOP
 SRL, 1, SRL
 SRL_HL, 3, MemReadIndirectHL, SRL_MEMVAL_MemWriteIndirectHL, NOP
 BIT, 1, BIT
-BIT_HL, 3,  MemReadIndirectHL, BIT_MEMVAL, NOP
+BIT_HL, 2,  MemReadIndirectHL, BIT_MEMVAL
 RES, 1, RES
 RES_HL, 3,  MemReadIndirectHL, RES_MEMVAL_MemWriteIndirectHL, NOP
 SET, 1, SET

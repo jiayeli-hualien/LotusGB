@@ -103,6 +103,47 @@ void testCbShiftZeroFlags() {
     }
 }
 
+void testBitHlUsesReadAndNextFetchCycles() {
+    for (unsigned bit = 0; bit < 8; ++bit) {
+        for (const bool bitIsSet : {false, true}) {
+            CpuFixture f{{0x0000, 0xCB},
+                         {0x0001, static_cast<uint8_t>(0x46 + (bit << 3))},
+                         {0x0002, 0x00}, {0xC000, static_cast<uint8_t>(
+                             bitIsSet ? (1U << bit) : 0U)}};
+            Reg reg = f.cpu.getReg();
+            reg.getRefH() = 0xC0;
+            reg.getRefL() = 0x00;
+            setFlags(reg, true, true, false, true);
+            f.cpu.setReg(reg);
+
+            const auto cbOpcode = f.cpu.stepOneCycle();
+            expect(cbOpcode.success && !cbOpcode.fetchedNewInst &&
+                       f.memory.reads == std::vector<uint16_t>{0x0001},
+                   "BIT b,(HL) fetches its CB opcode in the second M-cycle");
+
+            const auto dataRead = f.cpu.stepOneCycle();
+            reg = f.cpu.getReg();
+            GB_Flag flags = reg.getFlag();
+            expect(dataRead.success && !dataRead.fetchedNewInst &&
+                       f.memory.reads == std::vector<uint16_t>{0x0001, 0xC000} &&
+                       f.memory.writes.empty() && flags.Z && flags.N && !flags.H && flags.C,
+                   "BIT b,(HL) reads memory without changing flags or writing it in M3");
+
+            const auto nextOpcode = f.cpu.stepOneCycle();
+            reg = f.cpu.getReg();
+            flags = reg.getFlag();
+            const bool expectedZero = !bitIsSet;
+            expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                       nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads == std::vector<uint16_t>{0x0001, 0xC000, 0x0002} &&
+                       f.memory.writes.empty() && reg.getRefHL() == 0xC000,
+                   "BIT b,(HL) fetches the next opcode after exactly three M-cycles");
+            expect(flags.Z == expectedZero && !flags.N && flags.H && flags.C,
+                   "BIT b,(HL) updates Z/N/H and preserves C at the next-fetch boundary");
+        }
+    }
+}
+
 void testDaaBoundaryCases() {
     struct Case { uint8_t a; bool n; bool h; bool c; uint8_t result; bool z; bool outC; };
     const Case cases[] = {
@@ -1024,6 +1065,7 @@ void testHaltWakeAndHaltBug() {
 
 int main() {
     testCbShiftZeroFlags();
+    testBitHlUsesReadAndNextFetchCycles();
     testDaaBoundaryCases();
     testSpOffsetFlagsAndCycles();
     testLdSpFromHlMcycle();

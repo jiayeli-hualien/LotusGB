@@ -250,10 +250,6 @@ SUB_FUNC_IMPL(BIT_MEMVAL) {
     GB_Flag flag = pReg->getFlag();
     _BIT(&pInstState->memValue, flag, pInstState->opcode);
     pReg->setFlag(flag);
-
-    // The decode table schedules the memory read and BIT operation in separate
-    // M-cycles; the instruction's total cycle count is covered by GBIT checks.
-    pInstState->memMode = MEM_MODE_SLEEP;
 }
 
 static inline void _RES(uint8_t *value, const uint8_t &opcode) {

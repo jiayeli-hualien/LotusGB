@@ -334,7 +334,7 @@ inline const InstructionRow cbInstructions[] = {
     {InstructionId::CB_SRL, "SRL", {subFuncSRL}},
     {InstructionId::CB_SRL_HL, "SRL_HL", {subFuncMemReadIndirectHL, subFuncSRL_MEMVAL_MemWriteIndirectHL, subFuncNOP}},
     {InstructionId::CB_BIT, "BIT", {subFuncBIT}},
-    {InstructionId::CB_BIT_HL, "BIT_HL", {subFuncMemReadIndirectHL, subFuncBIT_MEMVAL, subFuncNOP}},
+    {InstructionId::CB_BIT_HL, "BIT_HL", {subFuncMemReadIndirectHL, subFuncBIT_MEMVAL}},
     {InstructionId::CB_RES, "RES", {subFuncRES}},
     {InstructionId::CB_RES_HL, "RES_HL", {subFuncMemReadIndirectHL, subFuncRES_MEMVAL_MemWriteIndirectHL, subFuncNOP}},
     {InstructionId::CB_SET, "SET", {subFuncSET}},
