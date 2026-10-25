@@ -643,34 +643,59 @@ SUB_FUNC_IMPL(Add_HL_RR_MSB) {
     pReg->setFlag(flag);
 }
 
-static inline uint16_t _add_SP_R8(const uint16_t lhs, const uint8_t offset,
-                                  GB_Flag &flag) {
-    const int signedOffset = offset < 0x80 ? offset : (int)offset - 0x100;
+static inline uint8_t _addSpOffsetLowByte(uint16_t sp, uint8_t offset,
+                                          GB_Flag &flag) {
+    const uint8_t spLow = static_cast<uint8_t>(sp);
+    const unsigned sum = static_cast<unsigned>(spLow) + offset;
     flag.Z = false;
     flag.N = false;
-    flag.H = (lhs & 0x0F) + (offset & 0x0F) > 0x0F;
-    flag.C = (lhs & 0xFF) + offset > 0xFF;
-    return static_cast<uint16_t>(lhs + signedOffset);
+    flag.H = (spLow & 0x0F) + (offset & 0x0F) > 0x0F;
+    flag.C = sum > 0xFF;
+    return static_cast<uint8_t>(sum);
 }
 
-SUB_FUNC_IMPL(Add_SP_R8) {
-    // The decode table preserves the instruction's M-cycle count. The
-    // intermediate ALU substeps are not modeled; the result is committed here.
-    GB_Flag flag;
-    pReg->getFlag(flag);
-    const uint16_t result = _add_SP_R8(pReg->getRefSP(), pInstState->memValue, flag);
-    pReg->getRefSP() = result;
-    pReg->setFlag(flag);
+static inline uint8_t _addSpOffsetHighByte(uint16_t sp, uint8_t offset,
+                                           bool carry) {
+    const uint8_t signExtension = (offset & 0x80) ? 0xFF : 0x00;
+    const unsigned sum = static_cast<unsigned>(sp >> 8) + signExtension + carry;
+    return static_cast<uint8_t>(sum);
 }
 
-SUB_FUNC_IMPL(Add_HL_SP_R8) {
-    // The decode table preserves the instruction's M-cycle count. The
-    // intermediate ALU substeps are not modeled; the result is committed here.
+SUB_FUNC_IMPL(Add_SP_R8_LSB) {
     GB_Flag flag;
     pReg->getFlag(flag);
-    const uint16_t result = _add_SP_R8(pReg->getRefSP(), pInstState->memValue, flag);
-    pReg->getRefHL() = result;
+    pInstState->a16Addr = _addSpOffsetLowByte(
+        pReg->getRefSP(), pInstState->memValue, flag);
     pReg->setFlag(flag);
+    pInstState->memMode = MEM_MODE_SLEEP;
+}
+
+SUB_FUNC_IMPL(Add_SP_R8_MSB) {
+    const bool carry = pReg->getFlag().C;
+    const uint8_t high = _addSpOffsetHighByte(
+        pReg->getRefSP(), pInstState->memValue, carry);
+    pInstState->a16Addr = static_cast<uint16_t>(
+        (static_cast<uint16_t>(high) << 8) | (pInstState->a16Addr & 0x00FF));
+    pInstState->memMode = MEM_MODE_SLEEP;
+}
+
+SUB_FUNC_IMPL(Commit_SP_R8) {
+    pReg->getRefSP() = pInstState->a16Addr;
+}
+
+SUB_FUNC_IMPL(Add_HL_SP_R8_LSB) {
+    GB_Flag flag;
+    pReg->getFlag(flag);
+    pReg->getRefL() = _addSpOffsetLowByte(
+        pReg->getRefSP(), pInstState->memValue, flag);
+    pReg->setFlag(flag);
+    pInstState->memMode = MEM_MODE_SLEEP;
+}
+
+SUB_FUNC_IMPL(Add_HL_SP_R8_MSB) {
+    const bool carry = pReg->getFlag().C;
+    pReg->getRefH() = _addSpOffsetHighByte(
+        pReg->getRefSP(), pInstState->memValue, carry);
 }
 
 SUB_FUNC_IMPL(RLCA) {

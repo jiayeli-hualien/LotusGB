@@ -92,14 +92,17 @@ SUB_FUNC_DECLARE(Halt);
 SUB_FUNC_DECLARE(Stop);
 SUB_FUNC_DECLARE(DI);
 SUB_FUNC_DECLARE(EI);
-// TODO: get correct pipeline spec of 16bit inst
+// TODO: audit remaining 16-bit instruction phases; arithmetic phases are split below.
 // TODO: implment all add & sub only by 8bit adder?
 SUB_FUNC_DECLARE(IncRR);
 SUB_FUNC_DECLARE(DecRR);
 SUB_FUNC_DECLARE(Add_HL_RR_LSB);
 SUB_FUNC_DECLARE(Add_HL_RR_MSB);
-SUB_FUNC_DECLARE(Add_SP_R8);
-SUB_FUNC_DECLARE(Add_HL_SP_R8);
+SUB_FUNC_DECLARE(Add_SP_R8_LSB);
+SUB_FUNC_DECLARE(Add_SP_R8_MSB);
+SUB_FUNC_DECLARE(Commit_SP_R8);
+SUB_FUNC_DECLARE(Add_HL_SP_R8_LSB);
+SUB_FUNC_DECLARE(Add_HL_SP_R8_MSB);
 SUB_FUNC_DECLARE(RLCA);
 SUB_FUNC_DECLARE(RLA);
 SUB_FUNC_DECLARE(RRCA);

@@ -188,17 +188,46 @@ void testSpOffsetFlagsAndCycles() {
                "ADD SP,e8 computes flags from the unsigned offset byte");
     }
 
-    CpuFixture f{{0x0000, 0xF8}, {0x0001, 0x01}, {0x0002, 0x00}};
-    Reg reg = f.cpu.getReg();
-    reg.getRefSP() = 0x00FF;
-    setFlags(reg, true, true, false, false);
-    f.cpu.setReg(reg);
-    expect(f.runUntilNextOpcode() == 3, "LD HL,SP+e8 takes three M-cycles");
-    reg = f.cpu.getReg();
-    expect(reg.getRefHL() == 0x0100, "LD HL,SP+e8 stores the sum in HL");
-    const GB_Flag flags = reg.getFlag();
-    expect(!flags.Z && !flags.N && flags.H && flags.C,
-           "LD HL,SP+e8 shares the unsigned-offset H/C rules");
+    struct HlCase { uint16_t sp; uint8_t offset; uint16_t result; bool h; bool c; };
+    const HlCase hlCases[] = {
+        {0xFFF8, 0x08, 0x0000, true, true},
+        {0x0000, 0xFF, 0xFFFF, false, false},
+        {0x000F, 0x01, 0x0010, true, false},
+        {0x00FF, 0x01, 0x0100, true, true},
+    };
+    for (const auto &test : hlCases) {
+        CpuFixture f{{0x0000, 0xF8}, {0x0001, test.offset}, {0x0002, 0x00}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefSP() = test.sp;
+        reg.getRefHL() = 0xBEEF;
+        setFlags(reg, true, true, false, false);
+        f.cpu.setReg(reg);
+
+        const auto operandRead = f.cpu.stepOneCycle();
+        expect(operandRead.success && !operandRead.fetchedNewInst &&
+                   f.cpu.getReg().getRefHL() == 0xBEEF,
+               "LD HL,SP+e8 reads the immediate before changing HL");
+        const auto lowByte = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        const GB_Flag lowFlags = reg.getFlag();
+        const uint16_t intermediateHL = static_cast<uint16_t>(
+            0xBE00 | static_cast<uint8_t>(test.sp + test.offset));
+        expect(lowByte.success && !lowByte.fetchedNewInst &&
+                   reg.getRefHL() == intermediateHL && reg.getRefSP() == test.sp,
+               "LD HL,SP+e8 updates L in the low-byte M-cycle");
+        expect(!lowFlags.Z && !lowFlags.N && lowFlags.H == test.h &&
+                   lowFlags.C == test.c,
+               "LD HL,SP+e8 exposes its low-byte flags before the high-byte phase");
+
+        const auto highByte = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        const GB_Flag flags = reg.getFlag();
+        expect(highByte.success && highByte.fetchedNewInst &&
+                   reg.getRefHL() == test.result && reg.getRefSP() == test.sp,
+               "LD HL,SP+e8 updates H and fetches in the final M-cycle");
+        expect(!flags.Z && !flags.N && flags.H == test.h && flags.C == test.c,
+               "LD HL,SP+e8 preserves the low-byte H/C results");
+    }
 
     CpuFixture exhaustive{{0x0000, 0xE8}, {0x0001, 0x00}, {0x0002, 0x00}};
     for (unsigned spLow = 0; spLow <= 0xFF; ++spLow) {
@@ -216,8 +245,38 @@ void testSpOffsetFlagsAndCycles() {
             exhaustive.cpu.setReg(input);
             exhaustive.memory.bytes[1] = static_cast<uint8_t>(offset);
             exhaustive.cpu.fetchFirstOpcode();
-            expect(exhaustive.runUntilNextOpcode(4) == 4,
-                   "ADD SP,e8 keeps its four M-cycle duration");
+            exhaustive.memory.reads.clear();
+
+            const auto operandRead = exhaustive.cpu.stepOneCycle();
+            expect(operandRead.success && !operandRead.fetchedNewInst &&
+                       exhaustive.cpu.getReg().getRefSP() == sp &&
+                       exhaustive.memory.reads == std::vector<uint16_t>{1},
+                   "ADD SP,e8 reads its immediate without changing SP");
+
+            const auto lowByte = exhaustive.cpu.stepOneCycle();
+            Reg intermediate = exhaustive.cpu.getReg();
+            const GB_Flag intermediateFlags = intermediate.getFlag();
+            expect(lowByte.success && !lowByte.fetchedNewInst &&
+                       intermediate.getRefSP() == sp &&
+                       !intermediateFlags.Z && !intermediateFlags.N &&
+                       intermediateFlags.H == expectedHalfCarry &&
+                       intermediateFlags.C == expectedCarry,
+                   "ADD SP,e8 computes the low-byte flags before committing SP");
+
+            const auto highByte = exhaustive.cpu.stepOneCycle();
+            intermediate = exhaustive.cpu.getReg();
+            const GB_Flag highFlags = intermediate.getFlag();
+            expect(highByte.success && !highByte.fetchedNewInst &&
+                       intermediate.getRefSP() == sp &&
+                       highFlags.H == expectedHalfCarry &&
+                       highFlags.C == expectedCarry,
+                   "ADD SP,e8 computes the high byte in a separate M-cycle");
+
+            const auto commit = exhaustive.cpu.stepOneCycle();
+            expect(commit.success && commit.fetchedNewInst &&
+                       exhaustive.cpu.getReg().getRefSP() == expectedResult &&
+                       exhaustive.memory.reads == std::vector<uint16_t>({1, 2}),
+                   "ADD SP,e8 commits the result with the next opcode fetch");
 
             Reg output = exhaustive.cpu.getReg();
             const GB_Flag outputFlags = output.getFlag();
