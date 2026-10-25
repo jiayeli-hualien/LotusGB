@@ -52,6 +52,7 @@ hardware specification.
 - [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) — CPU-visible APU and CH3 wave RAM checks.
 - [Blargg test ROM archive](https://gbdev.gg8.se/files/roms/blargg-gb-tests/) — downloadable test packs, including `dmg_sound.zip`.
 - [Blargg DMG sound test sources](https://github.com/crzysdrs/blarggs-test-roms/tree/master/dmg_sound) — assembly sources and expected checksums.
+- [MBC3 RTC test ROM (`rtc3test`)](https://github.com/aaaaaa123456789/rtc3test) — Unlicense test ROM and source; `tests.md` describes register, halt, rollover and timing checks. Its tight sub-second timing tests do not match LotusGB's current whole-second host-clock model, so use it for targeted register behavior rather than as proof of full RTC clock accuracy.
 - [SameSuite APU tests](https://github.com/LIJI32/SameSuite/tree/master/apu) — sample-accurate tests; most use CGB-only PCM registers and do not apply to this DMG core.
 - [MBC3 Bank Tester](https://github.com/EricKirschenmann/MBC3-Tester-gb) — mapper bank diagnostic; its screenshot result does not cover frontend save-file persistence ([test procedure](https://github.com/c-sp/game-boy-test-roms/blob/master/src/howto/mbc3-tester.md)).
 - [mGBA](https://github.com/mgba-emu/mgba) — independent libretro core for cross-core gameplay and frame diagnostics; output is not hardware ground truth.
