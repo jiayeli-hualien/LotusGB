@@ -385,6 +385,52 @@ void testImmediateAluReadsBeforeUpdatingAccumulatorAndFlags() {
     }
 }
 
+void testRegisterAluCompletesInOneCycle() {
+    struct Case {
+        uint8_t opcode;
+        uint8_t accumulator;
+        uint8_t source;
+        bool carryIn;
+        uint8_t expectedAccumulator;
+        bool z;
+        bool n;
+        bool h;
+        bool c;
+    };
+    const Case cases[] = {
+        {0x80, 0xFF, 0x01, false, 0x00, true,  false, true,  true},  // ADD A,B
+        {0x88, 0xFF, 0x00, true,  0x00, true,  false, true,  true},  // ADC A,B
+        {0x90, 0x00, 0x01, false, 0xFF, false, true,  true,  true},  // SUB B
+        {0x98, 0x00, 0x00, true,  0xFF, false, true,  true,  true},  // SBC B
+        {0xA0, 0xF0, 0x0F, false, 0x00, true,  false, true,  false}, // AND B
+        {0xA8, 0xAA, 0xAA, false, 0x00, true,  false, false, false}, // XOR B
+        {0xB0, 0x80, 0x01, false, 0x81, false, false, false, false}, // OR B
+        {0xB8, 0x10, 0x11, false, 0x10, false, true,  true,  true},  // CP B
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, test.opcode}, {0x0001, 0x00}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefA() = test.accumulator;
+        reg.getRefB() = test.source;
+        setFlags(reg, true, true, true, test.carryIn);
+        f.cpu.setReg(reg);
+
+        const auto operation = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        const GB_Flag flags = reg.getFlag();
+        expect(operation.success && operation.fetchedNewInst &&
+                   operation.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() && reg.getRefA() == test.expectedAccumulator &&
+                   reg.getRefPC() == 2,
+               "register ALU applies its result in one cycle with the next opcode fetch");
+        expect(flags.Z == test.z && flags.N == test.n && flags.H == test.h &&
+                   flags.C == test.c,
+               "register ALU commits the operation-specific flags in its single cycle");
+    }
+}
+
 void testIndirectLoadsReadOldAddressAndUpdateAtCorrectPhase() {
     struct Case {
         uint8_t opcode;
@@ -1754,6 +1800,7 @@ int main() {
     testCbHlReadModifyWritePhases();
     testHlAluReadsBeforeUpdatingAccumulatorAndFlags();
     testImmediateAluReadsBeforeUpdatingAccumulatorAndFlags();
+    testRegisterAluCompletesInOneCycle();
     testIndirectLoadsReadOldAddressAndUpdateAtCorrectPhase();
     testIndirectStoresWriteOldAddressAndUpdateAtCorrectPhase();
     testDaaBoundaryCases();
