@@ -465,7 +465,7 @@ void DmgPpu::prepareScanline() {
     prepareObjects((lcdControl & OBJECT_ENABLE_MASK) != 0);
 }
 
-uint8_t DmgPpu::readBackgroundBitplane(bool high) const {
+uint16_t DmgPpu::backgroundBitplaneAddressOffset(bool high) const {
     int tileOffset;
     if (lcdControl & TILE_DATA_SELECT_MASK) {
         tileOffset = mode3.fetcher.tile * 16;
@@ -475,66 +475,64 @@ uint8_t DmgPpu::readBackgroundBitplane(bool high) const {
         tileOffset = 0x1000 + signedIndex * 16;
     }
     // On DMG, each bitplane samples SCY separately, while the tile number
-    // remains latched from the preceding tile-map read.
+    // remains latched from the preceding tile-map data phase. This address is
+    // captured in the bitplane's T1 phase and read from VRAM in T2.
     const uint8_t row = static_cast<uint8_t>(scrollY + ly) & 7;
-    return videoRam[tileOffset + row * 2 + (high ? 1 : 0)];
+    return static_cast<uint16_t>(tileOffset + row * 2 + (high ? 1 : 0));
 }
 
 void DmgPpu::advanceBackgroundFetch() {
-    // Preserve the current six-dot startup and two-dot read/push stages while
-    // making the fetcher phase explicit. OBJ-fetch catch-up is coordinated by
-    // advanceBackgroundFetcherForObjectFetch(); per-dot bus arbitration remains
-    // future work.
+    // Each VRAM fetch has an address phase (T1) and a data phase (T2). Keep
+    // these as explicit per-dot states so OBJ arbitration can later schedule
+    // shared-bus actions without changing the existing fetch cadence.
     auto &fetcher = mode3.fetcher;
     if (fetcher.startupDotsRemaining > 0) {
         --fetcher.startupDotsRemaining;
         return;
     }
 
-    if (fetcher.phaseDots == 0) {
-        switch (fetcher.phase) {
-        case BackgroundFetcherState::Phase::TileMap: {
-            const uint8_t sourceX = static_cast<uint8_t>(
-                (scrollX & 0xF8) + fetcher.tileColumn * 8);
-            const uint8_t sourceY = static_cast<uint8_t>(scrollY + ly);
-            const uint16_t backgroundMap =
-                (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
-            fetcher.tile = videoRam[backgroundMap + (sourceY / 8) * 32 + sourceX / 8];
-            break;
-        }
-        case BackgroundFetcherState::Phase::TileDataLow:
-            fetcher.low = readBackgroundBitplane(false);
-            break;
-        case BackgroundFetcherState::Phase::TileDataHigh:
-            fetcher.high = readBackgroundBitplane(true);
-            break;
-        case BackgroundFetcherState::Phase::Push:
-            // The fetcher waits at Push until the FIFO can accept another row.
-            // The FIFO stores raw color indices; palettes are read at output.
-            if (!mode3.backgroundFifo.pushRow(fetcher.low, fetcher.high))
-                return;
-            break;
-        }
-    }
-
-    ++fetcher.phaseDots;
-    if (fetcher.phaseDots < 2)
-        return;
-
-    fetcher.phaseDots = 0;
     switch (fetcher.phase) {
-    case BackgroundFetcherState::Phase::TileMap:
+    case BackgroundFetcherState::Phase::TileMapAddress: {
+        const uint8_t sourceX = static_cast<uint8_t>(
+            (scrollX & 0xF8) + fetcher.tileColumn * 8);
+        const uint8_t sourceY = static_cast<uint8_t>(scrollY + ly);
+        const uint16_t backgroundMap =
+            (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
+        fetcher.tileMapAddress = static_cast<uint16_t>(
+            backgroundMap + (sourceY / 8) * 32 + sourceX / 8);
+        fetcher.phase = BackgroundFetcherState::Phase::TileMapData;
+        break;
+    }
+    case BackgroundFetcherState::Phase::TileMapData:
+        fetcher.tile = videoRam[fetcher.tileMapAddress];
+        fetcher.phase = BackgroundFetcherState::Phase::TileDataLowAddress;
+        break;
+    case BackgroundFetcherState::Phase::TileDataLowAddress:
+        fetcher.lowPlaneAddress = backgroundBitplaneAddressOffset(false);
         fetcher.phase = BackgroundFetcherState::Phase::TileDataLow;
         break;
     case BackgroundFetcherState::Phase::TileDataLow:
+        fetcher.low = videoRam[fetcher.lowPlaneAddress];
+        fetcher.phase = BackgroundFetcherState::Phase::TileDataHighAddress;
+        break;
+    case BackgroundFetcherState::Phase::TileDataHighAddress:
+        fetcher.highPlaneAddress = backgroundBitplaneAddressOffset(true);
         fetcher.phase = BackgroundFetcherState::Phase::TileDataHigh;
         break;
     case BackgroundFetcherState::Phase::TileDataHigh:
+        fetcher.high = videoRam[fetcher.highPlaneAddress];
         fetcher.phase = BackgroundFetcherState::Phase::Push;
         break;
     case BackgroundFetcherState::Phase::Push:
+        // The FIFO accepts a decoded row only when empty. Keep the second
+        // push-state dot separate from the row write, matching the old cadence.
+        if (!mode3.backgroundFifo.pushRow(fetcher.low, fetcher.high))
+            return;
+        fetcher.phase = BackgroundFetcherState::Phase::AdvanceTileColumn;
+        break;
+    case BackgroundFetcherState::Phase::AdvanceTileColumn:
         ++fetcher.tileColumn;
-        fetcher.phase = BackgroundFetcherState::Phase::TileMap;
+        fetcher.phase = BackgroundFetcherState::Phase::TileMapAddress;
         break;
     }
 }

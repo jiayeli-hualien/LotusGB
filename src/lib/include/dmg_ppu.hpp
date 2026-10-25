@@ -38,15 +38,26 @@ private:
     static constexpr size_t MAX_OBJECTS_PER_SCANLINE = 10;
 
     struct BackgroundFetcherState {
-        enum class Phase : uint8_t { TileMap, TileDataLow, TileDataHigh, Push };
+        enum class Phase : uint8_t {
+            TileMapAddress,
+            TileMapData,
+            TileDataLowAddress,
+            TileDataLow,
+            TileDataHighAddress,
+            TileDataHigh,
+            Push,
+            AdvanceTileColumn
+        };
 
         uint8_t tile = 0;
         uint8_t low = 0;
         uint8_t high = 0;
+        uint16_t tileMapAddress = 0;
+        uint16_t lowPlaneAddress = 0;
+        uint16_t highPlaneAddress = 0;
         uint16_t tileColumn = 0;
         uint8_t startupDotsRemaining = 6;
-        uint8_t phaseDots = 0;
-        Phase phase = Phase::TileMap;
+        Phase phase = Phase::TileMapAddress;
     };
 
     struct BackgroundFifo {
@@ -259,7 +270,7 @@ private:
     void renderPixel(size_t screenX, uint8_t backgroundColorIndex,
                      const ObjectPixel &objectPixel);
     void advanceBackgroundFetch();
-    uint8_t readBackgroundBitplane(bool high) const;
+    uint16_t backgroundBitplaneAddressOffset(bool high) const;
     void prepareObjects(bool includeFetchPenalties);
     void readObjectTilePlane(ObjectFetchEvent &event, bool high) const;
     void decodeObjectTileRow(ObjectFetchEvent &event) const;

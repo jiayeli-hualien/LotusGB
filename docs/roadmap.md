@@ -16,8 +16,9 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   observable fetch behavior at a time. The expanded PPU timing group passes
   14/14; do not add a global HALT delay to address PPU timing cases. The
   selected `m3_scx_high_5_bits` image still has 84 differing pixels in one
-  tile column on sprite-affected lines. Mode 3 now has named BG fetch phases
-  and separate 16-pixel BG/OBJ FIFOs. During a timed OBJ fetch, BG fetching
+  tile column on sprite-affected lines. Mode 3 now has explicit per-dot BG
+  address (T1) and data (T2) phases, separate FIFO-push/tile-advance states,
+  and 16-pixel BG/OBJ FIFOs. During a timed OBJ fetch, BG fetching
   advances until it reaches Push or the BG FIFO becomes non-empty, then waits;
   a row is pushed only when the BG FIFO is empty. The public regression
   `testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels` checks that a
@@ -34,9 +35,12 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   stopping at Push or a non-empty FIFO, while SameBoy's current source waits
   for both its high-data T2 state and a non-empty FIFO before two more fetcher
   advances. Copying that predicate into the coarse scheduler failed the
-  existing SCX-during-OBJ regression, so first represent fetcher bus phases and
-  OBJ ordering per dot, then design a DMG-observable case for the competing
-  hypotheses. Treat the new SCY regression as the Pan Docs hypothesis, not
+  existing SCX-during-OBJ regression. BG address/data phases are now explicit,
+  but OBJ events and shared-bus ordering are still coarse; next represent OBJ
+  bus actions per dot, then design a DMG-observable case for the competing
+  hypotheses. `make test`, the 11-ROM Mooneye PPU/interrupt group, and the six
+  selected Mealybug comparisons preserve their previous results after the BG
+  phase refactor. Treat the SCY regression as the Pan Docs hypothesis, not
   hardware verification. Keep the Mealybug mismatch diagnostic instead of
   tuning to it, and preserve line, STAT, and pixel regressions; see the
   [measured diagnosis](ppu-scrolling.md#bounded-investigation-of-the-remaining-scx-pixels).
@@ -55,8 +59,11 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   line/STAT behavior, including BG fetch catch-up during OBJ fetch and the
   empty-FIFO row-push condition. OAM descriptors and event durations are
   prepared at line start, while OBJ plane reads happen at separate coarse
-  event boundaries; exact per-dot bus reads and BG/OBJ FIFO arbitration remain
-  active work. Do not add a polymorphic class for each hardware phase.
+  event boundaries. The BG fetcher has explicit tile-map/bitplane T1 address
+  and T2 data states, then separate FIFO-push and tile-column-advance states;
+  this preserves the existing tested output and timing. Exact per-dot OBJ bus
+  reads and BG/OBJ FIFO arbitration remain active work. Do not add a
+  polymorphic class for each hardware phase.
 - **Scheduled after the current PPU visual checkpoint: documentation narrative
   pass.** Reorganize the top-level README and `docs/*.md` around the Minto
   Pyramid Principle: lead with the conclusion/current status, group the main

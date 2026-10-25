@@ -9,6 +9,11 @@ regression checks that a SCY write during this pause affects bitplanes not yet
 fetched. This catch-up predicate follows Pan Docs; SameBoy uses a different
 fetcher-state boundary, so the regression records a hypothesis rather than
 hardware-verified behavior.
+The BG fetcher now exposes per-dot tile-map/bitplane address (T1) and data (T2)
+phases, followed by separate FIFO-push and tile-column-advance phases. This
+refactor preserves the current visible output and tested timing; OBJ events are
+still coarse, precomputed stalls, so shared BG/OBJ bus arbitration is not yet
+modeled.
 `m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
 hash, so this step does not claim better visual accuracy. `make test`, the
 selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
@@ -21,13 +26,15 @@ A fresh rebuild of the current tree produced these selected Mealybug `DMG-blob`
 pixel differences: BGP 3,642; SCX-low 540; SCX-high 84; SCY 8,334; BG-map
 change 1,082; BG-enable change 2,210. All six remain **FAIL** against the
 reference. The repeatable report is under
-`build/test-roms/mealybug-pillow-recheck/report.json`; it records archive SHA-256
+`build/test-roms/mealybug-explicit-fetcher-t1t2/report.json`; it records the
+archive SHA-256
 `e2fa6ca96ad48bd64d7297fda042db04c15117a730da3bbd590f139e89b150bd` and runner
 SHA-256 `0fb0d7eab45a076278b8d39ef660b3aee738ea6aec9d432af5fa34cf0df4dacb`.
 The linked `liblotusgb.so` SHA-256 for this run is
-`a6687a61dc1f942ac7cb5c1cdc3eaf66239c19f4a8e8454f8a9b56993c60ad88`.
+`19f3575a41d4107c1117b57843fd5ea832b9a732d2c6283ceafe1c262dff7e4e`.
 Earlier counts in the dated investigation sections are historical outputs
-from prior builds; use this fresh run as the current image baseline.
+from prior builds; use this fresh run as the current image baseline. The new
+report has the same six counts as the preceding baseline.
 
 ## Scope
 
@@ -59,6 +66,24 @@ settle this behavior without a hardware-backed observation. Use focused tests
 for each observable transition rather than updating scroll coordinates
 independently on every emitted pixel, which would bypass fetch latency and
 cached tile data.
+
+### Explicit BG fetch address/data phases (2026-10-25)
+
+Replace the two-dot phase counter with per-dot states for tile-map address and
+data, low-plane address and data, high-plane address and data, FIFO push, and
+tile-column advance. T1 captures the VRAM offset; T2 reads VRAM. This exposes
+the BG bus phases for later arbitration without changing the tested visible
+output or current Mode 3 cadence. The OBJ schedule is still a list of
+scanline-prepared coarse events; this does not implement shared per-dot bus
+arbitration or establish a new hardware timing result.
+
+`make test` and the selected 11-ROM Mooneye PPU/interrupt group pass. The six
+selected Mealybug counts remain unchanged (3,642 / 540 / 84 / 8,334 / 1,082 /
+2,210), and the six shade captures plus all 12 rendered/difference PNGs are
+byte-identical to the preceding run. See the fresh report and build hashes in
+[Current status](#current-status). The public PPU suite exercises fetch-visible
+scroll, FIFO, pixel, and line boundaries; it does not inspect these private
+state names directly.
 
 SameBoy is a useful independent implementation for comparing fetcher state and
 ordering, but it is not hardware ground truth. A LotusGB result can be more
