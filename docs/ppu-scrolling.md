@@ -484,6 +484,34 @@ therefore strong cross-implementation evidence, but these results do not
 independently establish the physical DMG behavior. Keep the reference image as
 a provisional target; do not copy a core's timing rule solely to match it.
 
+SameBoy and Gambatte are separate codebases with different PPU implementations:
+[SameBoy's display loop](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c)
+advances a fetcher state machine during display ticks, while
+[Gambatte's PPU](https://github.com/libretro/gambatte-libretro/blob/master/libgambatte/src/video/ppu.cpp)
+uses timed PPU state callbacks. Their agreement is useful cross-checking, but
+it cannot rule out a shared interpretation error or an error in the emulator
+reference image. Keep their frames as provisional comparison targets; hardware
+evidence remains the authority for deciding a disputed dot-level behavior.
+
+## Global CPU bus-phase experiment (2026-10-25)
+
+Moving every CPU bus transaction earlier is not a viable fix for this image.
+I built temporary copies with the peripheral advance set to 1, 2, or 3 T-cycles
+before each bus transaction, then captured `m3_scx_high_5_bits` at the same
+`LD B,B` marker. The current 4-T-cycle phase has 84 differing pixels in rows
+8–22 and 64–86. The 3-T-cycle phase has the same count and affected row bands.
+The 1- and 2-T-cycle phases reduce the count to 45, but move the differences to
+rows 128–142; that is a displaced error, not an improvement in total behavior.
+
+Each early-phase variant also fails the existing
+`testSystemClockAdvancesDevicesToCpuBusPhaseBeforeTransaction` regression,
+which requires clocked components to reach the M-cycle boundary before the CPU
+transaction. The current 4-T-cycle build passes the full unit-test suite.
+These global phase variants were isolated in `/tmp` and were not kept in the
+repository. This rules out changing the system-wide bus phase as a general fix;
+it does not settle any narrower PPU register timing detail. Keep the clock
+phase and continue investigating the OBJ/BG fetch ordering within Mode 3.
+
 ## Localizing the remaining SCX mismatch (2026-10-25)
 
 The differing pixels come from BG tile-fetch timing, not layer composition.
