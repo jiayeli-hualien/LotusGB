@@ -6,7 +6,9 @@ Mode 3 has separate 16-pixel BG and OBJ FIFOs. During OBJ arbitration, the BG
 fetcher advances until it reaches Push or the BG FIFO has pixels queued, then
 waits; a new BG row is pushed only when that FIFO is empty. A public PPU
 regression checks that a SCY write during this pause affects bitplanes not yet
-fetched.
+fetched. This catch-up predicate follows Pan Docs; SameBoy uses a different
+fetcher-state boundary, so the regression records a hypothesis rather than
+hardware-verified behavior.
 `m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
 hash, so this step does not claim better visual accuracy. `make test`, the
 selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
@@ -29,21 +31,22 @@ pass through a 16-pixel FIFO, with separate tile-map and bitplane sampling
 phases. OBJ pixels use a separate 16-pixel FIFO and are overlaid when a coarse
 OBJ fetch event completes. Window pixels and OBJ descriptors are prepared at
 Mode 3 entry; OBJ bitplanes are sampled at separate points during the coarse
-fetch event. During an OBJ event the BG fetcher advances only until it reaches
-Push while the BG FIFO already contains pixels; push waits for an empty FIFO.
-Object timing remains a simplified, scanline-prepared schedule rather than
-bus-driven BG/OBJ fetcher arbitration.
+fetch event. During an OBJ event, the current model stops BG catch-up at Push
+or when the BG FIFO becomes non-empty; push waits for an empty FIFO. This is
+the Pan Docs interpretation, while SameBoy waits for a different fetcher-state
+boundary. Object timing remains a simplified, scanline-prepared schedule
+rather than bus-driven BG/OBJ fetcher arbitration.
 
 [Pan Docs scrolling](https://gbdev.io/pandocs/Scrolling.html) describes repeated
 scroll-register sampling during tile fetch, with SCX's low three bits sampled
 at scanline start. DMG also samples SCY separately for the tile bitplanes.
-[Pan Docs Pixel FIFO](https://github.com/gbdev/pandocs/blob/master/src/pixel_fifo.md)
-describes separate BG/OBJ FIFOs and an OBJ fetch sequence that advances the BG
-fetcher. It also marks some sprite timing details as unconfirmed, so use it as
-the behavior model while treating exact dot alignment as a question to verify.
-Use focused tests for each observable transition rather than updating scroll
-coordinates independently on every emitted pixel, which would bypass fetch
-latency and cached tile data.
+[Pan Docs Pixel FIFO](https://gbdev.io/pandocs/pixel_fifo.html) describes
+separate BG/OBJ FIFOs and one OBJ-fetch catch-up sequence. Because SameBoy's
+source uses a different wait boundary, neither description is enough to
+settle this behavior without a hardware-backed observation. Use focused tests
+for each observable transition rather than updating scroll coordinates
+independently on every emitted pixel, which would bypass fetch latency and
+cached tile data.
 
 SameBoy is a useful independent implementation for comparing fetcher state and
 ordering, but it is not hardware ground truth. A LotusGB result can be more

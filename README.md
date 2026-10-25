@@ -123,7 +123,9 @@ ordinary opcodes and 256/256 CB opcodes.
 ### Game Boy development and hardware
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html))
-- [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs and the result-marker protocol used by the local runner
+- [Nintendo Game Boy Programming Manual v1.1](https://archive.org/details/GameBoyProgManVer1.1) — archived programmer-facing manual for CPU, display functions, sound, and mapper interfaces; it does not describe all internal PPU fetch timing
+- [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr) — detailed community hardware reference with model/revision differences; the project describes itself as incomplete
+- [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs; the README documents real-hardware verification and model-specific results
 - [Tobu Tobu Girl](https://tangramgames.itch.io/tobutobugirl) — freely downloadable DMG homebrew; source code is MIT and game assets are CC BY 4.0. An MBC1 action-game smoke target; Big2Small remains the required manual save-persistence check.
 - [Tobu Tobu Girl source and build settings](https://github.com/SimonLarsen/tobutobugirl) — build declares MBC1 + RAM + battery, 16 ROM banks, and one RAM bank.
 - [Pan Docs: Serial Data Transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_(Link_Cable).html) — SB/SC, disconnected input, internal/external clocks and completion IRQ
@@ -131,6 +133,9 @@ ordinary opcodes and 256/256 CB opcodes.
 - [Pan Docs: OAM DMA Transfer](https://gbdev.io/pandocs/OAM_DMA_Transfer.html) — FF46 transfers, duration, HRAM execution, and bus conflicts
 - [Pan Docs: Timer obscure behaviour](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html) — divider edges, overflow delay, and TIMA/TMA reload-write interactions
 - [Pan Docs: Rendering](https://gbdev.io/pandocs/Rendering.html) — PPU modes, pixel output, and mode 3 timing penalties
+- [Pan Docs: Pixel FIFO](https://gbdev.io/pandocs/pixel_fifo.html) — BG/OBJ FIFO stages and the documented sprite-fetch interaction; detailed timing still needs independent validation
+- [Nitty Gritty Gameboy Cycle Timing](http://blog.kevtris.org/blogfiles/Nitty%20Gritty%20Gameboy%20VRAM%20Timing.txt) — Kevin Horton's preliminary logic-analyzer notes on video memory access timing, especially BG/window fetches
+- [GBEDG PPU guide](https://github.com/Ashiepaws/GBEDG/blob/master/ppu/index.md) — approachable overview of the DMG PPU pipeline; use as a secondary explanation when timing details disagree
 - [Mealybug Tearoom PPU test ROMs](https://github.com/mattcurrie/mealybug-tearoom-tests) — DMG screenshot tests for PPU register changes during mode 3 (MIT)
 - [Pan Docs: Scrolling](https://gbdev.io/pandocs/Scrolling.html) — SCX/SCY behavior, including scanline sampling of SCX fine-scroll bits
 - [Pan Docs: Audio Registers](https://gbdev.io/pandocs/Audio_Registers.html) — APU register behavior and wave RAM access
@@ -141,12 +146,12 @@ ordinary opcodes and 256/256 CB opcodes.
 - [MBC3 Bank Tester](https://github.com/EricKirschenmann/MBC3-Tester-gb) — mapper bank diagnostic; its 4 MiB ROM and screenshot-based result check do not cover frontend save-file persistence ([test procedure](https://github.com/c-sp/game-boy-test-roms/blob/master/src/howto/mbc3-tester.md))
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior, and observed hardware differences
 - [SameBoy APU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/apu.c) — implementation comparison for channel timing and LFSR behavior
+- [SameBoy PPU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c) — fetcher/FIFO implementation comparison; not a hardware specification
 - [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) — CPU-visible register, length, trigger, and CH3 wave RAM behavior tests
 - [Blargg test ROM archive](https://gbdev.gg8.se/files/roms/blargg-gb-tests/) — public downloadable test packs, including `dmg_sound.zip`
 - [Blargg DMG sound test sources (reproducible mirror)](https://github.com/crzysdrs/blarggs-test-roms/tree/master/dmg_sound) — assembly sources and expected checksums for individual tests
 - [Game Boy Noise Test](https://github.com/not-chciken/gb-noise-test) — interactive CH4 settings and presets with DMG-01 audio reference recordings (Apache-2.0)
 - [SameSuite APU tests](https://github.com/LIJI32/SameSuite/tree/master/apu) — sample-accurate APU tests; most rely on CGB-only PCM registers and do not apply to a DMG core
-- [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr)
 - [Building a Game Boy emulator](https://wwssllabcd.github.io/2021/02/08/how-to-build-a-gameboy-emulator-1/)
 - [Game Boy emulator notes (HackMD)](https://hackmd.io/@sysprog/BJvOWzFqv)
 - [Game Boy emulator notes by RinHizakura](https://hackmd.io/@RinHizakura/BJ6HoW29v)
