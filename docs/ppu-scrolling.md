@@ -76,10 +76,17 @@ provides hardware photographs. Do not describe the reference PNGs as exact
 raw hardware captures. Sources and images remain in the external checkout.
 
 ```sh
+python3 -m venv build/visual-venv
+build/visual-venv/bin/python -m pip install -r requirements-visual-test.txt
 make -C src/lib ppu-frame-runner build_dir="$PWD/build"
-# Pillow is required only for this optional image-comparison script.
-python3 tools/run_mealybug_tests.py --suite-dir /path/to/mealybug-tearoom-tests
+build/visual-venv/bin/python tools/run_mealybug_tests.py \
+  --suite-dir /path/to/mealybug-tearoom-tests
 ```
+
+If `python3 -m venv` reports that `ensurepip` is unavailable, install the
+distribution's venv package first (on Ubuntu, `sudo apt install python3.10-venv`).
+Pillow is only required for this optional image-comparison workflow; it is not
+part of the core build or required CI.
 
 The runner captures 160×144 shade indices at the fixed-ROM0 `LD B,B` reporting
 marker. Its PC convention matches the CPU's next-opcode prefetch. This is
