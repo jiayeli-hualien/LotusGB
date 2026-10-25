@@ -86,6 +86,21 @@ uint16_t& commonPairRef(Reg &reg, unsigned pairIndex) {
     }
 }
 
+uint8_t& byteRegisterRef(Reg &reg, unsigned index) {
+    switch (index) {
+        case 0: return reg.getRefB();
+        case 1: return reg.getRefC();
+        case 2: return reg.getRefD();
+        case 3: return reg.getRefE();
+        case 4: return reg.getRefH();
+        case 5: return reg.getRefL();
+        case 7: return reg.getRefA();
+        default:
+            expect(false, "test selects a valid 8-bit register");
+            return reg.getRefA();
+    }
+}
+
 void testCbShiftZeroFlags() {
     for (const auto &[opcode, carryIn, label] : {
              std::tuple<uint8_t, bool, const char *>(0x20, false, "SLA B"),
@@ -695,6 +710,48 @@ void testJpHlFetchesAtTargetInSameMcycle() {
            "JP HL leaves flags unchanged while redirecting the fetch");
 }
 
+void testImmediate8BitLoadPhases() {
+    const uint8_t loadOpcodes[] = {0x06, 0x0E, 0x16, 0x1E, 0x26, 0x2E, 0x3E};
+    const unsigned targetIndices[] = {0, 1, 2, 3, 4, 5, 7};
+    const uint8_t targetOldValues[] = {0x11, 0x22, 0x33, 0x44, 0xC0, 0x00, 0x77};
+
+    for (size_t i = 0; i < std::size(loadOpcodes); ++i) {
+        CpuFixture f{{0x0000, loadOpcodes[i]}, {0x0001, 0xA6}, {0x0002, 0x00}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefB() = 0x11;
+        reg.getRefC() = 0x22;
+        reg.getRefD() = 0x33;
+        reg.getRefE() = 0x44;
+        reg.getRefH() = 0xC0;
+        reg.getRefL() = 0x00;
+        reg.getRefA() = 0x77;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto immediateRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(immediateRead.success && !immediateRead.fetchedNewInst &&
+                   immediateRead.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() &&
+                   byteRegisterRef(reg, targetIndices[i]) == targetOldValues[i] &&
+                   reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+               "LD r,n reads the immediate in M2 before committing the target or changing flags");
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>({0x0001, 0x0002}) &&
+                   f.memory.writes.empty() &&
+                   byteRegisterRef(reg, targetIndices[i]) == 0xA6 &&
+                   reg.getRefPC() == 3 && flags.Z && flags.N && flags.H && flags.C,
+               "LD r,n commits the target register with the following opcode fetch");
+    }
+}
+
 void testImmediate16BitLoadPhases() {
     const uint8_t loadPairOpcodes[] = {0x01, 0x11, 0x21, 0x31};
     for (unsigned pairIndex = 0; pairIndex < 4; ++pairIndex) {
@@ -1118,21 +1175,6 @@ void testStopDecodeAndHaltIdle() {
 void testMemoryAccessesOccurWithinTheirMCycle() {
     expect(T_CYCLES_PER_M_CYCLE == 4, "one CPU machine cycle contains four T-cycles");
 
-    auto byteRegisterRef = [](Reg &reg, unsigned index) -> uint8_t& {
-        switch (index) {
-            case 0: return reg.getRefB();
-            case 1: return reg.getRefC();
-            case 2: return reg.getRefD();
-            case 3: return reg.getRefE();
-            case 4: return reg.getRefH();
-            case 5: return reg.getRefL();
-            case 7: return reg.getRefA();
-            default:
-                expect(false, "test selects a valid 8-bit register");
-                return reg.getRefA();
-        }
-    };
-
     const unsigned targetIndices[] = {0, 1, 2, 3, 4, 5, 7};
     const uint8_t targetOldValues[] = {0x11, 0x22, 0x33, 0x44, 0xC0, 0x00, 0x77};
     const uint8_t loadOpcodes[] = {0x46, 0x4E, 0x56, 0x5E, 0x66, 0x6E, 0x7E};
@@ -1496,6 +1538,7 @@ int main() {
     testSpOffsetFlagsAndCycles();
     testLdSpFromHlMcycle();
     testJpHlFetchesAtTargetInSameMcycle();
+    testImmediate8BitLoadPhases();
     testImmediate16BitLoadPhases();
     testSixteenBitArithmeticMcyclePhases();
     testPushBusOrder();
