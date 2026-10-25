@@ -436,30 +436,40 @@ improvement or regression. Exact event dot positions and per-dot bus behavior
 still need independent evidence; next investigate a specific sprite/fetch
 boundary without changing the established total stall schedule.
 
-## SameBoy cross-core comparison (2026-10-25)
+## Cross-core comparison for the remaining SCX pixels (2026-10-25)
 
-The Mealybug `m3_scx_high_5_bits` ROM was also run through the locally
-installed SameBoy libretro core (version 0.14.7) using the headless libretro
-runner. The core reported DMG mode. Its final RGB frame was identical at runs
-of 120, 180, and 240 frames; the 120-frame output matches the Mealybug
-`DMG-blob` reference image pixel-for-pixel. LotusGB's capture still differs
-from that image in 84 pixels, all within x=16–23 and y=8–86. This confirms
-that the current LotusGB output differs from both the test reference and
-SameBoy on the affected sprite-aligned tile column; it does not prove which
-implementation matches physical DMG hardware.
+The Mealybug `m3_scx_high_5_bits` ROM was run through the locally installed
+SameBoy libretro core (0.14.7) and Gambatte libretro core (v0.5.0) using
+headless frontends based on `libretro_rom_runner`, with no input. Each core's
+final image was identical across runs of 120, 180, and 240 frames. SameBoy's
+120-frame RGB image matches the Mealybug `DMG-blob` reference pixel-for-pixel.
+Gambatte uses
+RGB565, so its three output colors were normalized to the corresponding
+black/gray/white reference levels; its image also matches pixel-for-pixel
+after that palette normalization. LotusGB's capture still differs from the
+reference in 84 pixels, all within x=16–23 and y=8–86. Agreement between two
+cores and the Mealybug reference raises confidence that this is a real LotusGB
+output discrepancy, but it does not establish which behavior matches physical
+DMG hardware.
 
-The local comparison artifacts are under the ignored `build/test-roms/`
+The stock `libretro_rom_runner` rejected Gambatte because it does not advertise
+`RETRO_ENVIRONMENT_GET_CAN_DUPE` or accept RGB565. A temporary runner under
+`/tmp` added those frontend capabilities; no repository code was changed for
+the comparison. The local artifacts are under the ignored `build/test-roms/`
 directory. The ROM SHA-256 is
 `423db91af0f87547ae46690044ef760481f7005033ffc61bd69875b7df96139b`; the
 reference PNG SHA-256 is
-`21750dfddb16dbbc084032f5361a82782685441eaca93bf67249049bb14b3a1b`; and
-the SameBoy core SHA-256 is
-`5f3cbc610d1de2c04d41319b6678bece8c5bc78b1067436e1f6d9d440b89b56e`. The
-stable SameBoy RGB output SHA-256 is
+`21750dfddb16dbbc084032f5361a82782685441eaca93bf67249049bb14b3a1b`. The
+SameBoy core SHA-256 is
+`5f3cbc610d1de2c04d41319b6678bece8c5bc78b1067436e1f6d9d440b89b56e`, and its
+stable RGB frame SHA-256 is
 `7c7e883096c6d23ade3e8347e333c5f2c14c7c34a1e581d2cd0dc2e406e74845`. The
-core attempted to load `./dmg_boot.bin`, which was unavailable to this runner;
-record this as a local boot-path limitation. No Gambatte `.so` was present in
-the checked RetroArch core directory, so this checkpoint compares one other
-core. Mealybug's expected image remains an emulator reference, not a hardware
-capture; use this result to localize the discrepancy, not to copy SameBoy's
-fetch rule without further evidence.
+Gambatte core SHA-256 is
+`6fc0b2119b9ddfcf705566a720cf823f1834bb5726de45052a468af324de1463`, and its
+stable RGB frame SHA-256 is
+`d0ee4da13fc2fc48b8fc340f499f33d86089fb5abfec1a307f00f2d5569a36d9`. The
+SameBoy run attempted to load `./dmg_boot.bin`, which was unavailable to the
+runner; Gambatte reported no system directory and loaded the plain ROM. These
+are local boot-path limitations. Mealybug's expected image remains an emulator
+reference, not a hardware capture; use this result to localize the discrepancy,
+not to copy either core's fetch rule without further evidence.
