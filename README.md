@@ -126,6 +126,7 @@ ordinary opcodes and 256/256 CB opcodes.
 - [Nintendo Game Boy Programming Manual v1.1](https://archive.org/details/GameBoyProgManVer1.1) — archived programmer-facing manual for CPU, display functions, sound, and mapper interfaces; it does not describe all internal PPU fetch timing
 - [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr) — detailed community hardware reference with model/revision differences; the project describes itself as incomplete
 - [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — open-source Game Boy hardware acceptance ROMs; the README documents real-hardware verification and model-specific results
+- [Game Boy test ROM collection](https://github.com/c-sp/game-boy-test-roms) — pinned v7.0 bundle includes the DMG screenshot reference for Mooneye's manual `sprite_priority` check
 - [Tobu Tobu Girl](https://tangramgames.itch.io/tobutobugirl) — freely downloadable DMG homebrew; source code is MIT and game assets are CC BY 4.0. An MBC1 action-game smoke target; Big2Small remains the required manual save-persistence check.
 - [Tobu Tobu Girl source and build settings](https://github.com/SimonLarsen/tobutobugirl) — build declares MBC1 + RAM + battery, 16 ROM banks, and one RAM bank.
 - [Pan Docs: Serial Data Transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_(Link_Cable).html) — SB/SC, disconnected input, internal/external clocks and completion IRQ
@@ -147,6 +148,7 @@ ordinary opcodes and 256/256 CB opcodes.
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior, and observed hardware differences
 - [SameBoy APU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/apu.c) — implementation comparison for channel timing and LFSR behavior
 - [SameBoy PPU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c) — fetcher/FIFO implementation comparison; not a hardware specification
+- [mGBA](https://github.com/mgba-emu/mgba) — independent libretro core used for cross-core gameplay/frame diagnostics; its output is a comparison point, not a hardware specification
 - [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) — CPU-visible register, length, trigger, and CH3 wave RAM behavior tests
 - [Blargg test ROM archive](https://gbdev.gg8.se/files/roms/blargg-gb-tests/) — public downloadable test packs, including `dmg_sound.zip`
 - [Blargg DMG sound test sources (reproducible mirror)](https://github.com/crzysdrs/blarggs-test-roms/tree/master/dmg_sound) — assembly sources and expected checksums for individual tests

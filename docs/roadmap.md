@@ -25,8 +25,15 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   SCY write during the pause affects bitplanes not yet fetched. The SCX-during-
   OBJ regression still passes. `make test` and the selected 11-ROM
   Mooneye PPU/interrupt run pass; Big2Small and Canyon Racer each complete
-  3,600-frame callback smoke runs. The Mealybug image retains its prior hash
-  and 84 differences. Allowing a row push into a non-empty FIFO raised the
+  3,600-frame callback smoke runs. SameBoy and mGBA repeat the Canyon Racer
+  profile deterministically and match LotusGB's final SRAM; after palette
+  normalization their frames differ from LotusGB in 4,006 and 5,426 pixels.
+  This cross-core evidence has no hardware image oracle (see
+  [the comparison record](homebrew-check.md#three-core-raster-diagnostic-2026-10-25)).
+  Mooneye's manual `sprite_priority` DMG reference now matches exactly; this
+  checks scene-level sprite priority, not the unresolved fetch timing.
+  The Mealybug image retains its prior hash and 84 differences. Allowing a row
+  push into a non-empty FIFO raised the
   mismatch to 150, so the empty-FIFO rule was retained. These checks support
   the current model but do not prove exact hardware timing. OAM descriptors
   and event durations are still prepared at scanline entry. OBJ low/high plane
@@ -43,10 +50,17 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   points are explicit, but OAM/OBJ durations and joint fetch scheduling remain
   coarse. See the
   [candidate scan and follow-up](ppu-scrolling.md#timed-objbg-vram-read-candidate-scan-and-follow-up-2026-10-25).
-  Next design a DMG-observable case for the competing catch-up and bus-order
-  hypotheses before changing event durations. Treat the SCY regression as the
-  Pan Docs hypothesis, not
-  hardware verification. Keep the Mealybug mismatch diagnostic instead of
+  A public PPU-interface case now distinguishes the catch-up predicates: a
+  temporary 330-case sweep (five sprite X positions, write dots 80–145) found
+  11 outputs where a stricter high-plane-data-plus-nonempty-FIFO diagnostic
+  alternative differs from the current rule; the existing X=11, dot-100 SCY
+  regression is one of them. This predicate-only alternative is not a faithful
+  port of SameBoy's full schedule, and the selected Mealybug SCX-high image
+  stays at 84 differing pixels under both. Keep the regression as a guard for
+  the documented Pan Docs hypothesis, not as hardware verification. Before
+  changing the catch-up boundary or event durations, seek an independent DMG
+  measurement or a ROM result with a hardware-backed expected image. Keep the
+  Mealybug mismatch diagnostic instead of
   tuning to it, and preserve line, STAT, and pixel regressions; see the
   [measured diagnosis](ppu-scrolling.md#bounded-investigation-of-the-remaining-scx-pixels).
   Do not tune the global fetch phase or add CGB FIFO behavior to chase a lower

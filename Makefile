@@ -4,7 +4,7 @@ src_dir := $(CURDIR)/src
 build_dir := $(CURDIR)/build
 
 # PHONY: non file targets
-.PHONY: build test test-roms test-mooneye test-homebrew clean
+.PHONY: build test test-roms test-mooneye test-mooneye-visual test-homebrew clean
 
 TEST_ROM_DIR ?= ../test-roms/dmg_sound
 TEST_ROM_FRAMES ?= 1200
@@ -17,6 +17,8 @@ HOMEBREW_SAVE ?=
 MOONEYE_GROUP ?= ppu
 MOONEYE_OUTPUT_DIR ?= $(build_dir)/test-roms/mooneye$(if $(filter ppu,$(MOONEYE_GROUP)),,-$(MOONEYE_GROUP))
 MOONEYE_SUITE_DIR ?= ../test-roms/mooneye
+MOONEYE_VISUAL_SUITE_DIR ?= ../test-roms/game-boy-test-roms-v7.0/mooneye-test-suite
+VISUAL_TEST_PYTHON ?= $(build_dir)/visual-venv/bin/python
 
 all: build
 
@@ -51,6 +53,13 @@ test-mooneye:
 		--suite-dir "$(MOONEYE_SUITE_DIR)" \
 		--group "$(MOONEYE_GROUP)" \
 		--output-dir "$(MOONEYE_OUTPUT_DIR)"
+
+test-mooneye-visual:
+	$(MAKE) -C $(src_dir)/lib ppu-frame-runner build_dir=$(build_dir)
+	$(VISUAL_TEST_PYTHON) tools/run_mooneye_sprite_priority.py \
+		--runner "$(build_dir)/ppu_frame_runner" \
+		--suite-dir "$(MOONEYE_VISUAL_SUITE_DIR)" \
+		--output-dir "$(build_dir)/test-roms/mooneye-sprite-priority"
 
 test-homebrew:
 	$(MAKE) -C $(src_dir)/libretro build rom-test-runner build_dir=$(build_dir)

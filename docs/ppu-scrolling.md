@@ -18,6 +18,10 @@ unobservable in the current renderer; OBJ plane reads remain separate coarse
 actions, but the shared bus schedule is still unresolved. Across all 31
 Mealybug PPU ROMs whose assembly mentions OBJ or sprites, the candidate and
 prior `a7b3139` shade buffers were byte-identical.
+The public SCY-during-OBJ regression also distinguishes the current catch-up
+predicate from a stricter predicate-only alternative in a bounded 330-case
+sweep. The selected `m3_scx_high_5_bits` image remains at 84 differing pixels
+under both; neither result verifies hardware behavior.
 `m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
 hash, so this step does not claim better visual accuracy. `make test`, the
 selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
@@ -150,6 +154,24 @@ logs and `report.json`. The report hashes the archive, each selected ROM and
 reference image, and runner executable. The output directory must remain
 outside the reference checkout. This optional external suite is not in CI;
 `make test` includes ROM-free capture-protocol probes instead.
+
+### Mooneye manual sprite-priority image (2026-10-25)
+
+The Mooneye `manual-only/sprite_priority` ROM is a screenshot-based check; the
+Mooneye test documentation marks `manual-only` tests for manual verification
+on real hardware. The c-sp v7.0 test-ROM bundle provides a DMG expected image
+and specifies the common grayscale palette. LotusGB's captured DMG frame
+matches that image exactly (0 of 23,040 differing pixels). This validates the
+sprite-priority composition in this scene; it does not check the BG/OBJ fetch
+catch-up boundary or prove exact per-dot sprite timing.
+
+Run it with `make test-mooneye-visual`. The ROM and reference image must be in
+the external c-sp bundle at `mooneye-test-suite/manual-only/`; output images,
+runner log, and hashes are written under
+`build/test-roms/mooneye-sprite-priority/`. The ROM and image are not
+committed. Sources: [Mooneye test-suite structure and manual-only checks](https://github.com/Gekkio/mooneye-test-suite#suite-structure),
+[c-sp screenshot procedure and palette](https://github.com/c-sp/game-boy-test-roms/blob/master/src/howto/mooneye-test-suite.md#screenshot-based-tests),
+and the [v7.0 bundle](https://github.com/c-sp/game-boy-test-roms/releases/tag/v7.0).
 
 ### Initial result (2026-10-24)
 
@@ -688,8 +710,29 @@ not yet represent each fetcher's T1/T2 bus actions or the object transaction
 ordering as explicit per-dot states. Do not port that predicate into the
 coarse model in isolation.
 
-The next implementation experiment should represent the BG/OBJ arbitration
-and register sampling as one per-dot state transition, then compare the full
-selected visual set and existing PPU regressions. Keep that experiment
-separate until it improves the known SCX rows without moving differences into
-currently matching rows.
+### Catch-up predicate discriminator (2026-10-25)
+
+A temporary PPU public-interface sweep varied five transparent-object X
+positions (1, 3, 8, 11, 16) and the SCY-write dot from 80 through 145. A
+diagnostic alternative continued BG catch-up until high-plane data had been
+read and the BG FIFO was non-empty. It changed visible pixels in 11 of the 330
+cases. The existing `testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels`
+case (X=11, line 1 dot 100) is one of those discriminators: the two schedules
+produce different colors in the next BG tile. This confirms the regression is
+observable through the public PPU framebuffer.
+
+The alternative changes only the stopping predicate. It does not implement
+SameBoy's full per-dot object schedule or its additional fetcher advances, and
+it retains LotusGB's precomputed object-event duration. The selected Mealybug
+`m3_scx_high_5_bits` ROM still differs in 84 pixels under both models, so it
+does not decide this catch-up question. A temporary hand-coded ROM attempt
+also failed to land the SCY write at a confirmed PPU dot; its matching outputs
+across cores are not valid evidence. No hardware behavior was inferred and no
+production timing was changed.
+
+Keep the existing regression as a guard for the current Pan Docs
+interpretation, not as proof of DMG hardware behavior. Before changing this
+predicate or OBJ event durations, get an independently measured DMG result or
+a ROM with a hardware-backed expected image. The temporary diagnostic scan
+was discarded; do not add more tests that simply encode the same unverified
+assumption.

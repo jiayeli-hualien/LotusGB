@@ -129,3 +129,43 @@ images were inspected. Artifacts are under `build/canyon-check/`, including
 `scy-comparison.png` (old left/new right) and its JSON metadata. This demonstrates
 the actual game's sensitivity to SCY sampling; it does not establish that
 every current pixel is correct.
+
+### Three-core raster diagnostic (2026-10-25)
+
+LotusGB, SameBoy and mGBA completed the same 3,600-frame Canyon Racer input
+profile and produced identical 8 KiB SRAM contents. SameBoy and mGBA each
+produced byte-identical final frames on repeat runs. After mapping mGBA's four
+output colors to the corresponding DMG shade levels, LotusGB differs from
+SameBoy in 4,006 pixels and from mGBA in 5,426 pixels; SameBoy and mGBA differ
+in 2,980 pixels. The broad gameplay scene is the same, but the raster output
+differs across all three implementations.
+
+The common SRAM SHA-256 is
+`9df428893828811063e37b31114bbd24a4977d97cd4c72797a5bebb1a48bbc9e`. The ROM
+SHA-256 is
+`19f57c1fefe8ebdcef0ff9def783246a6618d4b822b5c44188a1e9c1e7448c51`; input
+script SHA-256 is
+`b0e199174963c1fae245255a3c1a9af3a289d1de09355d81eefb2cdab8cb5796`. The
+SameBoy, mGBA and LotusGB core SHA-256 values are, respectively,
+`5f3cbc610d1de2c04d41319b6678bece8c5bc78b1067436e1f6d9d440b89b56e`,
+`c840f305825d07c9bec7a6ec18841073c4b539fd234f73623474f97c507f1cdc`, and
+`33ea67640003f33ef447ecfe9607cda63206fd74a30af36451df0ade234afc44`.
+Normalized SameBoy, mGBA and LotusGB frame SHA-256 values are
+`d4978737e5cafbcb6dfc601f0f27958f687556929dc6a2c683d740ffb50a9fa6`,
+`fb51bb29082af55853fb9bb071381c42e2f746a78938401666badbe82b9b2762`, and
+`bc0b5fec05a88c49a82959933122dc1993a90e78678295583dfac4951dc39c22`.
+
+Artifacts and a machine-readable report are under
+`build/test-roms/canyon-racer-crosscore/`, including the side-by-side image and
+per-core difference maps. mGBA requested RGB565, so this local comparison used
+a temporary frontend runner that accepts 0RGB1555/RGB565 as well as XRGB8888;
+its source is kept with the ignored local artifacts and was not added to the
+project test tooling. mGBA's observed palette levels were
+mapped as `(0,0,0) → (0,0,0)`, `(82,81,82) → (85,85,85)`,
+`(173,170,173) → (170,170,170)`, and `(255,251,255) → (255,255,255)` before
+counting pixels.
+
+This is cross-implementation evidence that the runs reached comparable game
+progress, not hardware ground truth. No expected screenshot from a physical
+DMG is available, so keep these differences diagnostic rather than treating
+them as a pass/fail accuracy score.
