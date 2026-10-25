@@ -323,6 +323,46 @@ void testConditionalBranchAndCallBusTiming() {
            "CALL reads the target then fetches from it after stack writes");
 }
 
+void testConditionalRetStackTiming() {
+    CpuFixture taken{{0x0000, 0xC0}, {0x0001, 0x00},
+                     {0xC000, 0x34}, {0xC001, 0x12}, {0x1234, 0x00}}; // RET NZ
+    Reg reg = taken.cpu.getReg();
+    reg.getRefSP() = 0xC000;
+    setFlags(reg, false, false, false, false);
+    taken.cpu.setReg(reg);
+
+    expect(!taken.cpu.stepOneCycle().fetchedNewInst &&
+               taken.cpu.getReg().getRefSP() == 0xC000 && taken.memory.reads.empty(),
+           "taken RET cc checks its condition before reading the stack");
+    expect(!taken.cpu.stepOneCycle().fetchedNewInst &&
+               taken.cpu.getReg().getRefSP() == 0xC001 &&
+               taken.memory.reads == std::vector<uint16_t>{0xC000},
+           "taken RET cc reads the low byte and increments SP in the same M-cycle");
+    expect(!taken.cpu.stepOneCycle().fetchedNewInst &&
+               taken.cpu.getReg().getRefSP() == 0xC002 &&
+               taken.memory.reads == std::vector<uint16_t>{0xC000, 0xC001},
+           "taken RET cc reads the high byte and increments SP in the same M-cycle");
+    expect(!taken.cpu.stepOneCycle().fetchedNewInst &&
+               taken.cpu.getReg().getRefPC() == 0x1234,
+           "taken RET cc installs the popped PC in its internal M-cycle");
+    expect(taken.cpu.stepOneCycle().fetchedNewInst &&
+               taken.cpu.getReg().getRefPC() == 0x1235 &&
+               taken.memory.reads == std::vector<uint16_t>{0xC000, 0xC001, 0x1234},
+           "taken RET cc fetches the next opcode from the return address after five M-cycles");
+
+    CpuFixture untaken{{0x0000, 0xC0}, {0x0001, 0x00}, {0xC000, 0x34}}; // RET NZ
+    reg = untaken.cpu.getReg();
+    reg.getRefSP() = 0xC000;
+    setFlags(reg, true, false, false, false);
+    untaken.cpu.setReg(reg);
+    expect(!untaken.cpu.stepOneCycle().fetchedNewInst,
+           "untaken RET cc performs its initial condition cycle");
+    expect(untaken.cpu.stepOneCycle().fetchedNewInst &&
+               untaken.cpu.getReg().getRefSP() == 0xC000 &&
+               untaken.memory.reads == std::vector<uint16_t>{0x0001},
+           "untaken RET cc skips stack reads and finishes in two M-cycles");
+}
+
 void testCallAndRstStackPointerMcycleTiming() {
     CpuFixture call{{0x0000, 0xCD}, {0x0001, 0x34}, {0x0002, 0x12},
                     {0x1234, 0x00}};
@@ -677,6 +717,7 @@ int main() {
     testPushBusOrder();
     testPopRetAndJumpBusTiming();
     testConditionalBranchAndCallBusTiming();
+    testConditionalRetStackTiming();
     testCallAndRstStackPointerMcycleTiming();
     testStopDecodeAndHaltIdle();
     testMemoryAccessesOccurWithinTheirMCycle();
