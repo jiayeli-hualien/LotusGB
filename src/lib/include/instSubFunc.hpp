@@ -26,9 +26,7 @@ SUB_FUNC_DECLARE(LD_R_MEMVAL);
 // TODO: get the realy GB pipeline, is there a LD_A_MEMVAL?
 SUB_FUNC_DECLARE(LD_A_MEMVAL);
 SUB_FUNC_DECLARE(LD_R16_MEM16);
-// TODO: check why LD SP, HL need 2 cycles
 SUB_FUNC_DECLARE(LD_SP_HL);
-// TODO: check why don't PUSH Reg16 start writing from the first cycle?
 SUB_FUNC_DECLARE(PUSH_LD_A16_RR);
 SUB_FUNC_DECLARE(POP_LD_R16_MEM16);
 SUB_FUNC_DECLARE(MemReadPC);
@@ -92,7 +90,7 @@ SUB_FUNC_DECLARE(Halt);
 SUB_FUNC_DECLARE(Stop);
 SUB_FUNC_DECLARE(DI);
 SUB_FUNC_DECLARE(EI);
-// TODO: audit remaining 16-bit instruction phases; arithmetic phases are split below.
+// 16-bit arithmetic operations use separate subfunctions for their M-cycle phases.
 // TODO: implment all add & sub only by 8bit adder?
 SUB_FUNC_DECLARE(IncRR);
 SUB_FUNC_DECLARE(DecRR);

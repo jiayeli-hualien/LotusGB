@@ -296,6 +296,35 @@ void testSpOffsetFlagsAndCycles() {
     }
 }
 
+void testLdSpFromHlMcycle() {
+    CpuFixture f{{0x0000, 0xF9}, {0x0001, 0x00}};
+    Reg reg = f.cpu.getReg();
+    reg.getRefSP() = 0x1234;
+    reg.getRefHL() = 0xABCD;
+    setFlags(reg, true, true, true, true);
+    f.cpu.setReg(reg);
+
+    const auto transfer = f.cpu.stepOneCycle();
+    reg = f.cpu.getReg();
+    const GB_Flag transferFlags = reg.getFlag();
+    expect(transfer.success && !transfer.fetchedNewInst &&
+               reg.getRefSP() == 0xABCD && reg.getRefHL() == 0xABCD &&
+               reg.getRefPC() == 1 && f.memory.reads.empty(),
+           "LD SP,HL transfers the pair during its internal M-cycle without bus access");
+    expect(transferFlags.Z && transferFlags.N && transferFlags.H && transferFlags.C,
+           "LD SP,HL leaves flags unchanged during the transfer");
+
+    const auto nextFetch = f.cpu.stepOneCycle();
+    reg = f.cpu.getReg();
+    const GB_Flag finalFlags = reg.getFlag();
+    expect(nextFetch.success && nextFetch.fetchedNewInst &&
+               reg.getRefSP() == 0xABCD && reg.getRefPC() == 2 &&
+               f.memory.reads == std::vector<uint16_t>{1},
+           "LD SP,HL fetches the next opcode after its two-cycle sequence");
+    expect(finalFlags.Z && finalFlags.N && finalFlags.H && finalFlags.C,
+           "LD SP,HL preserves flags across the following opcode fetch");
+}
+
 void testSixteenBitArithmeticMcyclePhases() {
     const uint8_t incOpcodes[] = {0x03, 0x13, 0x23, 0x33};
     const uint8_t decOpcodes[] = {0x0B, 0x1B, 0x2B, 0x3B};
@@ -900,6 +929,7 @@ int main() {
     testCbShiftZeroFlags();
     testDaaBoundaryCases();
     testSpOffsetFlagsAndCycles();
+    testLdSpFromHlMcycle();
     testSixteenBitArithmeticMcyclePhases();
     testPushBusOrder();
     testPopRetAndJumpBusTiming();
