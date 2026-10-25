@@ -33,8 +33,10 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   remain open. The BG catch-up predicate is unresolved: Pan Docs describes
   stopping at Push or a non-empty FIFO, while SameBoy's current source waits
   for both its high-data T2 state and a non-empty FIFO before two more fetcher
-  advances. Next, design a DMG-observable case that can distinguish these
-  sequences; treat the new SCY regression as the Pan Docs hypothesis, not
+  advances. Copying that predicate into the coarse scheduler failed the
+  existing SCX-during-OBJ regression, so first represent fetcher bus phases and
+  OBJ ordering per dot, then design a DMG-observable case for the competing
+  hypotheses. Treat the new SCY regression as the Pan Docs hypothesis, not
   hardware verification. Keep the Mealybug mismatch diagnostic instead of
   tuning to it, and preserve line, STAT, and pixel regressions; see the
   [measured diagnosis](ppu-scrolling.md#bounded-investigation-of-the-remaining-scx-pixels).

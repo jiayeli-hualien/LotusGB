@@ -583,6 +583,14 @@ writes SCY during an OBJ fetch and checks the unread BG bitplanes. This broad
 catch-up change was discarded; the test is evidence that the BG wait rule
 cannot be changed independently of the bitplane sampling behavior.
 
+A second, short-lived candidate used a SameBoy-inspired stop condition (high-data
+T2 plus a non-empty BG FIFO), followed by two fetcher advances in LotusGB's
+coarse scheduler. It failed `testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles`
+and was reverted. This does not test SameBoy's timing faithfully: LotusGB does
+not yet represent each fetcher's T1/T2 bus actions or the object transaction
+ordering as explicit per-dot states. Do not port that predicate into the
+coarse model in isolation.
+
 The next implementation experiment should represent the BG/OBJ arbitration
 and register sampling as one per-dot state transition, then compare the full
 selected visual set and existing PPU regressions. Keep that experiment
