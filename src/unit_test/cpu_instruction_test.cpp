@@ -325,6 +325,25 @@ void testLdSpFromHlMcycle() {
            "LD SP,HL preserves flags across the following opcode fetch");
 }
 
+void testJpHlFetchesAtTargetInSameMcycle() {
+    CpuFixture f{{0x0000, 0xE9}, {0x1234, 0x00}};
+    Reg reg = f.cpu.getReg();
+    reg.getRefHL() = 0x1234;
+    setFlags(reg, true, true, true, true);
+    f.cpu.setReg(reg);
+
+    const auto jump = f.cpu.stepOneCycle();
+    reg = f.cpu.getReg();
+    const GB_Flag flags = reg.getFlag();
+    expect(jump.success && jump.fetchedNewInst &&
+               jump.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               reg.getRefHL() == 0x1234 && reg.getRefPC() == 0x1235 &&
+               f.memory.reads == std::vector<uint16_t>{0x1234},
+           "JP HL fetches the target opcode in the jump's M-cycle");
+    expect(flags.Z && flags.N && flags.H && flags.C,
+           "JP HL leaves flags unchanged while redirecting the fetch");
+}
+
 void testSixteenBitArithmeticMcyclePhases() {
     const uint8_t incOpcodes[] = {0x03, 0x13, 0x23, 0x33};
     const uint8_t decOpcodes[] = {0x0B, 0x1B, 0x2B, 0x3B};
@@ -930,6 +949,7 @@ int main() {
     testDaaBoundaryCases();
     testSpOffsetFlagsAndCycles();
     testLdSpFromHlMcycle();
+    testJpHlFetchesAtTargetInSameMcycle();
     testSixteenBitArithmeticMcyclePhases();
     testPushBusOrder();
     testPopRetAndJumpBusTiming();

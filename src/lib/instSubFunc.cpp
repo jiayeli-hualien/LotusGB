@@ -492,7 +492,6 @@ SUB_FUNC_IMPL(LD_PC_MEM16) {
 }
 
 SUB_FUNC_IMPL(LD_PC_HL) {
-    // TODO: handle timing if execute/fetch are parallel
     pReg->getRefPC() = pReg->getRefHL();
 }
 
