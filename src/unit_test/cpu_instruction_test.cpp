@@ -618,13 +618,32 @@ void testInterruptEntryPriorityStackAndVector() {
     f.interrupts.write(0xFFFF, 0xFF);
     f.interrupts.write(0xFF0F, 0x85); // VBlank and timer requests; VBlank wins.
     const size_t readsBeforeInterrupt = f.memory.reads.size();
-    for (unsigned cycle = 0; cycle < 5; ++cycle) {
-        const auto result = f.cpu.stepOneCycle();
-        expect(result.success && result.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
-               "each interrupt-entry machine cycle advances four T-cycles");
-        expect(result.fetchedNewInst == (cycle == 4),
-               "interrupt entry fetches the vector opcode only in its fifth cycle");
-    }
+    const auto cycle0 = f.cpu.stepOneCycle();
+    expect(cycle0.success && cycle0.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               !cycle0.fetchedNewInst && f.cpu.getReg().getRefSP() == 0xC100 &&
+               f.memory.writes.empty(),
+           "interrupt entry rewinds PC in its first internal M-cycle without touching SP");
+    const auto cycle1 = f.cpu.stepOneCycle();
+    expect(cycle1.success && cycle1.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               !cycle1.fetchedNewInst && f.cpu.getReg().getRefSP() == 0xC0FF &&
+               f.memory.writes.empty(),
+           "interrupt entry performs its first implied SP decrement before stack writes");
+    const auto cycle2 = f.cpu.stepOneCycle();
+    expect(cycle2.success && cycle2.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               !cycle2.fetchedNewInst && f.cpu.getReg().getRefSP() == 0xC0FE &&
+               f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{{0xC0FF, 0x00}},
+           "interrupt entry writes PC high and performs its second SP decrement together");
+    const auto cycle3 = f.cpu.stepOneCycle();
+    expect(cycle3.success && cycle3.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               !cycle3.fetchedNewInst && f.cpu.getReg().getRefSP() == 0xC0FE &&
+               f.cpu.getReg().getRefPC() == 0x0040 &&
+               f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+                   {0xC0FF, 0x00}, {0xC0FE, 0x01}},
+           "interrupt entry writes PC low and installs the vector in the same M-cycle");
+    const auto cycle4 = f.cpu.stepOneCycle();
+    expect(cycle4.success && cycle4.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               cycle4.fetchedNewInst,
+           "interrupt entry fetches the vector opcode in its fifth cycle");
 
     reg = f.cpu.getReg();
     expect(!f.cpu.getIME(), "interrupt entry disables IME");

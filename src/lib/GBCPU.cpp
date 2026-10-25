@@ -73,22 +73,23 @@ RetStepOneCycle GBCPU::stepInterruptCycle() {
 
     switch (interruptSequenceCycle) {
         case 0:
+            break;
         case 1:
+            --reg.getRefSP();
             break;
         case 2: {
             uint16_t &sp = reg.getRefSP();
+            const uint16_t highByteAddress = sp;
             --sp;
-            memory.write(sp, static_cast<uint8_t>(reg.getRefPC() >> 8));
+            memory.write(highByteAddress, static_cast<uint8_t>(reg.getRefPC() >> 8));
             break;
         }
         case 3: {
-            uint16_t &sp = reg.getRefSP();
-            --sp;
-            memory.write(sp, static_cast<uint8_t>(reg.getRefPC() & 0xFF));
+            memory.write(reg.getRefSP(), static_cast<uint8_t>(reg.getRefPC() & 0xFF));
+            reg.getRefPC() = activeInterruptVector;
             break;
         }
         case 4:
-            reg.getRefPC() = activeInterruptVector;
             doFetchNextOp();
             ret.fetchedNewInst = true;
             interruptSequenceActive = false;

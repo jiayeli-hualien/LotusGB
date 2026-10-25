@@ -19,6 +19,8 @@ hardware specification.
 
 - [Pan Docs: Interrupts](https://gbdev.io/pandocs/Interrupts.html) and [HALT](https://gbdev.io/pandocs/halt.html) — interrupt requests and CPU behavior.
 - [Pan Docs: OAM Corruption Bug](https://gbdev.io/pandocs/OAM_Corruption_Bug.html) — DMG OAM effects from memory access and 16-bit IDU operations, including implicit SP decrements during stack pushes.
+- [Game Boy CPU internals](https://gist.github.com/SonoSooS/c0055300670d678b5ae8433e20bea595) — reverse-engineered SM83 micro-operation schedules for stack and interrupt entry; useful as a timing reference, not a substitute for hardware verification.
+- [GB Interceptor bus observations](https://there.oughta.be/a/game-boy-capture-cartridge) — cartridge-bus traces show interrupt stack writes and model-specific address-bus differences.
 - [Pan Docs: Timer obscure behaviour](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html) — divider edges, overflow delay and TIMA/TMA reload writes.
 - [Pan Docs: OAM DMA Transfer](https://gbdev.io/pandocs/OAM_DMA_Transfer.html) — transfer timing and bus conflicts.
 - [Pan Docs: Serial Data Transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_%28Link_Cable%29.html) — SB/SC, internal/external clocks and completion interrupt.
