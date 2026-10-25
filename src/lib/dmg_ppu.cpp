@@ -341,8 +341,7 @@ void DmgPpu::advanceMode3Pipeline() {
             --mode3.windowPenaltyDotsRemaining;
             outputStalled = true;
         } else if (mode3.objectFetcher.active()) {
-            advanceBackgroundFetcherForObjectFetch();
-            advanceActiveObjectFetch();
+            advanceFetchersDuringObjectFetch();
             outputStalled = true;
         } else {
             while (mode3.nextObjectFetchEvent < mode3.objectFetchEventCount &&
@@ -362,8 +361,7 @@ void DmgPpu::advanceMode3Pipeline() {
                 mode3.activeObjectFetchEvent = mode3.nextObjectFetchEvent;
                 mode3.objectFetcher.begin(event);
                 ++mode3.nextObjectFetchEvent;
-                advanceBackgroundFetcherForObjectFetch();
-                advanceActiveObjectFetch();
+                advanceFetchersDuringObjectFetch();
                 outputStalled = true;
                 break;
             }
@@ -395,21 +393,30 @@ void DmgPpu::advanceBackgroundFetcherForObjectFetch() {
     advanceBackgroundFetch();
 }
 
-void DmgPpu::advanceActiveObjectFetch() {
+void DmgPpu::advanceFetchersDuringObjectFetch() {
+    // A timed OBJ plane read owns this dot's VRAM access; BG catch-up can use
+    // the dot only when the OBJ fetcher has no plane-read action.
+    if (advanceActiveObjectFetch() == ObjectFetcherState::FetchAction::None)
+        advanceBackgroundFetcherForObjectFetch();
+}
+
+DmgPpu::ObjectFetcherState::FetchAction DmgPpu::advanceActiveObjectFetch() {
     ObjectFetchEvent &event =
         mode3.objectFetchEvents[mode3.activeObjectFetchEvent];
-    switch (mode3.objectFetcher.advanceOneDot()) {
+    const auto action = mode3.objectFetcher.advanceOneDot();
+    switch (action) {
     case ObjectFetcherState::FetchAction::None:
         break;
     case ObjectFetcherState::FetchAction::ReadLowPlane:
         readObjectTilePlane(event, false);
-        break;
+        return action;
     case ObjectFetcherState::FetchAction::ReadHighPlane:
         readObjectTilePlane(event, true);
         decodeObjectTileRow(event);
         mode3.objectFifo.overlay(event);
-        break;
+        return action;
     }
+    return action;
 }
 
 void DmgPpu::emitMode3Pixel() {

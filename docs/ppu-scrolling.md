@@ -13,7 +13,10 @@ The BG fetcher now exposes per-dot tile-map/bitplane address (T1) and data (T2)
 phases, followed by separate FIFO-push and tile-column-advance phases. This
 refactor preserves the current visible output and tested timing; OBJ events are
 still coarse, precomputed stalls, so shared BG/OBJ bus arbitration is not yet
-modeled.
+fully modeled. Timed OBJ plane reads now take the modeled VRAM slot for their
+dot, and BG catch-up advances only on OBJ-fetch dots without a plane read. This
+is an explicit scheduling hypothesis; current ROM comparisons do not
+distinguish it from the prior behavior.
 `m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
 hash, so this step does not claim better visual accuracy. `make test`, the
 selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
@@ -26,12 +29,12 @@ A fresh rebuild of the current tree produced these selected Mealybug `DMG-blob`
 pixel differences: BGP 3,642; SCX-low 540; SCX-high 84; SCY 8,334; BG-map
 change 1,082; BG-enable change 2,210. All six remain **FAIL** against the
 reference. The repeatable report is under
-`build/test-roms/mealybug-explicit-fetcher-t1t2/report.json`; it records the
+`build/test-roms/mealybug-vram-arbitration-candidate/report.json`; it records the
 archive SHA-256
 `e2fa6ca96ad48bd64d7297fda042db04c15117a730da3bbd590f139e89b150bd` and runner
 SHA-256 `0fb0d7eab45a076278b8d39ef660b3aee738ea6aec9d432af5fa34cf0df4dacb`.
 The linked `liblotusgb.so` SHA-256 for this run is
-`19f3575a41d4107c1117b57843fd5ea832b9a732d2c6283ceafe1c262dff7e4e`.
+`976c3b15979988a4b934c949db9318762805fa518b46bd3144409a554957edf9`.
 Earlier counts in the dated investigation sections are historical outputs
 from prior builds; use this fresh run as the current image baseline. The new
 report has the same six counts as the preceding baseline.
@@ -84,6 +87,23 @@ byte-identical to the preceding run. See the fresh report and build hashes in
 [Current status](#current-status). The public PPU suite exercises fetch-visible
 scroll, FIFO, pixel, and line boundaries; it does not inspect these private
 state names directly.
+
+### Timed OBJ VRAM slot (2026-10-25)
+
+The existing OBJ fetcher already advances once per dot through alignment,
+setup, and transfer stages, with low/high plane reads at separate boundaries.
+Route those read actions through one arbitration point: an OBJ plane read uses
+the modeled VRAM slot for that dot, so the BG catch-up fetch does not also
+advance; on other OBJ-fetch dots it keeps the existing Push/FIFO predicate.
+This avoids scheduling two PPU VRAM reads on one modeled dot. The policy is a
+working DMG bus model, not a hardware-verified timing result.
+
+`make test` and the selected 11-ROM Mooneye PPU/interrupt group pass. All six
+selected Mealybug shade captures and their rendered/difference PNGs are
+byte-identical to the previous build. The selected ROMs therefore do not
+exercise a case that distinguishes this policy; a hardware-backed or otherwise
+independent observable test is still needed before claiming improved accuracy.
+The fresh report is `build/test-roms/mealybug-vram-arbitration-candidate/report.json`.
 
 SameBoy is a useful independent implementation for comparing fetcher state and
 ordering, but it is not hardware ground truth. A LotusGB result can be more

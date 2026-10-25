@@ -29,18 +29,22 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   and 84 differences. Allowing a row push into a non-empty FIFO raised the
   mismatch to 150, so the empty-FIFO rule was retained. These checks support
   the current model but do not prove exact hardware timing. OAM descriptors
-  and event durations are still
-  prepared at scanline entry; per-dot OBJ bus reads and BG/OBJ arbitration
-  remain open. The BG catch-up predicate is unresolved: Pan Docs describes
+  and event durations are still prepared at scanline entry. OBJ low/high plane
+  reads now occupy separate dot actions, and a read action reserves the modeled
+  VRAM slot so BG catch-up does not also advance on that dot. The selected ROMs
+  show no output change, so this scheduling rule remains a hypothesis. The BG
+  catch-up predicate is unresolved: Pan Docs describes
   stopping at Push or a non-empty FIFO, while SameBoy's current source waits
   for both its high-data T2 state and a non-empty FIFO before two more fetcher
   advances. Copying that predicate into the coarse scheduler failed the
-  existing SCX-during-OBJ regression. BG address/data phases are now explicit,
-  but OBJ events and shared-bus ordering are still coarse; next represent OBJ
-  bus actions per dot, then design a DMG-observable case for the competing
-  hypotheses. `make test`, the 11-ROM Mooneye PPU/interrupt group, and the six
-  selected Mealybug comparisons preserve their previous results after the BG
-  phase refactor. Treat the SCY regression as the Pan Docs hypothesis, not
+  existing SCX-during-OBJ regression. BG address/data and OBJ plane-read
+  actions are now explicit per-dot steps, with OBJ taking the modeled VRAM
+  slot on read dots; OAM/OBJ durations and joint fetch scheduling are still
+  coarse. Current tests preserve their previous results, including
+  byte-identical Mealybug captures, but do not distinguish this bus policy.
+  Next design a DMG-observable case for the competing catch-up and bus-order
+  hypotheses before changing event durations. Treat the SCY regression as the
+  Pan Docs hypothesis, not
   hardware verification. Keep the Mealybug mismatch diagnostic instead of
   tuning to it, and preserve line, STAT, and pixel regressions; see the
   [measured diagnosis](ppu-scrolling.md#bounded-investigation-of-the-remaining-scx-pixels).
