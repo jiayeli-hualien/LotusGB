@@ -474,6 +474,16 @@ are local boot-path limitations. Mealybug's expected image remains an emulator
 reference, not a hardware capture; use this result to localize the discrepancy,
 not to copy either core's fetch rule without further evidence.
 
+I checked the Mealybug checkout at `70e88fb`: `photos/DMG-blob` has no
+`m3_scx_high_5_bits` photo. The corresponding photos are only for CPU CGB C
+and CPU CGB D, so they cannot verify this DMG result. The project's
+[README](https://github.com/mattcurrie/mealybug-tearoom-tests#usage) says its
+expected screenshots come from the author's emulator and describes the
+real-device photos as blurry. The SameBoy, Gambatte and Mealybug agreement is
+therefore strong cross-implementation evidence, but these results do not
+independently establish the physical DMG behavior. Keep the reference image as
+a provisional target; do not copy a core's timing rule solely to match it.
+
 ## Localizing the remaining SCX mismatch (2026-10-25)
 
 The differing pixels come from BG tile-fetch timing, not layer composition.
