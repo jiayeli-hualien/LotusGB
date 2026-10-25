@@ -144,6 +144,119 @@ void testBitHlUsesReadAndNextFetchCycles() {
     }
 }
 
+void testIncDecHlReadModifyWritePhases() {
+    struct Case {
+        uint8_t opcode;
+        uint8_t input;
+        uint8_t expected;
+        bool z;
+        bool n;
+        bool h;
+    };
+    const Case cases[] = {
+        {0x34, 0x0F, 0x10, false, false, true},
+        {0x34, 0xFF, 0x00, true, false, true},
+        {0x35, 0x10, 0x0F, false, true, true},
+        {0x35, 0x01, 0x00, true, true, false},
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, test.opcode}, {0x0001, 0x00},
+                     {0xC000, test.input}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefH() = 0xC0;
+        reg.getRefL() = 0x00;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto dataRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(dataRead.success && !dataRead.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{0xC000} &&
+                   f.memory.writes.empty() && f.memory.bytes[0xC000] == test.input &&
+                   flags.Z && flags.N && flags.H && flags.C,
+               "INC/DEC (HL) reads data without writing or updating flags in M2");
+
+        const auto dataWrite = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(dataWrite.success && !dataWrite.fetchedNewInst &&
+                   f.memory.writes ==
+                       std::vector<std::pair<uint16_t, uint8_t>>{{0xC000, test.expected}} &&
+                   f.memory.bytes[0xC000] == test.expected &&
+                   flags.Z == test.z && flags.N == test.n && flags.H == test.h && flags.C,
+               "INC/DEC (HL) writes the result and updates flags together in M3");
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{0xC000, 0x0001} &&
+                   f.memory.writes.size() == 1,
+               "INC/DEC (HL) fetches the next opcode after three M-cycles");
+    }
+}
+
+void testCbHlReadModifyWritePhases() {
+    struct Case {
+        uint8_t opcode;
+        uint8_t input;
+        uint8_t expected;
+        bool changesFlags;
+    };
+    const Case cases[] = {
+        {0x06, 0x81, 0x03, true}, // RLC (HL)
+        {0x86, 0xFF, 0xFE, false}, // RES 0,(HL)
+        {0xC6, 0xFE, 0xFF, false}, // SET 0,(HL)
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, 0xCB}, {0x0001, test.opcode}, {0x0002, 0x00},
+                     {0xC000, test.input}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefH() = 0xC0;
+        reg.getRefL() = 0x00;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto cbOpcode = f.cpu.stepOneCycle();
+        expect(cbOpcode.success && !cbOpcode.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty(),
+               "CB read-modify-write fetches its extended opcode before touching (HL)");
+
+        const auto dataRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(dataRead.success && !dataRead.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001, 0xC000} &&
+                   f.memory.writes.empty() && f.memory.bytes[0xC000] == test.input &&
+                   flags.Z && flags.N && flags.H && flags.C,
+               "CB read-modify-write reads (HL) before its ALU/write phase");
+
+        const auto dataWrite = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(dataWrite.success && !dataWrite.fetchedNewInst &&
+                   f.memory.writes ==
+                       std::vector<std::pair<uint16_t, uint8_t>>{{0xC000, test.expected}} &&
+                   f.memory.bytes[0xC000] == test.expected,
+               "CB read-modify-write commits the transformed byte in M4");
+        if (test.changesFlags) {
+            expect(!flags.Z && !flags.N && !flags.H && flags.C,
+                   "CB rotate updates flags during the memory write phase");
+        } else {
+            expect(flags.Z && flags.N && flags.H && flags.C,
+                   "CB RES/SET preserve flags during the memory write phase");
+        }
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001, 0xC000, 0x0002} &&
+                   f.memory.writes.size() == 1,
+               "CB read-modify-write fetches the next opcode after four M-cycles");
+    }
+}
+
 void testDaaBoundaryCases() {
     struct Case { uint8_t a; bool n; bool h; bool c; uint8_t result; bool z; bool outC; };
     const Case cases[] = {
@@ -1066,6 +1179,8 @@ void testHaltWakeAndHaltBug() {
 int main() {
     testCbShiftZeroFlags();
     testBitHlUsesReadAndNextFetchCycles();
+    testIncDecHlReadModifyWritePhases();
+    testCbHlReadModifyWritePhases();
     testDaaBoundaryCases();
     testSpOffsetFlagsAndCycles();
     testLdSpFromHlMcycle();
