@@ -44,13 +44,11 @@ constexpr uint16_t DOTS_PER_SCANLINE = 456;
 constexpr uint16_t LAST_LINE_153_COMPARISON_END_DOT = 4;
 constexpr uint16_t LAST_LINE_ZERO_COMPARISON_DOT = 8;
 constexpr uint16_t MODE2_DOTS = 80;
-constexpr uint16_t MODE3_DOTS = 172;
 constexpr uint8_t WINDOW_PENALTY_DOTS = 6;
 constexpr uint8_t VISIBLE_SCANLINES = 144;
 constexpr uint8_t SCANLINES_PER_FRAME = 154;
 constexpr size_t OBJECT_ENTRY_SIZE = 4;
 constexpr size_t OBJECT_COUNT = 40;
-constexpr size_t MAX_OBJECTS_PER_SCANLINE = 10;
 }
 
 DmgPpu::DmgPpu(IInterruptController &interrupts) : interrupts(interrupts) {}
@@ -72,7 +70,7 @@ void DmgPpu::initializeDmgPostBootState() {
     windowLineCounter = 0;
     windowYTriggered = windowY == ly;
     dot = 0;
-    scanlineDrewWindow = false;
+    mode3.reset();
     frameBuffer.fill(0);
     lycCoincidence = true;
     statInterruptLine = false;
@@ -154,13 +152,7 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 ly = 0;
                 windowLineCounter = 0;
                 windowYTriggered = lcdEnabled() && windowY == 0;
-                mode3Duration = MODE3_DOTS;
-                scanlineFineScroll = 0;
-                scanlineOutputX = 0;
-                scanlineWindowPenaltyPending = false;
-                windowPenaltyDotsRemaining = 0;
-                objectPenaltyDotsRemaining = 0;
-                scanlineDrewWindow = false;
+                mode3.reset();
                 if (!lcdEnabled())
                     frameBuffer.fill(0);
                 updateStatInterruptLine();
@@ -228,7 +220,7 @@ uint8_t DmgPpu::getMode() const {
         return 1;
     if (dot < MODE2_DOTS)
         return startupScanline ? 0 : 2;
-    if (dot < MODE2_DOTS + mode3Duration)
+    if (dot < MODE2_DOTS + mode3.duration)
         return 3;
     return 0;
 }
@@ -295,42 +287,12 @@ void DmgPpu::advanceDot() {
     if (ly < VISIBLE_SCANLINES && dot == MODE2_DOTS)
         prepareScanline();
 
-    // Mode 3 has a 12-dot startup, plus the initial SCX fine-scroll discard,
-    // before its visible output. Keep pixels on the PPU clock so palette
-    // writes affect only pixels not yet sent to the LCD.
-    const uint16_t firstPixelDot =
-        MODE2_DOTS + 13 + scanlineFineScroll;
-    bool outputStalled = false;
-    const bool outputReady = ly < VISIBLE_SCANLINES && scanlineOutputX < FRAME_WIDTH &&
-        dot >= firstPixelDot && dot < MODE2_DOTS + mode3Duration + 1;
-    if (outputReady) {
-        if (scanlineWindowPenaltyPending &&
-            scanlineOutputX == scanlineWindowStartX) {
-            scanlineWindowPenaltyPending = false;
-            windowPenaltyDotsRemaining = WINDOW_PENALTY_DOTS - 1;
-            outputStalled = true;
-        } else if (windowPenaltyDotsRemaining > 0) {
-            --windowPenaltyDotsRemaining;
-            outputStalled = true;
-        } else if (objectPenaltyDotsRemaining > 0) {
-            --objectPenaltyDotsRemaining;
-            outputStalled = true;
-        } else if (scanlineObjectPenaltyAtX[scanlineOutputX] > 0) {
-            objectPenaltyDotsRemaining =
-                scanlineObjectPenaltyAtX[scanlineOutputX] - 1;
-            scanlineObjectPenaltyAtX[scanlineOutputX] = 0;
-            outputStalled = true;
-        }
-    }
-    if (ly < VISIBLE_SCANLINES && dot >= MODE2_DOTS &&
-        scanlineOutputX < FRAME_WIDTH && !outputStalled)
-        advanceBackgroundFetch();
-    if (outputReady && !outputStalled)
-        renderPixel(scanlineOutputX++);
+    if (ly < VISIBLE_SCANLINES)
+        advanceMode3Pipeline();
 
     if (ly < VISIBLE_SCANLINES &&
-        dot == MODE2_DOTS + mode3Duration &&
-        scanlineDrewWindow)
+        dot == MODE2_DOTS + mode3.duration &&
+        mode3.drewWindow)
         ++windowLineCounter;
 
     if (dot == DOTS_PER_SCANLINE) {
@@ -358,20 +320,121 @@ void DmgPpu::advanceDot() {
     updateStatInterruptLine();
 }
 
+void DmgPpu::advanceMode3Pipeline() {
+    // Mode 3 has a 12-dot startup, plus the initial SCX fine-scroll discard,
+    // before its visible output. Keep pixels on the PPU clock so palette
+    // writes affect only pixels not yet sent to the LCD.
+    const uint16_t firstFetchedPixelDot = MODE2_DOTS + 13;
+    const uint16_t firstPixelDot = firstFetchedPixelDot + mode3.fineScroll;
+    bool outputStalled = false;
+    const bool outputReady = ly < VISIBLE_SCANLINES && mode3.outputX < FRAME_WIDTH &&
+        dot >= firstPixelDot && dot < MODE2_DOTS + mode3.duration + 1;
+    if (outputReady) {
+        if (mode3.windowPenaltyPending &&
+            mode3.outputX == mode3.windowStartX) {
+            mode3.windowPenaltyPending = false;
+            mode3.windowStarted = true;
+            mode3.backgroundFifo.clear();
+            mode3.windowPenaltyDotsRemaining = WINDOW_PENALTY_DOTS - 1;
+            outputStalled = true;
+        } else if (mode3.windowPenaltyDotsRemaining > 0) {
+            --mode3.windowPenaltyDotsRemaining;
+            outputStalled = true;
+        } else if (mode3.objectFetcher.active()) {
+            advanceBackgroundFetcherForObjectFetch();
+            advanceActiveObjectFetch();
+            outputStalled = true;
+        } else {
+            while (mode3.nextObjectFetchEvent < mode3.objectFetchEventCount &&
+                   mode3.objectFetchEvents[mode3.nextObjectFetchEvent].startX ==
+                       mode3.outputX) {
+                ObjectFetchEvent &event =
+                    mode3.objectFetchEvents[mode3.nextObjectFetchEvent];
+                if (event.transferDots == 0) {
+                    readObjectTilePlane(event, false);
+                    readObjectTilePlane(event, true);
+                    decodeObjectTileRow(event);
+                    mode3.objectFifo.overlay(event);
+                    ++mode3.nextObjectFetchEvent;
+                    continue;
+                }
+
+                mode3.activeObjectFetchEvent = mode3.nextObjectFetchEvent;
+                mode3.objectFetcher.begin(event);
+                ++mode3.nextObjectFetchEvent;
+                advanceBackgroundFetcherForObjectFetch();
+                advanceActiveObjectFetch();
+                outputStalled = true;
+                break;
+            }
+        }
+    }
+    if (ly < VISIBLE_SCANLINES && dot >= MODE2_DOTS &&
+        mode3.outputX < FRAME_WIDTH && !outputStalled)
+        advanceBackgroundFetch();
+
+    // SCX's fine offset discards pixels from the first fetched BG tile before
+    // visible output. A window beginning at X=0 replaces that source first.
+    if (dot >= firstFetchedPixelDot && dot < firstPixelDot &&
+        !(mode3.drewWindow && mode3.windowStartX == 0)) {
+        uint8_t discardedPixel = 0;
+        mode3.backgroundFifo.pop(discardedPixel);
+    }
+
+    if (outputReady && !outputStalled)
+        emitMode3Pixel();
+}
+
+void DmgPpu::advanceBackgroundFetcherForObjectFetch() {
+    // OBJ arbitration advances BG fetching until a row is ready to push and
+    // the BG FIFO already contains pixels, then waits for the object fetch.
+    if (mode3.fetcher.phase == BackgroundFetcherState::Phase::Push &&
+        mode3.backgroundFifo.size > 0)
+        return;
+
+    advanceBackgroundFetch();
+}
+
+void DmgPpu::advanceActiveObjectFetch() {
+    ObjectFetchEvent &event =
+        mode3.objectFetchEvents[mode3.activeObjectFetchEvent];
+    switch (mode3.objectFetcher.advanceOneDot()) {
+    case ObjectFetcherState::FetchAction::None:
+        break;
+    case ObjectFetcherState::FetchAction::ReadLowPlane:
+        readObjectTilePlane(event, false);
+        break;
+    case ObjectFetcherState::FetchAction::ReadHighPlane:
+        readObjectTilePlane(event, true);
+        decodeObjectTileRow(event);
+        mode3.objectFifo.overlay(event);
+        break;
+    }
+}
+
+void DmgPpu::emitMode3Pixel() {
+    uint8_t backgroundColorIndex = 0;
+    ObjectPixel objectPixel;
+    if (mode3.windowStarted) {
+        // Window pixels retain the line-start sampling model while sharing
+        // the same Mode 3 pixel-output and palette path as BG FIFO pixels.
+        mode3.backgroundFifo.pop(backgroundColorIndex);
+        backgroundColorIndex = mode3.windowColorIndices[mode3.outputX];
+        mode3.objectFifo.popAndShift(objectPixel);
+        renderPixel(mode3.outputX++, backgroundColorIndex, objectPixel);
+    } else if (mode3.backgroundFifo.pop(backgroundColorIndex)) {
+        mode3.objectFifo.popAndShift(objectPixel);
+        renderPixel(mode3.outputX++, backgroundColorIndex, objectPixel);
+    } else {
+        // A visible pixel cannot leave the PPU until its FIFO entry exists.
+        ++mode3.duration;
+    }
+}
+
 void DmgPpu::prepareScanline() {
-    scanlineFineScroll = scrollX & 0x07;
-    mode3Duration = MODE3_DOTS + scanlineFineScroll;
-    scanlineOutputX = 0;
-    scanlineWindowPenaltyPending = false;
-    windowPenaltyDotsRemaining = 0;
-    objectPenaltyDotsRemaining = 0;
-    scanlineObjectPenaltyAtX.fill(0);
-    scanlineBgColorIndices.fill(0);
-    scanlineObjectColorIndices.fill(0);
-    scanlineObjectUsesPalette1.fill(false);
-    scanlineObjectBehindBg.fill(false);
-    backgroundFetchTicks = 0;
-    backgroundFetchTile = backgroundFetchLow = backgroundFetchHigh = 0;
+    mode3.reset();
+    mode3.fineScroll = scrollX & 0x07;
+    mode3.duration = MODE3_BASE_DOTS + mode3.fineScroll;
 
     const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const uint16_t windowTileMapOffset =
@@ -379,26 +442,21 @@ void DmgPpu::prepareScanline() {
     const bool windowEnabled = bgWindowEnabled && (lcdControl & WINDOW_ENABLE_MASK) &&
                                windowYTriggered && windowX <= 166;
     const int windowLeft = static_cast<int>(windowX) - 7;
-    scanlineDrewWindow = false;
     if (windowEnabled && windowLeft < static_cast<int>(FRAME_WIDTH)) {
-        scanlineWindowStartX = static_cast<uint8_t>(std::max(0, windowLeft));
-        scanlineWindowPenaltyPending = true;
-        mode3Duration += WINDOW_PENALTY_DOTS;
+        mode3.windowStartX = static_cast<uint8_t>(std::max(0, windowLeft));
+        mode3.windowPenaltyPending = true;
+        mode3.duration += WINDOW_PENALTY_DOTS;
     }
 
     for (size_t x = 0; x < FRAME_WIDTH; ++x) {
-        uint8_t bgColorIndex = 0;
-        if (bgWindowEnabled) {
-            const bool useWindow = windowEnabled && static_cast<int>(x) >= windowLeft;
-            if (useWindow) {
-                const uint8_t windowPixelX = static_cast<uint8_t>(
-                    static_cast<int>(x) - windowLeft);
-                bgColorIndex = getTileMapPixel(windowTileMapOffset, windowPixelX,
-                                               windowLineCounter);
-                scanlineDrewWindow = true;
-            }
+        if (bgWindowEnabled && windowEnabled && static_cast<int>(x) >= windowLeft) {
+            const uint8_t windowPixelX = static_cast<uint8_t>(
+                static_cast<int>(x) - windowLeft);
+            mode3.windowColorIndices[x] = getTileMapPixel(windowTileMapOffset,
+                                                           windowPixelX,
+                                                           windowLineCounter);
+            mode3.drewWindow = true;
         }
-        scanlineBgColorIndices[x] = bgColorIndex;
     }
 
     // OAM has already been scanned for this line, so retain its object pixels
@@ -410,10 +468,10 @@ void DmgPpu::prepareScanline() {
 uint8_t DmgPpu::readBackgroundBitplane(bool high) const {
     int tileOffset;
     if (lcdControl & TILE_DATA_SELECT_MASK) {
-        tileOffset = backgroundFetchTile * 16;
+        tileOffset = mode3.fetcher.tile * 16;
     } else {
-        const int signedIndex = backgroundFetchTile < 0x80
-                                    ? backgroundFetchTile : backgroundFetchTile - 0x100;
+        const int signedIndex = mode3.fetcher.tile < 0x80
+                                    ? mode3.fetcher.tile : mode3.fetcher.tile - 0x100;
         tileOffset = 0x1000 + signedIndex * 16;
     }
     // On DMG, each bitplane samples SCY separately, while the tile number
@@ -423,56 +481,79 @@ uint8_t DmgPpu::readBackgroundBitplane(bool high) const {
 }
 
 void DmgPpu::advanceBackgroundFetch() {
-    // Keep the existing startup/8-dot schedule while splitting the tile-map
-    // and bitplane reads into separate two-dot stages. Sprite/window stalls
-    // pause this baseline clock; exact FIFO arbitration remains future work.
-    if (backgroundFetchTicks >= 6) {
-        const unsigned phase = (backgroundFetchTicks - 6) % 8;
-        const unsigned tileColumn = (backgroundFetchTicks - 6) / 8;
-        if (phase == 0) {
-            const uint8_t sourceX = static_cast<uint8_t>((scrollX & 0xF8) + tileColumn * 8);
+    // Preserve the current six-dot startup and two-dot read/push stages while
+    // making the fetcher phase explicit. OBJ stalls still pause this BG fetcher;
+    // bus-driven BG/OBJ FIFO arbitration remains future work.
+    auto &fetcher = mode3.fetcher;
+    if (fetcher.startupDotsRemaining > 0) {
+        --fetcher.startupDotsRemaining;
+        return;
+    }
+
+    if (fetcher.phaseDots == 0) {
+        switch (fetcher.phase) {
+        case BackgroundFetcherState::Phase::TileMap: {
+            const uint8_t sourceX = static_cast<uint8_t>(
+                (scrollX & 0xF8) + fetcher.tileColumn * 8);
             const uint8_t sourceY = static_cast<uint8_t>(scrollY + ly);
             const uint16_t backgroundMap =
                 (lcdControl & BG_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
-            backgroundFetchTile = videoRam[backgroundMap +
-                                           (sourceY / 8) * 32 + sourceX / 8];
-        } else if (phase == 2) {
-            backgroundFetchLow = readBackgroundBitplane(false);
-        } else if (phase == 4) {
-            backgroundFetchHigh = readBackgroundBitplane(true);
-        } else if (phase == 6) {
-            for (int pixel = 0; pixel < 8; ++pixel) {
-                const int screenX = static_cast<int>(tileColumn * 8) + pixel - scanlineFineScroll;
-                if (screenX < 0 || screenX >= static_cast<int>(FRAME_WIDTH) ||
-                    (scanlineDrewWindow && screenX >= scanlineWindowStartX))
-                    continue;
-                const int bit = 7 - pixel;
-                scanlineBgColorIndices[screenX] =
-                    ((backgroundFetchLow >> bit) & 1) |
-                    (((backgroundFetchHigh >> bit) & 1) << 1);
-            }
+            fetcher.tile = videoRam[backgroundMap + (sourceY / 8) * 32 + sourceX / 8];
+            break;
+        }
+        case BackgroundFetcherState::Phase::TileDataLow:
+            fetcher.low = readBackgroundBitplane(false);
+            break;
+        case BackgroundFetcherState::Phase::TileDataHigh:
+            fetcher.high = readBackgroundBitplane(true);
+            break;
+        case BackgroundFetcherState::Phase::Push:
+            // The fetcher waits at Push until the FIFO can accept another row.
+            // The FIFO stores raw color indices; palettes are read at output.
+            if (!mode3.backgroundFifo.pushRow(fetcher.low, fetcher.high))
+                return;
+            break;
         }
     }
-    ++backgroundFetchTicks;
+
+    ++fetcher.phaseDots;
+    if (fetcher.phaseDots < 2)
+        return;
+
+    fetcher.phaseDots = 0;
+    switch (fetcher.phase) {
+    case BackgroundFetcherState::Phase::TileMap:
+        fetcher.phase = BackgroundFetcherState::Phase::TileDataLow;
+        break;
+    case BackgroundFetcherState::Phase::TileDataLow:
+        fetcher.phase = BackgroundFetcherState::Phase::TileDataHigh;
+        break;
+    case BackgroundFetcherState::Phase::TileDataHigh:
+        fetcher.phase = BackgroundFetcherState::Phase::Push;
+        break;
+    case BackgroundFetcherState::Phase::Push:
+        ++fetcher.tileColumn;
+        fetcher.phase = BackgroundFetcherState::Phase::TileMap;
+        break;
+    }
 }
 
-void DmgPpu::renderPixel(size_t screenX) {
+void DmgPpu::renderPixel(size_t screenX, uint8_t backgroundColorIndex,
+                         const ObjectPixel &objectPixel) {
     const size_t frameOffset = static_cast<size_t>(ly) * FRAME_WIDTH + screenX;
     const bool backgroundEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
-    const uint8_t backgroundColorIndex = backgroundEnabled
-                                             ? scanlineBgColorIndices[screenX]
-                                             : 0;
+    if (!backgroundEnabled)
+        backgroundColorIndex = 0;
     frameBuffer[frameOffset] =
         applyPalette(bgPalette, backgroundColorIndex);
 
-    const uint8_t objectColorIndex = scanlineObjectColorIndices[screenX];
-    if ((lcdControl & OBJECT_ENABLE_MASK) != 0 && objectColorIndex != 0 &&
-        !(scanlineObjectBehindBg[screenX] && backgroundEnabled &&
+    if ((lcdControl & OBJECT_ENABLE_MASK) != 0 && objectPixel.colorIndex != 0 &&
+        !(objectPixel.behindBackground && backgroundEnabled &&
           backgroundColorIndex != 0)) {
-        const uint8_t palette = scanlineObjectUsesPalette1[screenX]
+        const uint8_t palette = objectPixel.usesPalette1
                                     ? objectPalette1
                                     : objectPalette0;
-        frameBuffer[frameOffset] = applyPalette(palette, objectColorIndex);
+        frameBuffer[frameOffset] = applyPalette(palette, objectPixel.colorIndex);
     }
 }
 
@@ -543,98 +624,100 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
         const int objectLeft = static_cast<int>(object.x) - 8;
         if (object.x >= FRAME_WIDTH + 8 && object.x != 0)
             continue;
-        if (!includeFetchPenalties)
-            continue;
 
-        uint16_t penalty = 0;
-        size_t stallX = 0;
-        if (object.x == 0) {
-            // An OBJ at X=0 is fully off-screen, but the DMG still fetches it.
-            // The initial fetch costs 11 dots; additional X=0 objects at the
-            // same fetch position pay only the flat six-dot fetch cost.
-            penalty = fetchedXZeroObject ? 6 : 11;
-            fetchedXZeroObject = true;
-        } else {
-            const int firstVisibleX = std::max(0, objectLeft);
-            const bool firstPixelUsesWindow =
-                windowEnabled && objectLeft >= windowLeft;
+        ObjectFetchEvent event;
+        event.startX = static_cast<uint8_t>(std::max(0, objectLeft));
+        event.firstPixelIndex = static_cast<uint8_t>(std::max(0, -objectLeft));
 
-            uint8_t tilePixelX;
-            size_t fetchedTileIndex;
-            if (firstPixelUsesWindow) {
-                const uint8_t windowPixelX = static_cast<uint8_t>(
-                    objectLeft - windowLeft);
-                tilePixelX = windowPixelX & 0x07;
-                fetchedTileIndex = 32 + (windowPixelX >> 3);
+        if (includeFetchPenalties) {
+            uint16_t penalty = 0;
+            event.transferDots = 6;
+            if (object.x == 0) {
+                // An OBJ at X=0 is fully off-screen, but the DMG still fetches it.
+                // The initial fetch costs 11 dots; additional X=0 objects at the
+                // same fetch position pay only the flat six-dot fetch cost.
+                penalty = fetchedXZeroObject ? 6 : 11;
+                event.alignmentDots = static_cast<uint8_t>(penalty - event.transferDots);
+                fetchedXZeroObject = true;
             } else {
-                const uint8_t backgroundPixelX = static_cast<uint8_t>(
-                    scrollX + static_cast<uint8_t>(objectLeft));
-                tilePixelX = backgroundPixelX & 0x07;
-                fetchedTileIndex = backgroundPixelX >> 3;
+                const bool firstPixelUsesWindow =
+                    windowEnabled && objectLeft >= windowLeft;
+
+                uint8_t tilePixelX;
+                size_t fetchedTileIndex;
+                if (firstPixelUsesWindow) {
+                    const uint8_t windowPixelX = static_cast<uint8_t>(
+                        objectLeft - windowLeft);
+                    tilePixelX = windowPixelX & 0x07;
+                    fetchedTileIndex = 32 + (windowPixelX >> 3);
+                } else {
+                    const uint8_t backgroundPixelX = static_cast<uint8_t>(
+                        scrollX + static_cast<uint8_t>(objectLeft));
+                    tilePixelX = backgroundPixelX & 0x07;
+                    fetchedTileIndex = backgroundPixelX >> 3;
+                }
+
+                penalty = event.transferDots;
+                if (!fetchedBackgroundTiles[fetchedTileIndex]) {
+                    fetchedBackgroundTiles[fetchedTileIndex] = true;
+                    const int backgroundPixelsToRight = 7 - tilePixelX;
+                    event.alignmentDots = static_cast<uint8_t>(
+                        std::max(0, backgroundPixelsToRight - 2));
+                    penalty = static_cast<uint16_t>(penalty + event.alignmentDots);
+                }
             }
 
-            penalty = 6;
-            if (!fetchedBackgroundTiles[fetchedTileIndex]) {
-                fetchedBackgroundTiles[fetchedTileIndex] = true;
-                const int backgroundPixelsToRight = 7 - tilePixelX;
-                penalty = static_cast<uint16_t>(
-                    penalty + std::max(0, backgroundPixelsToRight - 2));
+            // The first object fetch overlaps one dot of the initial background
+            // fetch phase; later object fetches do not share this overlap.
+            if (!initialObjectFetchOverlapUsed) {
+                --penalty;
+                --event.transferDots;
+                initialObjectFetchOverlapUsed = true;
             }
 
-            stallX = static_cast<size_t>(firstVisibleX);
-            // Multiple objects can begin at one output pixel; their stalls
-            // occur consecutively before that pixel is emitted.
+            mode3.duration = static_cast<uint16_t>(mode3.duration + penalty);
         }
 
-        // The first object fetch overlaps one dot of the initial background
-        // fetch phase; later object fetches do not share this overlap.
-        if (!initialObjectFetchOverlapUsed) {
-            --penalty;
-            initialObjectFetchOverlapUsed = true;
+        const size_t base = object.oamIndex * OBJECT_ENTRY_SIZE;
+        const uint8_t attributes = objectRam[base + 3];
+        int objectRow = static_cast<int>(ly) -
+                        (static_cast<int>(objectRam[base]) - 16);
+        if (attributes & 0x40)
+            objectRow = objectHeight - 1 - objectRow;
+
+        uint8_t tileIndex = objectRam[base + 2];
+        if (objectHeight == 16) {
+            tileIndex &= 0xFE;
+            tileIndex = static_cast<uint8_t>(tileIndex + objectRow / 8);
+            objectRow %= 8;
         }
+        event.tileIndex = tileIndex;
+        event.tileRow = static_cast<uint8_t>(objectRow);
+        event.attributes = attributes;
 
-        scanlineObjectPenaltyAtX[stallX] += penalty;
-
-        mode3Duration = static_cast<uint16_t>(mode3Duration + penalty);
+        mode3.objectFetchEvents[mode3.objectFetchEventCount++] = event;
     }
+}
 
-    for (size_t screenX = 0; screenX < FRAME_WIDTH; ++screenX) {
-        for (size_t selectedIndex = 0; selectedIndex < selectedCount; ++selectedIndex) {
-            const Object &object = selected[selectedIndex];
-            const size_t base = object.oamIndex * OBJECT_ENTRY_SIZE;
-            const int objectLeft = static_cast<int>(object.x) - 8;
-            int pixelX = static_cast<int>(screenX) - objectLeft;
-            if (pixelX < 0 || pixelX >= 8)
-                continue;
+void DmgPpu::readObjectTilePlane(ObjectFetchEvent &event, bool high) const {
+    const size_t rowOffset = static_cast<size_t>(event.tileIndex) * 16 +
+                             event.tileRow * 2 + (high ? 1 : 0);
+    if (high)
+        event.high = videoRam[rowOffset];
+    else
+        event.low = videoRam[rowOffset];
+}
 
-            const uint8_t attributes = objectRam[base + 3];
-            int pixelY = static_cast<int>(ly) -
-                         (static_cast<int>(objectRam[base]) - 16);
-            if (attributes & 0x40)
-                pixelY = objectHeight - 1 - pixelY;
-            if (attributes & 0x20)
-                pixelX = 7 - pixelX;
-
-            uint8_t tileIndex = objectRam[base + 2];
-            if (objectHeight == 16) {
-                tileIndex &= 0xFE;
-                tileIndex = static_cast<uint8_t>(tileIndex + pixelY / 8);
-                pixelY %= 8;
-            }
-
-            const uint8_t colorIndex = getTilePixel(tileIndex,
-                                                    static_cast<uint8_t>(pixelX),
-                                                    static_cast<uint8_t>(pixelY), true);
-            if (colorIndex == 0)
-                continue;
-
-            scanlineObjectColorIndices[screenX] = colorIndex;
-            scanlineObjectUsesPalette1[screenX] = (attributes & 0x10) != 0;
-            scanlineObjectBehindBg[screenX] = (attributes & 0x80) != 0;
-            // A higher-priority opaque object still masks lower-priority objects
-            // when its behind-BG flag leaves the background visible.
-            break;
-        }
+void DmgPpu::decodeObjectTileRow(ObjectFetchEvent &event) const {
+    for (size_t sourcePixel = 0; sourcePixel < event.pixels.size(); ++sourcePixel) {
+        const uint8_t bit = static_cast<uint8_t>(
+            (event.attributes & 0x20) ? sourcePixel : 7 - sourcePixel);
+        const uint8_t colorIndex = static_cast<uint8_t>(
+            ((event.low >> bit) & 0x01) | (((event.high >> bit) & 0x01) << 1));
+        event.pixels[sourcePixel] = {
+            colorIndex,
+            (event.attributes & 0x10) != 0,
+            (event.attributes & 0x80) != 0};
     }
 }
 

@@ -106,6 +106,39 @@ void testTimerInterruptWakesHaltAndRunsHandler() {
            "timer overflow requests an interrupt that wakes HALT and runs the timer handler");
 }
 
+void testVblankInterruptWakesHaltAndRunsHandler() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x31, 0x00, 0xC1,       // LD SP, $C100
+        0xAF,                   // XOR A
+        0xE0, 0x0F,             // LDH [IF], A (clear pending interrupts)
+        0x3E, 0x01,             // LD A, VBlank interrupt mask
+        0xEA, 0xFF, 0xFF,       // LD [IE], A (enable VBlank)
+        0xFB,                   // EI
+        0x76, 0x18, 0xFD,       // HALT; loop back to HALT after RETI
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+    rom[0x40] = 0x06; // LD B, $42
+    rom[0x41] = 0x42;
+    rom[0x42] = 0xD9; // RETI
+
+    GameBoySystem system(std::move(rom));
+    for (unsigned cycle = 0; cycle < 20'000; ++cycle) {
+        auto registers = system.getCpuRegisters();
+        if (registers.getRefB() == 0x42 && registers.getRefSP() == 0xC100)
+            break;
+        expect(system.stepOneCycle().success,
+               "PPU-generated VBlank interrupt system step succeeds");
+    }
+
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefB() == 0x42,
+           "PPU VBlank request wakes HALT and reaches the VBlank handler");
+    expect(registers.getRefSP() == 0xC100,
+           "VBlank handler returns through the interrupt stack frame");
+}
+
 void testSystemTimerClocksApuFrameSequencer() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -485,6 +518,7 @@ void testLycZeroHandlerRunsBeforeVblankEnds() {
 
 int main() {
     testLycZeroHandlerRunsBeforeVblankEnds();
+    testVblankInterruptWakesHaltAndRunsHandler();
     testDisconnectedSerialWakesHaltAndRunsHandler();
     testSerialClockIsIndependentOfDividerWrites();
     testCpuRunsHramDmaRoutineAndReturnsToRom();

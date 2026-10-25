@@ -353,6 +353,24 @@ void testObjectAtXZeroMode0Boundary() {
            "mode 0 starts at dot 262 for an X=0 object");
 }
 
+void testObjectsAtSameXRunSeparateFetchEvents() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 0);
+    ppu.write(OAM + 4, 16);
+    ppu.write(OAM + 5, 0);
+    ppu.write(LCDC, 0x93);
+
+    ppu.advanceTCycles(265);
+    expect((ppu.read(STAT) & 0x03) == 3,
+           "both X=0 object fetches stall output at the same pixel position");
+    ppu.advanceTCycles(1);
+    expect((ppu.read(STAT) & 0x03) == 0,
+           "same-position object fetch events consume their full combined duration");
+}
+
 void testTenObjectsAtXTenMatchMode0TimingBoundary() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -583,6 +601,25 @@ void testBackgroundTilesAndPaletteRenderToFrameBuffer() {
     expect(frame[2] == 0, "background zero bits produce color index 0");
 }
 
+void testBackgroundFifoPreservesPixelsAcrossTileMapWrap() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 0, 0xFF, 0x00); // Color 1.
+    writeTileRow(ppu, 2, 0, 0x00, 0xFF); // Color 2.
+    ppu.write(0x981F, 1); // SCX=$F8 starts from the last tile in the map.
+    ppu.write(0x9800, 2); // The next fetched tile wraps to map column zero.
+    ppu.write(BGP, 0xE4);
+    ppu.write(SCX, 0xF8);
+    renderFirstScanline(ppu, 0x91);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[0] == 1 && frame[7] == 1,
+           "the FIFO emits the final background-map tile in pixel order");
+    expect(frame[8] == 2 && frame[15] == 2,
+           "the FIFO continues with column zero after the tile map wraps");
+}
+
 void testBackgroundPaletteWriteAffectsOnlyFuturePixels() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -649,6 +686,60 @@ void testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard() {
                "later tile samples new SCX high bits and retains initial fine discard");
         expect(frame[24 - fine] == 1, "coarse scroll remains active on subsequent tiles");
     }
+}
+
+void testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 1, 0xFF, 0x00); // Tile 1 row 1: color 1.
+    writeTileRow(ppu, 2, 1, 0x00, 0xFF); // Tile 2 row 1: color 2.
+    writeTileRow(ppu, 3, 1, 0xFF, 0xFF); // Tile 3 row 1: color 3.
+    ppu.write(0x9801, 1);
+    ppu.write(0x9802, 2);
+    ppu.write(0x9803, 3);
+    ppu.write(BGP, 0xE4);
+    ppu.write(OAM, 17);     // Select this object on visible line 1.
+    ppu.write(OAM + 1, 1);  // Its fetch stalls the first visible pixel.
+    ppu.write(LCDC, 0x93);
+
+    ppu.advanceTCycles(454); // Finish LCD startup at line 1, dot 0.
+    ppu.advanceTCycles(95);  // Dot 95 is inside the first object's Mode 3 stall.
+    expect(ppu.read(LY) == 1 && (ppu.read(STAT) & 0x03) == 3,
+           "the SCX write occurs during line 1 Mode 3 object fetch");
+    ppu.write(SCX, 8);
+    ppu.advanceTCycles(456 - 95);
+
+    const auto &frame = ppu.getFrameBuffer();
+    const size_t line = DmgPpu::FRAME_WIDTH;
+    expect(frame[line + 8] == 2,
+           "the first tile fetched after an object stall samples new SCX high bits");
+    expect(frame[line + 16] == 3,
+           "later tile fetches retain the updated coarse scroll after an object stall");
+}
+
+void testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    writeTileRow(ppu, 1, 1, 0xFF, 0x00); // Row 1: color 1.
+    writeTileRow(ppu, 1, 2, 0x00, 0xFF); // Row 2: color 2.
+    ppu.write(0x9801, 1); // Tile 1 starts at screen x=8.
+    ppu.write(BGP, 0xE4);
+    ppu.write(OAM, 17); // Object starts on visible line 1.
+    ppu.write(OAM + 1, 11); // Its transparent pixels start at screen x=3.
+    ppu.write(LCDC, 0x93);
+
+    ppu.advanceTCycles(454); // Finish LCD startup at line 1, dot 0.
+    ppu.advanceTCycles(100); // Dot 100 is inside the object's fetch event.
+    expect(ppu.read(LY) == 1 && (ppu.read(STAT) & 0x03) == 3,
+           "the SCY write occurs during line 1 Mode 3 object fetch");
+    ppu.write(SCY, 1);
+    ppu.advanceTCycles(456 - 100);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[DmgPpu::FRAME_WIDTH + 8] == 1,
+           "BG bitplanes fetched during OBJ arbitration retain the earlier SCY row");
 }
 
 void testBackgroundBitplanesSampleScySeparately() {
@@ -977,6 +1068,28 @@ void testObjectsUseTransparencyPaletteAndPriority() {
     expect(frame[32] == 1, "object behind a nonzero BG leaves the BG visible");
 }
 
+void testPartiallyClippedObjectStartsAtVisibleSourcePixel() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+
+    // OAM X=1 leaves only source pixel 7 visible at screen X=0.
+    writeTileRow(ppu, 1, 0, 0x01, 0x00);
+    ppu.write(BGP, 0xE4);
+    ppu.write(OBP0, 0xE4);
+    ppu.write(OAM, 16);
+    ppu.write(OAM + 1, 1);
+    ppu.write(OAM + 2, 1);
+    ppu.write(OAM + 3, 0);
+
+    renderFirstScanline(ppu, 0x93);
+
+    const auto &frame = ppu.getFrameBuffer();
+    expect(frame[0] == 1,
+           "left clipping aligns the OBJ FIFO with the visible source pixel");
+    expect(frame[1] == 0,
+           "clipped source pixels do not shift later object pixels onto screen");
+}
+
 void testOffscreenObjectsConsumeTheTenObjectScanlineLimit() {
     InterruptRegisters firstTenInterrupts;
     DmgPpu firstTen(firstTenInterrupts);
@@ -1049,6 +1162,7 @@ int main() {
     testObjectFetchPenaltyStallsPixelsAndExtendsMode3();
     testObjectsInAnAlreadyFetchedTilePayOnlyTheFlatPenalty();
     testObjectAtXZeroMode0Boundary();
+    testObjectsAtSameXRunSeparateFetchEvents();
     testTenObjectsAtXTenMatchMode0TimingBoundary();
     testVblankInterruptAndFrameRollover();
     testLastVblankLineResetsLyBeforeModeEnds();
@@ -1059,10 +1173,13 @@ int main() {
     testLycCoincidenceAndStatInterrupt();
     testLycComparisonStopsWhileLcdIsOff();
     testBackgroundTilesAndPaletteRenderToFrameBuffer();
+    testBackgroundFifoPreservesPixelsAcrossTileMapWrap();
     testBackgroundPaletteWriteAffectsOnlyFuturePixels();
     testSignedBackgroundTileAddressing();
     testWindowPositionAndWindowTileMap();
     testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard();
+    testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles();
+    testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels();
     testObjectBehindBackgroundUsesFetchedScrollPixels();
     testBackgroundEnableIsSampledForEachOutputPixel();
     testBackgroundCanBeEnabledMidScanlineAfterStartingDisabled();
@@ -1076,6 +1193,7 @@ int main() {
     testWindowYTriggerAndHiddenRows();
     testWindowYRequiresScanlineStartEquality();
     testObjectsUseTransparencyPaletteAndPriority();
+    testPartiallyClippedObjectStartsAtVisibleSourcePixel();
     testOffscreenObjectsConsumeTheTenObjectScanlineLimit();
     testSixteenPixelObjectsUsePairedTiles();
     std::cout << "DMG PPU tests passed\n";

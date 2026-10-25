@@ -1,23 +1,54 @@
 # PPU mid-scanline scrolling
 
+## Current status
+
+Mode 3 has separate 16-pixel BG and OBJ FIFOs. During an OBJ fetch, the BG
+fetcher advances until it reaches Push with BG pixels queued; a new BG row is
+pushed only when that FIFO is empty. A public PPU regression checks that a
+SCY write during this catch-up does not change bitplanes already fetched.
+`m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
+hash, so this step does not claim better visual accuracy. `make test`, the
+selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
+Canyon Racer callback smoke checks pass. The Canyon Racer frame differs from
+the preceding run in 407 of 23,040 pixels; this profile has no expected frame,
+so the comparison does not establish accuracy. Exact OBJ event alignment and
+per-dot bus arbitration remain unverified.
+
 ## Scope
 
 The active route is one observable SCX/SCY fetch behavior at a time, with
-selected independent visual ROMs and existing regressions. The first checkpoint established a baseline; subsequent checkpoints add
-SCX coarse sampling and separate SCY bitplane reads. Complete
-Mealybug conformance and a full FIFO rewrite are not acceptance prerequisites.
+selected independent visual ROMs and existing regressions. The first
+checkpoint established a baseline; subsequent checkpoints add SCX coarse
+sampling and separate SCY bitplane reads. Complete Mealybug conformance and a
+full CGB FIFO implementation are not acceptance prerequisites; a narrow DMG
+BG/OBJ fetch interaction may be needed for a measured case.
 
-At the initial baseline the renderer prepared background/object color indices
-at Mode 3 entry. The current background path has distinct tile-map and
-bitplane sampling stages. Object-behind-BG priority is evaluated at output;
-window preparation and simplified Mode 3 stalls remain separate paths.
+The current renderer groups scanline-local work in a Mode 3 state. BG pixels
+pass through a 16-pixel FIFO, with separate tile-map and bitplane sampling
+phases. OBJ pixels use a separate 16-pixel FIFO and are overlaid when a coarse
+OBJ fetch event completes. Window pixels and OBJ descriptors are prepared at
+Mode 3 entry; OBJ bitplanes are sampled at separate points during the coarse
+fetch event. During an OBJ event the BG fetcher advances only until it reaches
+Push while the BG FIFO already contains pixels; push waits for an empty FIFO.
+Object timing remains a simplified, scanline-prepared schedule rather than
+bus-driven BG/OBJ fetcher arbitration.
 
 [Pan Docs scrolling](https://gbdev.io/pandocs/Scrolling.html) describes repeated
 scroll-register sampling during tile fetch, with SCX's low three bits sampled
 at scanline start. DMG also samples SCY separately for the tile bitplanes.
+[Pan Docs Pixel FIFO](https://github.com/gbdev/pandocs/blob/master/src/pixel_fifo.md)
+describes separate BG/OBJ FIFOs and an OBJ fetch sequence that advances the BG
+fetcher. It also marks some sprite timing details as unconfirmed, so use it as
+the behavior model while treating exact dot alignment as a question to verify.
 Use focused tests for each observable transition rather than updating scroll
 coordinates independently on every emitted pixel, which would bypass fetch
 latency and cached tile data.
+
+SameBoy is a useful independent implementation for comparing fetcher state and
+ordering, but it is not hardware ground truth. A LotusGB result can be more
+accurate for a particular behavior only when an independent hardware-backed
+test or observation supports it; there is no evidence here that LotusGB is
+more accurate overall.
 
 ## External visual baseline
 
@@ -66,17 +97,16 @@ BGP is retained as an output-timing diagnostic, not a passing control.
 No PPU behavior was modified to obtain these results. They are newly measured
 coverage gaps, not evidence that this tooling change broke emulation.
 
-## Next implementation checkpoint
+## Initial scroll-sampling checkpoint (completed)
 
-1. Introduce an explicit background tile-fetch/cache boundary for SCX high-bit
+1. Add an explicit background tile-fetch/cache boundary for SCX high-bit
    sampling while preserving scanline-start fine-scroll discard.
-2. Add public PPU-interface tests that distinguish already-fetched pixels
-   from later tiles and protect unchanged low-bit behavior.
-3. Re-run the selected external images. Report exact remaining differences;
-   do not tune a global delay solely to hide a single image mismatch.
-4. Retain dmg-acid2, unit tests, the selected Mooneye regressions and both
-   homebrew profiles before accepting the renderer change. Extend SCY and
-   sprite/window fetch interactions as separate steps when evidence requires.
+2. Add public PPU-interface tests for already-fetched versus later tiles and
+   unchanged low-bit behavior.
+3. Re-run selected external images and record exact remaining differences;
+   avoid hiding a visual mismatch with an unsupported global delay.
+4. Retain dmg-acid2, unit tests, selected Mooneye regressions and homebrew
+   profiles. Keep SCY and sprite/window interactions as separate steps.
 
 ## SCX coarse sampling implementation
 
@@ -144,12 +174,120 @@ independent proof of every T-cycle in sprite/FIFO arbitration.
 
 ### Bounded investigation of the remaining SCX pixels
 
-Temporary traces show, for example, line 8's third tile sampled at dot 112
-and SCX written at dot 114. Testing coarse-sampling phases 6, 7, 8, 9 and 10
-yielded 84, 84, 77, 80 and 45 SCX-high differing pixels. None reached an exact
-match, and the lower mismatch count alone does not establish hardware timing.
-Those variants were discarded; the existing phase remains. The surviving
-SCX differences need explicit fetch/sprite interaction evidence.
+An instrumented build of the current source, started after the ROM writes
+LCDC=`0x93`, shows line 8's third tile-map address sampled at dot 111 and the
+SCX write at dot 114; line 64 samples that address at dot 112, again before
+the write at dot 114. The modeled initial OBJ stalls are 9 and 10 dots on
+those lines. Earlier temporary traces captured the pre-setup post-boot frame
+or an older source copy and are not valid timing evidence. Testing
+coarse-sampling phases 6, 7, 8, 9 and 10 yielded 84, 84, 77, 80 and 45
+SCX-high differing pixels. None reached an exact match, and the lower mismatch
+count alone does not establish hardware timing. Those variants were
+discarded; the existing phase remains.
+
+The current capture has all 84 differences inside x=16–23, on lines 8–22 and
+64–86. The test writes `SCX=LY` during Mode 3 and places one sprite on each
+eight-line band; for example, line 8 uses OAM X=1 and line 64 uses OAM X=8.
+These observations narrow the failure to a single output tile column on
+sprite-affected lines, but do not by themselves identify the correct fetch
+dot. [Pan Docs](https://gbdev.io/pandocs/Scrolling.html) specifies that SCX's
+coarse bits are reread on each tile fetch, but does not specify this exact
+sprite/fetcher boundary. SameBoy's [fetcher address stage](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L895-L908)
+calculates the map address at `GET_TILE_T1` from live SCX and the current
+position in the line. That is a useful implementation comparison, not
+independent hardware evidence.
+
+The current-model stage trace around the affected tile is:
+
+| LY | First OBJ output stall | Tile-column 2 map / low / high / push | SCX write |
+| ---: | ---: | --- | ---: |
+| 8 | dots 93–101 (9 dots) | 111 / 113 / 115 / 117 | dot 114 |
+| 64 | dots 93–102 (10 dots) | 112 / 114 / 116 / 118 | dot 114, after that dot's low-plane read |
+
+The current model therefore latches the tile-map address before the write on
+both lines. On line 8, the write lands between the low- and high-plane reads;
+on line 64, it follows the low-plane read. This matches the code's stage
+ordering, but the reference image differs in the output tile at x=16–23. The
+candidate error is the modeled map-fetch position around OBJ arbitration, not
+whether later tile fetches reread SCX. This is still a comparison against the
+Mealybug emulator reference image, not a hardware capture.
+
+A temporary public-interface probe isolated line 8 with one object at OAM
+Y=24/X=1 and changed SCX at dot 114. The current model still used tile-map
+column 2 for pixel x=16, while the Mealybug DMG reference shows the tile shifted
+by the new SCX value. The probe failed against the current model and was
+removed rather than keeping a speculative expected value in the normal unit
+suite. The external ROM comparison remains the reproducible target for this
+case.
+
+The likely modeling gap is that LotusGB still schedules each object as a
+precomputed output stall. BG and OBJ pixels pass through separate FIFOs, and
+OBJ bitplanes are sampled at two coarse event boundaries, but the event's
+duration and descriptor are still prepared at scanline start. The current
+catch-up rule advances BG fetching only until Push has queued pixels; it does
+not model per-dot OAM/VRAM bus access or the full sprite sequence. An earlier
+candidate that advanced BG without waiting for an empty FIFO increased the
+Mealybug mismatch from 84 to 150 pixels (x=16–31, y=8–142). Requiring an empty
+FIFO before pushing a row restored the previous 84-pixel capture hash. This
+supports the FIFO condition in the model but does not prove exact hardware
+timing.
+Pan Docs describes separate BG and OBJ FIFOs, with sprite arbitration advancing
+the BG fetcher and depending on FIFO contents ([Pixel FIFO](https://github.com/gbdev/pandocs/blob/master/src/pixel_fifo.md)). SameBoy's
+[OBJ-fetch path](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L1871-L1931)
+also advances the BG fetcher during object fetch. This matches the missing
+state in LotusGB's current model and supports adding an explicit fetch/FIFO
+interaction to its coarse event schedule. It remains an implementation
+comparison and an inference from the Mealybug reference, not a proven hardware
+root cause.
+
+The public PPU regression
+`testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles` now changes SCX at
+line 1 dot 95, during the current model's first OBJ stall, and checks that the
+later tile columns use the updated coarse offset. It passes with the current
+model. This protects live SCX sampling after a stall; it does not reproduce the
+84-pixel Mealybug mismatch or establish the disputed fetch boundary as hardware
+truth. The separate regression `testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels`
+places a transparent object on line 1 and changes SCY during the OBJ catch-up;
+it checks that already-read bitplanes stay latched for the emitted pixel. It
+failed before the catch-up behavior was added and passes now. This validates
+the modeled sampling boundary, not the disputed Mealybug case. Keep line timing,
+STAT, palette-write, and pixel regressions as constraints while investigating
+the remaining per-dot OBJ schedule. Re-run the selected Mealybug ROM after
+each measured change; do not tune the global phase to chase a lower pixel
+count. Keep CGB FIFO behavior and unrelated fetch quirks out of scope.
+
+### Mode 3 state and BG FIFO foundation (2026-10-25)
+
+Group the private per-line pixel buffers, fetch registers, output position and
+stall counters in `DmgPpu::Mode3State`, and move per-dot work into
+`advanceMode3Pipeline()`. The BG fetcher now pushes raw color indices into a
+16-pixel ring FIFO, and visible output pops pixels from it. Fine SCX discard
+also removes pixels from this queue. Window pixels still use their line-start
+cache. OBJ stalls are represented as precomputed events with `AlignmentWait`,
+`FetchSetup` and `DataTransfer` stages, but these coarse phases preserve the
+old total duration and do not model individual bus reads; sprite interaction
+is not hardware-complete.
+
+`make test` passes, including the framebuffer and line/STAT regressions. A
+direct `m3_scx_high_5_bits` capture still stops at PC `$1612`; comparing the
+shade buffer against the external DMG reference gives 84 differing pixels in
+x=16–23, y=8–86, unchanged from the prior model. The repository comparison
+wrapper requires Pillow, which is unavailable here; a small standard-library
+PNG decoder was used to count the reference differences.
+
+An experiment advanced the background fetcher on every dot of the existing
+precomputed OBJ stall. It broke
+`testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles` and increased the
+Mealybug mismatch from 84 to 342 pixels, so it was reverted. Advancing BG
+fetch only during `AlignmentWait` broke the same regression but produced an
+identical Mealybug frame hash. Advancing during the four-dot fetch-setup phase
+passed the focused PPU test but raised the mismatch to 256 pixels; advancing
+only during the later data-transfer phase raised it to 289. All variants were
+reverted. These broad phase choices do not identify the correct dot-level
+arbitration. The current OBJ event state machine separates alignment, fetch
+setup and data-transfer time without changing output; next, model individual
+OAM/VRAM fetch actions and test each behavior change against existing PPU
+behavior before using the external image as a diagnostic.
 
 ### Measured SCY result
 
@@ -233,13 +371,14 @@ differing pixels remain a separate fetch/sprite timing question.
 ## Mid-scanline LCDC.1 object enable
 
 LCDC.1 gates object display and can be changed during a frame. LotusGB now
-retains the scanline's selected object pixels even if LCDC.1 is clear when
-Mode 3 starts, then checks the live bit as each pixel is emitted. It only adds
-the simplified object-fetch penalties when LCDC.1 was enabled at scanline
-preparation; turning objects on or off around the actual fetch still needs a
-FIFO-based model. Focused PPU tests cover hiding and restoring upcoming object
-pixels, enabling objects after scanline preparation, and preserving baseline
-Mode 3 timing while objects remain disabled. This follows the basic register
+retains the selected object descriptors even if LCDC.1 is clear when Mode 3
+starts, reads their tile planes at the coarse fetch event, then checks the live
+bit as each pixel is emitted. It only adds the simplified object-fetch
+penalties when LCDC.1 was enabled at scanline preparation; timing when LCDC.1
+changes during an active fetch remains unmodeled. Focused PPU tests cover
+hiding and restoring upcoming object pixels, enabling objects after scanline
+preparation, and preserving baseline Mode 3 timing while objects remain
+disabled. This follows the basic register
 semantics in [Pan Docs](https://eldred.fr/pandocs/LCDC.html#lcdc1--obj-enable)
 and the separation of OAM scan from the per-pixel LCDC.1 display gate in the
 [SameBoy renderer](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L3202-L3318).
@@ -252,3 +391,33 @@ post-boot test profile skips the boot ROM and starts VRAM empty, so those
 pixels do not establish a remaining LCDC.1 mismatch. The Mealybug project
 describes its expected images as its own emulator renders, not raw hardware
 captures; use them as diagnostics only.
+
+## OBJ FIFO staging and BG catch-up (2026-10-25)
+
+Add a separate 16-pixel OBJ FIFO. Each selected object's descriptor (tile,
+row, and attributes) is captured at scanline preparation. The low tile plane
+is read after the coarse fetch setup and the high plane at event completion;
+then the row is decoded and overlaid into the OBJ FIFO. Transparent pixels
+leave higher-priority OBJ pixels intact, and the FIFO shifts only when a
+visible screen pixel is emitted. Partly clipped objects start overlaying at
+their first visible source pixel. If OBJ output is disabled at scanline
+preparation, zero-stall events read and queue the selected object at its screen
+position, retaining the ability to reveal upcoming pixels after LCDC.1 is
+enabled mid-line.
+
+The existing alignment/setup/data-transfer durations are retained. During a
+timed OBJ event, BG fetching now advances until it reaches Push with pixels
+already queued, then waits; BG rows push only into an empty FIFO. A public
+regression changes SCY during that catch-up and confirms that the sampled
+bitplanes remain latched. The test failed before this behavior change and now
+passes. `make test` and the selected 11-ROM Mooneye PPU/interrupt run pass; the
+Big2Small and Canyon Racer callbacks each completed 3,600 frames. The direct
+`m3_scx_high_5_bits` capture remains at 84 differing pixels with the previous
+shade-buffer hash. A permissive FIFO push candidate increased the mismatch to
+150 pixels and was discarded. The visual comparison is diagnostic, not a
+hardware oracle. Canyon Racer's captured frame differs from the preceding
+baseline in 407 of 23,040 pixels; there is no expected frame for this smoke
+profile, so this is recorded as a comparison, not judged as an accuracy
+improvement or regression. Exact event dot positions and per-dot bus behavior
+still need independent evidence; next investigate a specific sprite/fetch
+boundary without changing the established total stall schedule.
