@@ -493,6 +493,28 @@ it cannot rule out a shared interpretation error or an error in the emulator
 reference image. Keep their frames as provisional comparison targets; hardware
 evidence remains the authority for deciding a disputed dot-level behavior.
 
+### mGBA third-core comparison
+
+The installed mGBA libretro core (0.10-dev) produced a stable image at 10, 11,
+12, 120, 180, and 240 frames, but its 120-frame image differs from the Mealybug
+`DMG-blob` reference in 8,300 pixels after mapping its three RGB565 output
+levels (black, mid-gray, white) to reference shades 0, 2, and 3. The differing
+pixels span x=16–159 across most visible rows. SameBoy and Gambatte still match
+the reference exactly under the same shade mapping.
+
+The headless runner explicitly selected `mgba_gb_model=Game Boy` and disabled
+`mgba_use_bios` and `mgba_skip_bios`. Its automatically selected model produced
+the same frame. The ROM header is DMG-only (`$143 = $00`). The core SHA-256 is
+`c840f305825d07c9bec7a6ec18841073c4b539fd234f73623474f97c507f1cdc`; the
+stable 120-frame RGB capture SHA-256 is
+`d2ab6bcd40d5397f69a4698cb4ddc277ebc68d9dcd010f58222f559c8fb7c21e`.
+
+This third output shows that emulator agreement is not unanimous. It does not
+identify which image matches physical DMG hardware: the Mealybug reference is
+not a hardware capture, and the different output may reflect mGBA's behavior or
+an unresolved difference in test execution. Keep the mGBA result as a recorded
+cross-check, not as a reason to change LotusGB's timing model by itself.
+
 ## Global CPU bus-phase experiment (2026-10-25)
 
 Moving every CPU bus transaction earlier is not a viable fix for this image.
