@@ -263,6 +263,7 @@ private:
     void updateStatInterruptLine();
     void advanceDot();
     void advanceMode3Pipeline();
+    bool advanceObjectFetchPipeline();
     void advanceBackgroundFetcherForObjectFetch();
     void advanceActiveObjectFetch();
     void emitMode3Pixel();

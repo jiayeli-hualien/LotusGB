@@ -92,6 +92,7 @@ contention are not implemented. This is DMG behavior, not a CGB bus model.
 
 - State the externally visible behavior or invariant before changing structure. Make one small structural change at a time and keep it behavior-preserving; handle emulation behavior changes separately.
 - Give a function or component a clearer owner only when that improves naming, state ownership, or a useful test boundary. File length or a design-pattern name alone is not a reason to add an abstraction.
+- Keep the start, advance, and completion of a clocked operation under one owner. Return whether the operation occupied the current dot rather than deriving that from its state afterward: an OBJ fetch can become idle while its completion dot still stalls pixel output.
 - Re-run checks that cover the affected behavior, including a focused ROM or image/audio comparison when relevant. Keep known model limits explicit instead of treating a passing test as proof of full hardware accuracy.
 
 These project-specific notes are informed by [Martin Fowler's *Refactoring* (2nd edition)](https://martinfowler.com/books/refactoring.html); they summarize our workflow in original wording.

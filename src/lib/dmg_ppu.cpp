@@ -340,33 +340,8 @@ void DmgPpu::advanceMode3Pipeline() {
         } else if (mode3.windowPenaltyDotsRemaining > 0) {
             --mode3.windowPenaltyDotsRemaining;
             outputStalled = true;
-        } else if (mode3.objectFetcher.active()) {
-            advanceBackgroundFetcherForObjectFetch();
-            advanceActiveObjectFetch();
-            outputStalled = true;
         } else {
-            while (mode3.nextObjectFetchEvent < mode3.objectFetchEventCount &&
-                   mode3.objectFetchEvents[mode3.nextObjectFetchEvent].startX ==
-                       mode3.outputX) {
-                ObjectFetchEvent &event =
-                    mode3.objectFetchEvents[mode3.nextObjectFetchEvent];
-                if (event.transferDots == 0) {
-                    readObjectTilePlane(event, false);
-                    readObjectTilePlane(event, true);
-                    decodeObjectTileRow(event);
-                    mode3.objectFifo.overlay(event);
-                    ++mode3.nextObjectFetchEvent;
-                    continue;
-                }
-
-                mode3.activeObjectFetchEvent = mode3.nextObjectFetchEvent;
-                mode3.objectFetcher.begin(event);
-                ++mode3.nextObjectFetchEvent;
-                advanceBackgroundFetcherForObjectFetch();
-                advanceActiveObjectFetch();
-                outputStalled = true;
-                break;
-            }
+            outputStalled = advanceObjectFetchPipeline();
         }
     }
     if (ly < VISIBLE_SCANLINES && dot >= MODE2_DOTS &&
@@ -383,6 +358,39 @@ void DmgPpu::advanceMode3Pipeline() {
 
     if (outputReady && !outputStalled)
         emitMode3Pixel();
+}
+
+bool DmgPpu::advanceObjectFetchPipeline() {
+    if (!mode3.objectFetcher.active()) {
+        while (mode3.nextObjectFetchEvent < mode3.objectFetchEventCount &&
+               mode3.objectFetchEvents[mode3.nextObjectFetchEvent].startX ==
+                   mode3.outputX) {
+            ObjectFetchEvent &event =
+                mode3.objectFetchEvents[mode3.nextObjectFetchEvent];
+            if (event.transferDots == 0) {
+                // Untimed events retain OBJ data for a later LCDC.1 enable.
+                readObjectTilePlane(event, false);
+                readObjectTilePlane(event, true);
+                decodeObjectTileRow(event);
+                mode3.objectFifo.overlay(event);
+                ++mode3.nextObjectFetchEvent;
+                continue;
+            }
+
+            mode3.activeObjectFetchEvent = mode3.nextObjectFetchEvent;
+            mode3.objectFetcher.begin(event);
+            ++mode3.nextObjectFetchEvent;
+            break;
+        }
+    }
+    if (!mode3.objectFetcher.active())
+        return false;
+
+    advanceBackgroundFetcherForObjectFetch();
+    advanceActiveObjectFetch();
+    // The completion dot still belongs to this fetch. Output and another
+    // same-position OBJ fetch may resume only on the following dot.
+    return true;
 }
 
 void DmgPpu::advanceBackgroundFetcherForObjectFetch() {
