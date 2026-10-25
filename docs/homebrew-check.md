@@ -86,6 +86,16 @@ character, enemies and HUD. The neutral-input run remained in the opening
 scene. These observations demonstrate a limited startup/input path, not
 complete level compatibility, precise rendering or sound quality.
 
+The same profile was rerun on 2026-10-26. It completed 3,600 video callbacks
+and 2,893,139 stereo audio frames, produced an 8 KiB SRAM block, and showed a
+gameplay scene. The final frame SHA-256 was
+`260f1d3926acb5a2db9b2ec757b6a493158dc4f9de3b98b7e939df484e35c8f4`; the core
+SHA-256 was `80ec278b8906ac60ce3f865098cec05c50bddef291461aff5cb5a4963fa1b006`
+and the input script SHA-256 was
+`2c205fb0ed775c6d8138cef8cb5821ee29e864bb402b88a45a61afd7c44a724c`.
+This remains a scripted execution check, not a level-completion or save-
+persistence acceptance test.
+
 ## Automated output checks
 
 For all pinned profiles, success requires a runner summary reporting 3,600
