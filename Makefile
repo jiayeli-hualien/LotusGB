@@ -4,7 +4,8 @@ src_dir := $(CURDIR)/src
 build_dir := $(CURDIR)/build
 
 # PHONY: non file targets
-.PHONY: build test test-roms test-mooneye test-mooneye-visual test-homebrew clean
+.PHONY: build test test-roms test-mooneye test-mooneye-visual test-homebrew \
+	test-gbmicrotest-ppu-latch clean
 
 TEST_ROM_DIR ?= ../test-roms/dmg_sound
 TEST_ROM_FRAMES ?= 1200
@@ -19,6 +20,7 @@ MOONEYE_OUTPUT_DIR ?= $(build_dir)/test-roms/mooneye$(if $(filter ppu,$(MOONEYE_
 MOONEYE_SUITE_DIR ?= ../test-roms/mooneye
 MOONEYE_VISUAL_SUITE_DIR ?= ../test-roms/game-boy-test-roms-v7.0/mooneye-test-suite
 VISUAL_TEST_PYTHON ?= $(build_dir)/visual-venv/bin/python
+GBMICROTEST_SUITE_DIR ?= ../test-roms/gbmicrotest
 
 all: build
 
@@ -69,6 +71,13 @@ test-homebrew:
 		--runner "$(build_dir)/libretro_rom_runner" \
 		--rom "$(HOMEBREW_ROM)" \
 		$(if $(HOMEBREW_SAVE),--save "$(HOMEBREW_SAVE)")
+
+test-gbmicrotest-ppu-latch:
+	$(MAKE) -C $(src_dir)/libretro build rom-test-runner build_dir=$(build_dir)
+	python3 tools/run_gbmicrotest_ppu_latches.py \
+		--suite-dir "$(GBMICROTEST_SUITE_DIR)" \
+		--core "$(build_dir)/lotusgb_libretro.so" \
+		--runner "$(build_dir)/libretro_rom_runner"
 
 clean:
 	rm $(build_dir) -r
