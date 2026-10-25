@@ -226,7 +226,7 @@ removed rather than keeping a speculative expected value in the normal unit
 suite. The external ROM comparison remains the reproducible target for this
 case. A fresh capture from the corrected `ppu_frame_runner` still differs in
 84 pixels and has shade-buffer SHA-256
-`0655c10657494025ae466e223502bb9ef6aa5f0c0378cce02386ae6a7a382cf805`.
+`0655c10657494025e66e223502bb9ef6aa5f0c0378cce02386ae6a7a382cf805`.
 
 The likely modeling gap is that LotusGB still schedules each object as a
 precomputed output stall. BG and OBJ pixels pass through separate FIFOs, and
@@ -435,3 +435,31 @@ profile, so this is recorded as a comparison, not judged as an accuracy
 improvement or regression. Exact event dot positions and per-dot bus behavior
 still need independent evidence; next investigate a specific sprite/fetch
 boundary without changing the established total stall schedule.
+
+## SameBoy cross-core comparison (2026-10-25)
+
+The Mealybug `m3_scx_high_5_bits` ROM was also run through the locally
+installed SameBoy libretro core (version 0.14.7) using the headless libretro
+runner. The core reported DMG mode. Its final RGB frame was identical at runs
+of 120, 180, and 240 frames; the 120-frame output matches the Mealybug
+`DMG-blob` reference image pixel-for-pixel. LotusGB's capture still differs
+from that image in 84 pixels, all within x=16–23 and y=8–86. This confirms
+that the current LotusGB output differs from both the test reference and
+SameBoy on the affected sprite-aligned tile column; it does not prove which
+implementation matches physical DMG hardware.
+
+The local comparison artifacts are under the ignored `build/test-roms/`
+directory. The ROM SHA-256 is
+`423db91af0f87547ae46690044ef760481f7005033ffc61bd69875b7df96139b`; the
+reference PNG SHA-256 is
+`21750dfddb16dbbc084032f5361a82782685441eaca93bf67249049bb14b3a1b`; and
+the SameBoy core SHA-256 is
+`5f3cbc610d1de2c04d41319b6678bece8c5bc78b1067436e1f6d9d440b89b56e`. The
+stable SameBoy RGB output SHA-256 is
+`7c7e883096c6d23ade3e8347e333c5f2c14c7c34a1e581d2cd0dc2e406e74845`. The
+core attempted to load `./dmg_boot.bin`, which was unavailable to this runner;
+record this as a local boot-path limitation. No Gambatte `.so` was present in
+the checked RetroArch core directory, so this checkpoint compares one other
+core. Mealybug's expected image remains an emulator reference, not a hardware
+capture; use this result to localize the discrepancy, not to copy SameBoy's
+fetch rule without further evidence.
