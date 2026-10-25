@@ -1241,6 +1241,47 @@ void testPushBusOrder() {
     expect(reg.getRefSP() == 0xC0FE, "PUSH decrements SP twice");
 }
 
+void testPushAFStackOrder() {
+    CpuFixture f{{0x0000, 0xF5}, {0x0001, 0x00}};
+    Reg reg = f.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    reg.getRefA() = 0xA5;
+    setFlags(reg, true, false, true, true);
+    f.cpu.setReg(reg);
+
+    const auto internal = f.cpu.stepOneCycle();
+    expect(internal.success && !internal.fetchedNewInst &&
+               internal.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               f.cpu.getReg().getRefSP() == 0xC0FF &&
+               f.memory.writes.empty(),
+           "PUSH AF decrements SP in its internal cycle before writing");
+
+    const auto highByte = f.cpu.stepOneCycle();
+    expect(highByte.success && !highByte.fetchedNewInst &&
+               highByte.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               f.cpu.getReg().getRefSP() == 0xC0FE &&
+               f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{{0xC0FF, 0xA5}},
+           "PUSH AF writes A to the first stack address");
+
+    const auto lowByte = f.cpu.stepOneCycle();
+    expect(lowByte.success && !lowByte.fetchedNewInst &&
+               lowByte.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               f.cpu.getReg().getRefSP() == 0xC0FE &&
+               f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+                   {0xC0FF, 0xA5}, {0xC0FE, 0xB0}},
+           "PUSH AF writes the packed flag byte after A without another SP decrement");
+
+    const auto nextOpcode = f.cpu.stepOneCycle();
+    reg = f.cpu.getReg();
+    expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+               nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               f.memory.reads == std::vector<uint16_t>{0x0001} &&
+               f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+                   {0xC0FF, 0xA5}, {0xC0FE, 0xB0}} &&
+               reg.getRefSP() == 0xC0FE && reg.getRefPC() == 0x0002,
+           "PUSH AF fetches the following opcode after both stack writes");
+}
+
 void testPopAFMasksUnusedFlagBits() {
     CpuFixture f{{0x0000, 0xF1}, {0x0001, 0x00}, {0xC000, 0x2F}, {0xC001, 0xAB}};
     Reg reg = f.cpu.getReg();
@@ -2038,6 +2079,7 @@ int main() {
     testImmediate16BitLoadPhases();
     testSixteenBitArithmeticMcyclePhases();
     testPushBusOrder();
+    testPushAFStackOrder();
     testPopAFMasksUnusedFlagBits();
     testPopRetAndJumpBusTiming();
     testConditionalBranchAndCallBusTiming();
