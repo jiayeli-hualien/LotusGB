@@ -1,12 +1,24 @@
 # Current architecture and development workflow
 
-This document describes the implemented emulator, not a target design. Update it when a system boundary or runtime flow changes. Work priorities and milestone status live in the [development roadmap](roadmap.md).
+This guide describes the implemented runtime boundaries, not a target design.
+Work priorities live in the [roadmap](roadmap.md); feature evidence and known
+limits live in the [DMG validation matrix](dmg-validation.md).
 
 ## Current scope
 
-LotusGB currently runs ROM-only DMG cartridges up to 32 KiB, MBC1 types `$01`–`$03`, MBC2 types `$05`–`$06` with up to 256 KiB of ROM and built-in 512×4-bit RAM, MBC3 types `$0F`–`$13` with up to 2 MiB of ROM and 32 KiB of external RAM, and MBC5 types `$19`–`$1E` with up to 8 MiB of ROM and 128 KiB of external RAM. MBC2 battery RAM is exposed as 512 bytes, one nibble per byte; reads return `$F` in the unspecified upper nibble as a deterministic model choice. MBC3 timer types `$0F` and `$10` implement the five RTC registers, latch behavior, HALT, and the 9-bit day counter. The clock catches up against host wall time on RTC access, including time while the frontend is paused or closed. Its versioned 24-byte state is exposed through libretro's RTC memory interface; the frontend owns disk persistence. MBC5 rumble cartridges are supported for banking, but the motor output is not exposed. MBC30-sized RAM and other mapper types are not supported. Battery-backed cartridge RAM uses libretro's save RAM memory interface. The default system startup skips the boot ROM and initializes a DMG post-boot profile at `$0100`. A CPU-reset profile is available only through `GameBoySystem::createForTest()` for system tests.
+LotusGB is a headless DMG system connected to a libretro adapter. The system
+composes the CPU, address bus, cartridge and RAM, timer, interrupts, joypad,
+unconnected serial port, PPU, OAM DMA and APU. The default startup profile
+skips boot-ROM execution and begins from a DMG post-boot state. ROM-only, MBC1,
+MBC2, MBC3 and MBC5 cartridges are supported within the limits listed in the
+validation matrix.
 
-The headless system currently combines the CPU, address bus, RAM regions, timer, interrupts, joypad, an unconnected serial port, a partial PPU, OAM DMA, and an initial APU implementation. The PPU keeps scanline-local Mode 3 state, fetches BG tiles with named map/bitplane phases, and queues BG color indices in a 16-pixel FIFO. Selected OBJ pixels use a separate 16-pixel FIFO. OAM descriptors and event timing are prepared at scanline entry; the low and high tile planes are read at separate boundaries during each coarse event, and the decoded row is then overlaid into the OBJ FIFO. During OBJ fetch, the current model stops BG catch-up at Push or as soon as the BG FIFO becomes non-empty; a BG row is pushed only when the FIFO is empty. This follows Pan Docs' written stop condition, while SameBoy uses a different fetcher-state predicate. The current unit regression protects the Pan Docs interpretation but does not establish which sequence matches hardware; per-dot arbitration remains incomplete. SCX coarse sampling and the LCDC background-map select are sampled at tile-map fetch; LCDC.0/LCDC.1 and BGP/OBP palettes are applied at pixel output, along with object/BG priority. Background fetching continues while LCDC.0 hides its output, allowing a later mid-line re-enable to show fetched pixels. Selected object descriptors are retained even while LCDC.1 is clear, and hidden objects do not add modeled fetch stalls when OBJ output is disabled at scanline preparation. Mode 3 starts from 172 dots, adds `SCX & 7` fine-scroll dots, adds six dots when the window emits visible pixels, and applies precomputed object stalls in the documented DMG 6–11-dot range. SCY is sampled separately at tile-map and bitplane reads. Exact BG push cadence and OBJ bus-fetch/FIFO arbitration are incomplete; the selected Mealybug SCX-high image still has 84 mismatched pixels. The APU generates audio for pulse channels 1 and 2, wave channel 3, and noise channel 4. LotusGB schedules CPU bus transactions at the end of each four-T-cycle M-cycle. This phase passes the current selected Mooneye PPU/interrupt timing ROMs and Blargg CH3 test 09; other bus-sensitive tests should be rechecked as coverage grows. Other cartridge mappers, boot-ROM execution, and more complete PPU/APU timing are not implemented.
+The PPU renders background, window and object pixels and implements selected
+mid-scanline register behavior. Its Mode 3 BG/OBJ fetch arbitration and some
+raster timing remain approximate. The [PPU guide](ppu-scrolling.md) records the
+current model and visual evidence. CGB behavior, boot-ROM execution, additional
+mapper families, multiplayer serial and MBC5 rumble output are outside the
+current implementation.
 
 ## Runtime flow
 
@@ -74,7 +86,7 @@ contention are not implemented. This is DMG behavior, not a CGB bus model.
 4. Run `make test` and `make build`. Run GBIT or a targeted ROM when it covers the changed behavior; investigate disagreements against hardware behavior.
 5. Update the roadmap when milestone status, known limits, or implementation order changes. Update this document when ownership or runtime flow changes.
 
-`make test` covers the in-repository unit and libretro adapter tests. GBIT integration is a separate check; see the repository's development notes for its local setup and the CI workflow for the pinned revision.
+`make test` covers the in-repository unit and libretro adapter tests. GBIT integration is a separate check; use the [README's GBIT instructions](../README.md#gbit-instruction-integration-check) and the CI workflow's pinned revision.
 
 ## Refactoring guideline
 

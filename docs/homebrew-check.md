@@ -1,5 +1,13 @@
 # Local homebrew regressions
 
+These optional local profiles run freely available homebrew through the built
+libretro core. Big2Small is the repeatable gameplay target and the manual
+save-persistence acceptance game. Tobu Tobu Girl and Canyon Racer provide
+additional MBC1 and raster-effect smoke coverage. The automated profiles check
+that the selected ROM reaches a visible state and callbacks continue; they do
+not prove full game compatibility or exact hardware output. ROMs and player
+saves stay outside the repository.
+
 Run from the repository root:
 
 ```sh

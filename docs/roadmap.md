@@ -11,143 +11,83 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 
 ## Current route (2026-10-25)
 
-- **Active: PPU visual and raster-effect accuracy.** Continue using selected
-  Mealybug DMG images and the author's Canyon Racer homebrew, changing one
-  observable fetch behavior at a time. The expanded PPU timing group passes
-  14/14; do not add a global HALT delay to address PPU timing cases. The
-  selected `m3_scx_high_5_bits` image still has 84 differing pixels in one
-  tile column on sprite-affected lines. Mode 3 now has explicit per-dot BG
-  address (T1) and data (T2) phases, separate FIFO-push/tile-advance states,
-  and 16-pixel BG/OBJ FIFOs. During a timed OBJ fetch, BG fetching
-  advances until it reaches Push or the BG FIFO becomes non-empty, then waits;
-  a row is pushed only when the BG FIFO is empty. The public regression
-  `testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels` checks that a
-  SCY write during the pause affects bitplanes not yet fetched. The SCX-during-
-  OBJ regression still passes. `make test` and the selected 11-ROM
-  Mooneye PPU/interrupt run pass; Big2Small and Canyon Racer each complete
-  3,600-frame callback smoke runs. SameBoy and mGBA repeat the Canyon Racer
-  profile deterministically and match LotusGB's final SRAM; after palette
-  normalization their frames differ from LotusGB in 4,006 and 5,426 pixels.
-  This cross-core evidence has no hardware image oracle (see
-  [the comparison record](homebrew-check.md#three-core-raster-diagnostic-2026-10-25)).
-  Mooneye's manual `sprite_priority` DMG reference now matches exactly; this
-  checks scene-level sprite priority, not the unresolved fetch timing.
-  The Mealybug image retains its prior hash and 84 differences. Allowing a row
-  push into a non-empty FIFO raised the
-  mismatch to 150, so the empty-FIFO rule was retained. These checks support
-  the current model but do not prove exact hardware timing. OAM descriptors
-  and event durations are still prepared at scanline entry. OBJ low/high plane
-  reads happen at separate coarse event steps. A candidate gate that prevented
-  BG catch-up on OBJ read dots was removed because no current output exposed
-  it: 31 OBJ/sprite Mealybug ROMs and two 13,527-case public-interface sweeps
-  were unchanged. The gate's observed overlaps occurred while the renderer
-  sourced pixels from its precomputed window buffer. Shared bus arbitration is
-  therefore still unimplemented. The BG catch-up predicate is unresolved: Pan
-  Docs describes stopping at Push or a non-empty FIFO, while SameBoy's current
-  source waits for both its high-data T2 state and a non-empty FIFO before two
-  more fetcher advances. Copying that predicate into the coarse scheduler failed the
-  existing SCX-during-OBJ regression. BG address/data phases and OBJ plane-read
-  points are explicit, but OAM/OBJ durations and joint fetch scheduling remain
-  coarse. See the
-  [candidate scan and follow-up](ppu-scrolling.md#timed-objbg-vram-read-candidate-scan-and-follow-up-2026-10-25).
-  A public PPU-interface case now distinguishes the catch-up predicates: a
-  temporary 330-case sweep (five sprite X positions, write dots 80–145) found
-  11 outputs where a stricter high-plane-data-plus-nonempty-FIFO diagnostic
-  alternative differs from the current rule; the existing X=11, dot-100 SCY
-  regression is one of them. This predicate-only alternative is not a faithful
-  port of SameBoy's full schedule, and the selected Mealybug SCX-high image
-  stays at 84 differing pixels under both. Keep the regression as a guard for
-  the documented Pan Docs hypothesis, not as hardware verification. Before
-  changing the catch-up boundary or event durations, seek an independent DMG
-  measurement or a ROM result with a hardware-backed expected image. Keep the
-  Mealybug mismatch diagnostic instead of
-  tuning to it, and preserve line, STAT, and pixel regressions; see the
-  [measured diagnosis](ppu-scrolling.md#bounded-investigation-of-the-remaining-scx-pixels).
-  Do not tune the global fetch phase or add CGB FIFO behavior to chase a lower
-  diagnostic pixel count.
-  Keep other synthetic mismatches as diagnostics, not a requirement to close
-  every edge before gameplay. F-1 Race remains a later target, not an
-  already-verified result.
-- **Completed: Mode 3 responsibility boundary and separate pixel FIFOs.**
-  `DmgPpu` remains responsible for
-  memory-mapped registers, VRAM/OAM access rules, scanline/mode timing,
-  STAT/VBlank requests, live palette application, and the framebuffer. The
-  scanline-local fetch registers, BG and OBJ FIFOs, output position and stall
-  state are grouped in `Mode3State`, with named BG fetch phases. Tests protect
-  the public output, scroll sampling, left-clipped OBJ pixels and existing
-  line/STAT behavior, including BG fetch catch-up during OBJ fetch and the
-  empty-FIFO row-push condition. OAM descriptors and event durations are
-  prepared at line start, while OBJ plane reads happen at separate coarse
-  event boundaries. The BG fetcher has explicit tile-map/bitplane T1 address
-  and T2 data states, then separate FIFO-push and tile-column-advance states;
-  this preserves the existing tested output and timing. Exact per-dot OBJ bus
-  reads and BG/OBJ FIFO arbitration remain active work. Do not add a
-  polymorphic class for each hardware phase.
-- **Scheduled after the current PPU visual checkpoint: documentation narrative
-  pass.** Reorganize the top-level README and `docs/*.md` around the Minto
-  Pyramid Principle: lead with the conclusion/current status, group the main
-  points, then provide evidence and implementation detail. Keep dated
-  investigation history as history, and keep procedural or ROM-specific
-  instructions task-oriented. The writing standard is defined in
-  [`AGENTS.md`](../AGENTS.md) and [`documentation-guide.md`](documentation-guide.md);
-  this scheduled pass applies it to the existing docs. Acceptance: README
-  quickly answers what LotusGB supports, how to build/test it, and what comes
-  next; topic documents put current behavior and validation before historical
-  experiments; duplicated status is reduced; links, commands, and test counts
-  are checked. Treat this as an information-organization task, not a change to
-  emulator behavior or hardware claims.
-- **Game acceptance:** wait for the user's additional private dumps. ROMs and
-  saves remain external; use the existing homebrew profiles in the meantime.
-- **Save states / rewind / replay:** deferred. The user prefers a pause/rewind
-  experience over manual quick-load controls. Rewind generally needs internal
-  state snapshots too; discuss the user flow separately from that mechanism.
-  No rewind implementation is approved by this note.
-- **Platform preference:** Raspberry Pi with Recalbox is the preferred next
-  device after the Ubuntu RetroArch baseline; Steam Deck and Windows remain
-  later targets without an immediate delivery deadline.
+### Active: DMG PPU visual and raster-effect accuracy
 
-## Completed foundation
+The current renderer passes the expanded 14-case Mooneye PPU timing group and
+matches the Mooneye `manual-only/sprite_priority` DMG reference image exactly.
+The selected Mealybug `DMG-blob` images still differ by 3,642 pixels for BGP,
+540 for SCX-low, 84 for SCX-high, 8,334 for SCY, 1,082 for BG-map changes and
+2,210 for BG-enable changes. These counts are diagnostics against emulator
+reference images, not a hardware score. Canyon Racer cross-core output also
+differs between LotusGB, SameBoy and mGBA; no physical-DMG reference image is
+available for that run (see the
+[three-core diagnostic](homebrew-check.md#three-core-raster-diagnostic-2026-10-25)).
 
-- CPU instruction execution advances in M-cycle steps.
-- Decoder metadata is compiled into typed C++ tables from the CSV source files.
-- CPU interface and instruction unit tests run through `make test`.
-- Libretro contains runtime exceptions at the callback boundary, logs once, and stops execution until reset or content reload.
-- GitHub Actions builds the project, runs unit tests, and checks instructions against a pinned GBIT fork.
-- Regression coverage includes DAA, `ADD SP,e8` flags, EI delay, stack/jump memory-cycle sequences, and the M-cycle when PUSH/POP update SP.
-- Interrupt sampling treats a CB prefix and its second opcode byte as one instruction; a pending interrupt waits until the CB operation completes. A CPU regression checks the executed opcode and pushed return address.
-- Polymorphic interfaces used through owning pointers now have virtual destructors. `GBCPU` marks memory/decoder dependencies as borrowed references, and each GBIT adapter owns its dependencies and helper independently.
-- A regression test creates two GBIT adapters, destroys one, and verifies that the other remains usable.
-- CPU-local STOP and HALT states are separate; STOP consumes its second byte, ignores its value, and resumes fetching only after an explicit wake request.
-- The CPU stepping interface defines one M-cycle as four T-cycles and reports elapsed T-cycles per step (zero during STOP idle). Tests check elapsed time and memory accesses across instruction M-cycles.
-- The initial DMG PPU owns VRAM/OAM and implements LCD registers, 456-dot scanlines, mode 0/1/2/3 transitions, VBlank and edge-triggered STAT requests, mode-based CPU video-memory access restrictions, and a headless 160×144 DMG shade-index framebuffer. Its renderer draws the background, window, and 8×8/8×16 objects with tile addressing, palettes, transparency, and DMG object priority. BG and OBJ pixels pass through separate 16-pixel FIFOs; named BG tile-map/bitplane phases feed the BG FIFO. OAM descriptors and coarse event timing are prepared at Mode 3 entry, while OBJ tile planes are sampled at separate event boundaries. Palette/priority resolution happens at pixel output. Mode 3 starts from 172 dots, adds `SCX & 7` fine-scroll dots, adds six dots when the window emits visible pixels, and models object stalls with precomputed 6–11 dot penalties. Selected mid-Mode-3 scroll changes are modeled; exact BG push timing and OBJ bus-fetch/FIFO arbitration remain incomplete.
-- FF46 OAM DMA copies 160 bytes from the selected address page into PPU OAM. The shared clock models startup, one-byte-per-M-cycle progress, restart, and basic CPU bus arbitration; precise corruption/rendering conflicts remain separate work.
-- `GameBoySystem` starts from a no-boot-ROM DMG post-boot profile for the implemented CPU, timer, joypad, interrupt, APU, and PPU state. System tests request the synthetic CPU-reset state through the explicitly named `GameBoySystem::createForTest()` factory. `stepFrame()` advances one nominal 70,224-T-cycle frame and reports an incomplete frame if STOP freezes CPU/system time.
-- `AddressBus` supports address aliases, and `GameBoySystem` maps Echo RAM `$E000–$FDFF` to WRAM `$C000–$DDFF`. Bus and system tests cover mirrored reads/writes and the boundary before OAM.
-- The initial DMG APU is clocked with the system: pulse channels 1 and 2, wave channel 3, noise channel 4, channel 1 sweep, length/envelope clocks, stereo routing, 48 kHz PCM generation, and libretro audio callback delivery. The frame sequencer now clocks from falling edges of divider bit 12, including a DIV write that resets the bit while high. CPU bus transactions are scheduled at the end of each four-T-cycle M-cycle. Blargg CH3 tests 09, 10, and 12 passed with the earlier three-T-cycle bus phase; test 09 has been rerun successfully at the current phase, while 10 and 12 need rerunning when their ROMs are available. Test 10 exposed an incorrect high-memory address in `LD A,(C)`; the CPU instruction path now forms `FF00 | C` and has a focused regression test.
-- The optional `make test-roms` workflow runs selected Blargg CH3 ROMs through the built libretro shared core, verifies the source ROM SHA-256, captures screenshots, SRAM dumps, and runner logs, and records the pass/fail result read from external RAM in a Markdown report under `build/test-roms/`. It leaves external source ROMs untouched. This local workflow is not required by CI.
+Mode 3 has separate 16-pixel BG and OBJ FIFOs and explicit BG address/data,
+push and tile-advance phases. OBJ event timing and shared BG/OBJ bus
+arbitration remain coarse. The BG catch-up rule follows the Pan Docs wording;
+SameBoy uses a different fetcher-state boundary. Keep the public regression as
+a guard for that documented hypothesis, not as hardware verification. Before
+changing the boundary or event durations, seek an independent hardware-backed
+measurement or a ROM with a hardware-backed expected result. Keep the remaining
+Mealybug differences visible and change one observable behavior at a time.
+The detailed implementation record, captures and bounded experiments are in
+the [PPU guide](ppu-scrolling.md).
 
-## Delivery milestones
+### Product follow-ups
 
-The first playable milestone is running a Game Boy ROM in RetroArch on Ubuntu. Build and test the shared headless core first; it is a prerequisite, not a separate player-facing milestone. Do not make a standalone GUI a prerequisite.
+- Continue validating common DMG games and PPU effects with the available
+  homebrew profiles; keep commercial ROMs and saves outside the repository.
+- Rerun Blargg CH3 tests 10 and 12 using the current M-cycle-end bus phase when
+  their external ROMs are available. Verify MBC3 RTC disk persistence in
+  RetroArch with a legally available timer cartridge.
 
-1. **First playable milestone: Ubuntu RetroArch core.** Implement the shared clock and bus, address map and initial cartridge loading, timer and interrupts, then a minimal PPU, input path, and libretro adapter. Acceptance: build a Linux libretro shared library; RetroArch loads a supported homebrew ROM; the game produces video frames and responds to input through a short gameplay loop. Use [GB Pong Clone](https://github.com/AlexMGiroux/gb-pong-clone), now confirmed as a 32 KiB ROM-only cartridge under MIT, as the acceptance game. RetroArch 1.7.3 loaded the core and ran Pong for 60 frames under Xvfb; the in-process libretro test verifies that Up visibly changes the Pong frame. Interactive controller verification remains the final check. Audio and save persistence are not required for this milestone.
-2. **Common-game compatibility — active mainline.** Build an end-to-end acceptance set from a small number of commonly played DMG games. For each selected game, verify that it loads, reaches its title screen, starts gameplay, responds visibly to controls, and sustains video and audio; verify save/load when the cartridge supports battery-backed saves. Keep commercial ROMs outside the repository. Use SameBoy as a comparison point when behavior differs, and use hardware references plus focused tests to determine fixes. Refine APU and PPU timing as real games expose problems; retain Game Boy F-1 Race as a targeted PPU scrolling and visual test. Boot-ROM execution remains deferred.
-3. **Raspberry Pi with Recalbox.** Build and verify the core for the supported Raspberry Pi model and Recalbox environment, including controls, video, and audio.
-4. **Steam Deck.** Build and verify the libretro core in RetroArch on SteamOS, including controls, display scaling, and audio.
-5. **Windows.** Add a Windows build and CI job for the libretro core, then verify it in a Windows RetroArch installation.
+### Deferred goals
 
-## Next work, in order
+- Boot-ROM execution and CGB support remain outside the current DMG target.
+- Save-state, rewind and replay remain deferred; discuss the desired player
+  workflow before designing the state snapshot mechanism.
+- Raspberry Pi with Recalbox is the next platform target after Ubuntu
+  RetroArch; Steam Deck and Windows follow without an immediate deadline.
 
-1. **Integrate the shared system clock and bus — M-cycle-end bus phase.** Keep CPU stepping at one M-cycle (four T-cycles), and make the system scheduler the time authority for CPU and peripherals. The scheduler advances all devices through the four-T-cycle M-cycle before the CPU bus transaction. Reset's initial opcode fetch now occurs in the first timed CPU step. This phase passes the selected Mooneye PPU/interrupt timing ROMs and Blargg CH3 test 09; rerun CH3 tests 10 and 12 with this phase when their ROMs are available.
-2. **Add a real address bus and cartridge boundary — common mapper baseline implemented.** Address-range routing, zero-initialized VRAM/WRAM/OAM/HRAM regions, WRAM Echo RAM aliases, ROM-only cartridges, and MBC1 types `$01`–`$03` are composed into the headless system and covered by tests. MBC1 ROM banking supports ROMs up to 2 MiB; MBC1 external RAM supports 8 KiB and 32 KiB header sizes. MBC2 types `$05`–`$06` support up to 256 KiB ROMs and built-in 512×4-bit RAM. The battery-backed type exposes a 512-byte one-nibble-per-byte libretro save block; upper read bits are returned high as a deterministic choice because hardware documentation leaves them undefined. MBC3 types `$11`–`$13` support seven-bit ROM bank selection and 2 KiB/8 KiB/32 KiB external RAM banks; types `$0F` and `$10` also implement an RTC and expose a persistent RTC state block through libretro. MBC5 types `$19`–`$1E` support up to 8 MiB ROM and 128 KiB RAM; rumble cartridges use their reduced RAM-bank register, while motor output is not exposed. MBC30-sized RAM, other mapper types, cartridge file loading, and hardware-backed I/O devices remain to be implemented. Keep the GBIT memory adapter as test infrastructure.
+## Delivery targets
 
-   **Mapper scope:** Treat ROM-only, MBC1, MBC2, MBC3, and MBC5 as the initial common-cartridge coverage target; do not try to implement every known mapper in one pass. Add less common mappers or cartridge peripherals when a selected game or test ROM needs them. Track mapper banking separately from attached hardware behavior, such as MBC5 rumble output.
+1. **Ubuntu RetroArch core — complete.** RetroArch loads the core, runs a
+   supported ROM, displays frames and responds to input. GB Pong Clone is the
+   redistributable input-acceptance ROM; see the validation matrix.
+2. **Common DMG game compatibility — active.** Verify title-to-gameplay
+   progress, visible input response, stable video/audio, and battery-save
+   persistence where applicable. Use targeted ROMs and hardware evidence for
+   specific behavior; SameBoy and mGBA are comparison points, not authorities.
+3. **Raspberry Pi with Recalbox.** Verify the libretro core, controls, video
+   and audio on the supported Pi/Recalbox combination.
+4. **Steam Deck.** Verify RetroArch loading, controls, display scaling and
+   audio on SteamOS.
+5. **Windows.** Add a Windows build and CI job, then verify Windows RetroArch.
 
-3. **Add timer and interrupt components.** The initial DMG timer registers (`DIV`, `TIMA`, `TMA`, `TAC`), divider-edge counter, delayed overflow reload, and timer interrupt request/enable registers are mapped and covered by focused tests. The CPU now accepts enabled requests at instruction boundaries, applies priority, acknowledges only the selected IF bit, pushes the return PC and vectors through a five-M-cycle interrupt-entry sequence, and handles IME delay, HALT wake-up, and the HALT bug. Timer and CPU depend on an interrupt-controller interface so other hardware sources can request interrupts without depending on the IF/IE register implementation. Further refine timer/interrupt edge timing against dedicated ROM tests as those suites are added.
-4. **Add the PPU and input path.** The JOYP register is mapped at `FF00`, with active-low direction/button selection, falling-edge interrupt requests, and a `GameBoySystem` button-state API covered by unit and system tests. The initial DMG PPU now owns VRAM/OAM, LCD registers, line/mode timing, VBlank/STAT requests, mode-based CPU access restrictions, and rendering for background, window, and objects. Pixels are emitted during mode 3 and sample BGP/OBP per pixel. Mode 3 starts from 172 dots, adds `SCX & 7` fine-scroll dots, adds six dots when the window emits visible pixels, and models documented 6–11-dot object fetch penalties; focused tests cover SCX startup delay, the window transition penalty, object stalls, and resulting mode 3 length. BG and OBJ pixels use separate 16-pixel FIFOs; OAM descriptors and coarse timing are prepared at Mode 3 entry, with OBJ tile planes sampled at separate event boundaries. Background tiles sample SCX coarse bits during the line; SCY has distinct tile-map and bitplane samples. BG push cadence and OBJ bus-fetch/FIFO arbitration remain incomplete. FF46 DMA transfers one byte per M-cycle after its startup delay, supports delayed restart, and arbitrates CPU access to OAM and the occupied source bus. Exact write-induced corruption and PPU/DMA contention remain future work. The headless frame buffer is exposed by `GameBoySystem` for a future frontend. An automated dmg-acid2 visual regression compares the frame buffer with the upstream reference. Keep rendering/UI separate from emulation state. Use Game Boy F-1 Race as a later visual compatibility target.
-5. **Define cartridge startup and frame stepping — implemented.** Normal `GameBoySystem` construction starts at `$0100` with the documented DMG CPU register values, initializes the implemented timer/interrupt/joypad/APU/PPU state, and skips the boot-ROM animation. System tests use the explicitly named `GameBoySystem::createForTest()` factory for the synthetic CPU-reset state; `GBCPU::reset()` remains unchanged. `stepFrame()` advances 70,224 T-cycles and returns elapsed time; it exits with `frameCompleted == false` if STOP prevents further clock progress. Boot-ROM execution and model-specific power-on variation remain outside this initial DMG profile.
-6. **Libretro adapter — implemented; interactive input check remains.** `make build` produces `build/lotusgb_libretro.so`; it loads in-memory ROM-only, MBC1, MBC2, MBC3, and MBC5 content, advances one frame per `retro_run()`, forwards joypad buttons, publishes the 160×144 DMG framebuffer, and exposes battery-backed cartridge RAM and RTC state through libretro memory interfaces. GBIT-only source files are excluded from this core build. In-process frontend tests check API metadata, video callbacks, exact dmg-acid2 output, visible Pong input response, channel 1 PCM delivery, and MBC1/MBC2/MBC3/MBC5 save RAM plus MBC3 RTC access. Ubuntu RetroArch 1.7.3 successfully loaded the core and ran Pong for 60 frames under Xvfb. Before declaring the first playable milestone complete, verify the mapped controls in an interactive RetroArch session. Keep RetroArch-specific lifecycle and callbacks outside CPU and hardware components.
-7. **Refine DMG audio and visual compatibility; common mapper baseline implemented.** All four DMG channels currently produce stereo PCM through the libretro batch callback and have component/frontend coverage. The frame sequencer is driven by the timer's divider-bit-12 falling edge, including DIV reset writes; focused Timer, APU, and system tests cover that wiring and channel-length clocking. CH3 waits three extra 2 MHz APU ticks before its first sample fetch after a trigger, and DMG wave RAM access is allowed only on the same T-cycle as a sample fetch. A CH3 retrigger one 2 MHz APU cycle (two CPU T-cycles) before the next wave RAM read models the DMG corruption pattern: the selected byte or aligned four-byte row is copied to the start of wave RAM. Focused APU tests cover the startup delay, fetch-cycle alias, first-row and later-row corruption, and the boundaries before and after the collision window. Blargg tests 09, 10, and 12 passed with the earlier bus phase using their original MBC1+RAM+BATTERY ROMs; test 09 also passes at the current M-cycle-end phase, and tests 10 and 12 need rerunning when available. The run script reads results from captured `$A000` save RAM and retains screenshots for review. No test ROM binaries were added to the repository. For CH4, the [Game Boy Noise Test](https://github.com/not-chciken/gb-noise-test) provides interactive NR41–NR44 settings, game-inspired presets, and reference recordings made from a DMG-01. Use it for listening or captured-PCM comparison, since the DMG does not expose channel samples to the CPU for a ROM pass/fail check. SameSuite's APU tests are sample-accurate, but most depend on CGB-only PCM registers and are not a DMG acceptance target. MBC2 banking/nibble RAM, MBC3 ROM/RAM banking and RTC behavior, and MBC5 9-bit ROM and RAM banking are covered by deterministic tests; battery-backed RAM and RTC are exposed through libretro. The libretro tests simulate frontend restoration of MBC3 `.srm` and `.rtc` blocks across reset and cartridge reload. Still verify actual `.rtc` disk persistence in RetroArch with a legally available MBC3 timer game. MBC30-sized RAM and less common mappers or peripherals remain future work; add them when a selected game or test ROM requires them.
+## Implemented foundation
+
+- **CPU:** instruction execution uses M-cycle steps; focused tests cover flags,
+  bus accesses, EI delay, interrupts, and STOP/HALT behavior. GBIT is a separate
+  integration check. See the [architecture guide](architecture.md) and
+  [interrupt guide](interrupts.md).
+- **DMG system:** the headless system composes the CPU, address bus, RAM,
+  cartridge, timer, interrupts, joypad, serial, PPU, OAM DMA and APU. The
+  default profile skips boot-ROM execution. See the
+  [DMG validation matrix](dmg-validation.md).
+- **Cartridges:** ROM-only, MBC1, MBC2, MBC3 and MBC5 banking work within the
+  limits recorded in the validation matrix. Battery RAM and MBC3 RTC state are
+  exposed through libretro memory interfaces.
+- **Frontend:** `make build` produces the libretro shared core, which has run
+  in Ubuntu RetroArch and delivers video, audio, input and save interfaces.
+  The first playable milestone is complete; ongoing game compatibility is
+  separate work.
+- **Build and CI:** GitHub Actions builds LotusGB, runs in-repository tests,
+  and checks instructions against a pinned GBIT revision.
+- **Documentation:** the README is the project entry point, implementation
+  status lives in topic guides, and sources are grouped in the
+  [reference catalog](references.md). The [documentation guide](documentation-guide.md)
+  sets the answer-first writing standard.
 
 ## Code cleanup
 
@@ -157,10 +97,8 @@ The first playable milestone is running a Game Boy ROM in RetroArch on Ubuntu. B
 
 These are discussion prompts, not approved implementation tasks. Discuss them one at a time; promote an item into the roadmap only if it is worth addressing.
 
-1. **Clock and bus timing for the PPU.** CPU bus transactions currently occur at the end of each four-T-cycle M-cycle. This phase passes the selected Mooneye Mode 2/STAT and access-transition ROMs; retain it while adding broader timing coverage and checking bus-sensitive gameplay.
-2. **Joypad and STOP wake-up.** Should button input wake STOP in the current system, and what exact joypad signal should trigger it? The current input API updates JOYP and requests its interrupt but does not wake the CPU from STOP.
-3. **CPU reference tests.** How should CI present known GBIT disagreements (currently STOP and EI) while keeping hardware behavior as the source of truth? Consider adding focused community test ROMs as their required hardware becomes available.
-4. **GBIT adapter boundary.** GBIT-only sources remain in `src/lib`, but the libretro core excludes them from its build. Consider moving them into test support during later source cleanup; the main shared library still includes every `.cpp` in `src/lib`.
+1. **Joypad and STOP wake-up.** Should button input wake STOP in the current system, and what exact joypad signal should trigger it? The current input API updates JOYP and requests its interrupt but does not wake the CPU from STOP. Gather a hardware-backed case before changing behavior.
+2. **GBIT adapter boundary.** GBIT-only sources remain in `src/lib`, but the libretro core excludes them from its build. Consider moving them into test support during later source cleanup; the main shared library still includes every `.cpp` in `src/lib`.
 
 ## Resolved design questions
 
@@ -168,7 +106,7 @@ These are discussion prompts, not approved implementation tasks. Discuss them on
 - Let the PPU own VRAM/OAM and route CPU access through the PPU so it can enforce mode-based access restrictions.
 - For the first RetroArch core, skip boot-ROM execution and start supported DMG cartridges from an explicit post-boot profile; keep CPU unit-test reset independent. Revisit boot-ROM support only if a later compatibility target needs its animation or exact handoff timing.
 - Defer a broad `src` directory reorganization. Isolate GBIT adapter code before libretro, then group hardware modules when the PPU makes the current flat library directory harder to navigate.
-- Use Pan Docs as a hardware reference and list it in the README; verify behavior with focused tests rather than treating any one reference emulator as the specification.
+- Use Pan Docs as a hardware reference; verify behavior with focused tests rather than treating any one reference emulator as the specification. The [reference catalog](references.md) groups sources by topic.
 
 ## Validation rule
 
@@ -216,7 +154,7 @@ Use Linux as the primary development and CI platform for now. Raspberry Pi runni
 
 - **Interrupt behavior audit (2026-10-24):** [interrupts.md](interrupts.md) now collects the request/wake/service model, source priority and vectors, current CPU entry implementation, peripheral ownership, test evidence, and explicit coverage gaps. Keep the SCX timing conflict first; investigate EI combinations and entry races with targeted evidence rather than treating this audit as a requirement to implement every interrupt corner case immediately.
 
-- **SCX investigation checkpoint (2026-10-24):** a four-configuration bus-phase/HALT-wake experiment gave 12/14 passes for the current model, versus 9/14, 8/14 and 11/14 for alternatives. No alternative consistently improves coverage. See [the interrupt audit](interrupts.md#bounded-scx-timing-experiment-2026-10-24). Defer further SCX tuning until new evidence or a real-game issue appears; return to the common-game compatibility milestone and regression-check Big2Small after the recent startup/PPU fixes.
+- **SCX investigation checkpoint (2026-10-24):** a four-configuration bus-phase/HALT-wake experiment gave 12/14 passes for the current model, versus 9/14, 8/14 and 11/14 for alternatives. No alternative consistently improves coverage. See [the interrupt audit](interrupts.md#bounded-scx-timing-experiment-2026-10-24-historical-checkpoint). Defer further SCX tuning until new evidence or a real-game issue appears; return to the common-game compatibility milestone and regression-check Big2Small after the recent startup/PPU fixes.
 
 - **Big2Small post-fix regression (2026-10-24):** the current libretro core restored a copy of the user's 8 KiB SRAM, accepted scripted A/directional inputs, and reached a puzzle scene. It completed 3,600 frames with 3,600 video callbacks and 2,893,139 stereo audio frames. The final image was inspected without obvious corruption, and the original RetroArch save SHA-256 was unchanged. Artifacts are under `build/homebrew-regression-20261024/`. This checks startup and continued callback delivery after the recent PPU/IME fixes; it does not establish audio quality, level completion, or broad game compatibility. No new gameplay blocker was identified.
 
@@ -255,7 +193,7 @@ Use Linux as the primary development and CI platform for now. Raspberry Pi runni
 
 - **Homebrew output checks (2026-10-24):** require matching video counts, nonzero audio, correct RGB dimensions and matching 8 KiB SRAM artifacts for both pinned profiles. Remove stale outputs before execution and retain validation errors in the report. Four ROM-free test methods, including zero-exit/stale-artifact rejection, join `make test` and CI. Both real 3,600-frame profiles pass with unchanged final frame hashes; Big2Small's original player save remains unchanged. This strengthens the local harness without changing emulator behavior or claiming scene recognition.
 
-- **Reported rapid-pause freeze triage (2026-10-24):** prioritize the user's Tetris/WSL report over unrelated feature work. Four headless START burst rates and a baseline complete; longer system probes confirm complete frames and resumed visual progress after one extra START. Some burst sequences end on the game's normal pause screen. The original report remains unreproduced because the exact key and frontend responsiveness were not retained. No runtime workaround or host-setting change was made. See [the diagnostic procedure and remaining evidence](runtime-troubleshooting.md#rapid-pause-report-2026-10-24).
+- **Reported rapid-pause freeze triage (2026-10-24):** prioritize the user's Tetris/WSL report over unrelated feature work. Four headless START burst rates and a baseline complete; longer system probes confirm complete frames and resumed visual progress after one extra START. Some burst sequences end on the game's normal pause screen. The original report remains unreproduced because the exact key and frontend responsiveness were not retained. No runtime workaround or host-setting change was made. See [the diagnostic procedure and remaining evidence](runtime-troubleshooting.md#unreproduced-rapid-pause-report-2026-10-24).
 
 - **Libretro diagnostics (2026-10-24):** connect the frontend log interface, retain stderr fallback, and report rejected content/mapper sizes plus cartridge initialization exceptions. Observe incomplete frame execution with PC/elapsed cycles and suppress repeated warnings until progress, reset or reload. Focused frontend tests cover rejection reasons, normal execution, STOP warning suppression and reset. This improves real-game issue diagnosis; it is not a STOP implementation or a fix for the unreproduced pause report.
 

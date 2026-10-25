@@ -4,6 +4,14 @@ This is the interrupt contract and implementation audit for LotusGB, as of
 2026-10-25. It separates hardware rules from current implementation evidence.
 Passing instruction tests does not establish peripheral-to-CPU timing accuracy.
 
+LotusGB keeps peripheral requests in IF separate from the CPU's IE/IME
+acceptance decision. The CPU wakes from HALT for an enabled request and enters
+the handler only when IME permits it at an instruction boundary; STOP remains
+a separate state. Focused CPU/system tests and selected Mooneye ROMs cover
+these paths. Exact sub-cycle entry races, automatic STOP wake and external
+serial links remain outside the verified behavior; details and evidence are
+listed below and in the [validation matrix](dmg-validation.md).
+
 ## Request, wake, and service
 
 `IF` (`$FF0F`) records requests; `IE` (`$FFFF`) selects enabled sources.

@@ -1,8 +1,8 @@
 # DMG implementation and validation matrix
 
-This matrix summarizes the current DMG target and the evidence for each area. “Implemented” means the behavior exists in LotusGB; it does not imply complete hardware accuracy. Unit tests protect selected observable cases, while external ROMs and real-game checks provide independent integration evidence.
+This is the canonical status matrix for the current DMG target. “Implemented” means the behavior exists in LotusGB; it does not imply complete hardware accuracy. The table separates implementation, test evidence and known gaps. Dated investigation notes below preserve earlier failures and fixes; use the row summaries for current status.
 
-Current expanded PPU timing result (2026-10-25): all 14 cases pass, including
+The latest expanded PPU timing result (2026-10-25): all 14 cases pass, including
 `hblank_ly_scx_timing-GS` and the sprite Mode 0 timing ROM. Earlier result
 counts below are historical checkpoints.
 
