@@ -212,6 +212,57 @@ void testIncDecHlReadModifyWritePhases() {
     }
 }
 
+void testRegisterIncDecCompletesInOneCycle() {
+    struct Case {
+        uint8_t opcode;
+        unsigned registerIndex;
+        uint8_t input;
+        uint8_t expected;
+        bool z;
+        bool n;
+        bool h;
+        bool carry;
+    };
+    const Case cases[] = {
+        {0x04, 0, 0x0F, 0x10, false, false, true,  true},  // INC B, half-carry
+        {0x0C, 1, 0xFF, 0x00, true,  false, true,  false}, // INC C, wrap and zero
+        {0x14, 2, 0x00, 0x01, false, false, false, true},  // INC D, preserve carry
+        {0x1C, 3, 0xFE, 0xFF, false, false, false, false}, // INC E
+        {0x24, 4, 0x0F, 0x10, false, false, true,  true},  // INC H
+        {0x2C, 5, 0xFF, 0x00, true,  false, true,  false}, // INC L
+        {0x3C, 7, 0x00, 0x01, false, false, false, true},  // INC A
+        {0x05, 0, 0x10, 0x0F, false, true,  true,  true},  // DEC B, half-borrow
+        {0x0D, 1, 0x00, 0xFF, false, true,  true,  false}, // DEC C, wrap
+        {0x15, 2, 0x01, 0x00, true,  true,  false, true},  // DEC D, zero
+        {0x1D, 3, 0xFF, 0xFE, false, true,  false, false}, // DEC E
+        {0x25, 4, 0x10, 0x0F, false, true,  true,  true},  // DEC H
+        {0x2D, 5, 0x01, 0x00, true,  true,  false, false}, // DEC L
+        {0x3D, 7, 0x00, 0xFF, false, true,  true,  true},  // DEC A
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, test.opcode}, {0x0001, 0x00}};
+        Reg reg = f.cpu.getReg();
+        byteRegisterRef(reg, test.registerIndex) = test.input;
+        setFlags(reg, true, true, true, test.carry);
+        f.cpu.setReg(reg);
+
+        const auto operation = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        const GB_Flag flags = reg.getFlag();
+        expect(operation.success && operation.fetchedNewInst &&
+                   operation.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() &&
+                   byteRegisterRef(reg, test.registerIndex) == test.expected &&
+                   reg.getRefPC() == 2,
+               "INC/DEC register updates in one cycle with only the next opcode fetch");
+        expect(flags.Z == test.z && flags.N == test.n && flags.H == test.h &&
+                   flags.C == test.carry,
+               "INC/DEC register updates Z/N/H and preserves C in one cycle");
+    }
+}
+
 void testCbHlReadModifyWritePhases() {
     struct Case {
         uint8_t opcode;
@@ -1797,6 +1848,7 @@ int main() {
     testCbShiftZeroFlags();
     testBitHlUsesReadAndNextFetchCycles();
     testIncDecHlReadModifyWritePhases();
+    testRegisterIncDecCompletesInOneCycle();
     testCbHlReadModifyWritePhases();
     testHlAluReadsBeforeUpdatingAccumulatorAndFlags();
     testImmediateAluReadsBeforeUpdatingAccumulatorAndFlags();
