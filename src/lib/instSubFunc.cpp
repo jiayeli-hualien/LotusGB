@@ -602,27 +602,44 @@ SUB_FUNC_IMPL(EI) {
 }
 
 SUB_FUNC_IMPL(IncRR) {
-    // TODO: emu 8 bit cpu
     ++_getCommonReg16(pInstState->opcode, pReg);
+    // The IDU updates the pair during the instruction's internal M-cycle.
+    pInstState->memMode = MEM_MODE_SLEEP;
 }
 
 SUB_FUNC_IMPL(DecRR) {
-    // TODO: emu 8 bit cpu
     --_getCommonReg16(pInstState->opcode, pReg);
+    // The IDU updates the pair during the instruction's internal M-cycle.
+    pInstState->memMode = MEM_MODE_SLEEP;
 }
 
-SUB_FUNC_IMPL(Add_HL_RR) {
-    // The instruction's M-cycle sequence is modeled in the decode table; the
-    // internal 8-bit ALU phases are not modeled separately.
-    const int lhs = pReg->getRefHL();
-    const int rhs = _getCommonReg16(pInstState->opcode, pReg);
-    const int  result = lhs + rhs;
+SUB_FUNC_IMPL(Add_HL_RR_LSB) {
+    const uint8_t lhs = static_cast<uint8_t>(pReg->getRefHL());
+    const uint8_t rhs = static_cast<uint8_t>(
+        _getCommonReg16(pInstState->opcode, pReg));
+    const unsigned sum = static_cast<unsigned>(lhs) + rhs;
     GB_Flag flag;
     pReg->getFlag(flag);
     flag.N = false;
-    flag.C = result > 0xFFFF;
-    flag.H = (lhs&0xFFF) + (rhs&0xFFF) > 0xFFF;
-    pReg->getRefHL() = (uint16_t)(result & 0xFFFF);
+    flag.C = sum > 0xFF;
+    flag.H = (lhs & 0x0F) + (rhs & 0x0F) > 0x0F;
+    pReg->getRefL() = static_cast<uint8_t>(sum);
+    pReg->setFlag(flag);
+    pInstState->memMode = MEM_MODE_SLEEP;
+}
+
+SUB_FUNC_IMPL(Add_HL_RR_MSB) {
+    const uint8_t carryIn = pReg->getFlag().C;
+    const uint8_t lhs = pReg->getRefH();
+    const uint8_t rhs = static_cast<uint8_t>(
+        _getCommonReg16(pInstState->opcode, pReg) >> 8);
+    const unsigned sum = static_cast<unsigned>(lhs) + rhs + carryIn;
+    GB_Flag flag;
+    pReg->getFlag(flag);
+    flag.N = false;
+    flag.C = sum > 0xFF;
+    flag.H = (lhs & 0x0F) + (rhs & 0x0F) + carryIn > 0x0F;
+    pReg->getRefH() = static_cast<uint8_t>(sum);
     pReg->setFlag(flag);
 }
 

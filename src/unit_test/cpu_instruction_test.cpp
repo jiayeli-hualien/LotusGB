@@ -76,6 +76,15 @@ void setFlags(Reg &reg, bool z, bool n, bool h, bool c) {
     reg.setFlag(flags);
 }
 
+uint16_t& commonPairRef(Reg &reg, unsigned pairIndex) {
+    switch (pairIndex) {
+        case 0: return reg.getRefBC();
+        case 1: return reg.getRefDE();
+        case 2: return reg.getRefHL();
+        default: return reg.getRefSP();
+    }
+}
+
 void testCbShiftZeroFlags() {
     for (const auto &[opcode, carryIn, label] : {
              std::tuple<uint8_t, bool, const char *>(0x20, false, "SLA B"),
@@ -225,6 +234,105 @@ void testSpOffsetFlagsAndCycles() {
                        outputFlags.C == expectedCarry,
                    "ADD SP,e8 flags match all low-byte and offset combinations");
         }
+    }
+}
+
+void testSixteenBitArithmeticMcyclePhases() {
+    const uint8_t incOpcodes[] = {0x03, 0x13, 0x23, 0x33};
+    const uint8_t decOpcodes[] = {0x0B, 0x1B, 0x2B, 0x3B};
+    for (unsigned pairIndex = 0; pairIndex < 4; ++pairIndex) {
+        CpuFixture inc{{0x0000, incOpcodes[pairIndex]}, {0x0001, 0x00}};
+        Reg reg = inc.cpu.getReg();
+        commonPairRef(reg, pairIndex) = 0xFFFF;
+        setFlags(reg, true, true, true, true);
+        inc.cpu.setReg(reg);
+
+        const auto incInternal = inc.cpu.stepOneCycle();
+        reg = inc.cpu.getReg();
+        expect(incInternal.success && !incInternal.fetchedNewInst &&
+                   commonPairRef(reg, pairIndex) == 0x0000 && inc.memory.reads.empty(),
+               "INC rr updates through the IDU in its first internal M-cycle");
+        const GB_Flag incFlags = reg.getFlag();
+        expect(incFlags.Z && incFlags.N && incFlags.H && incFlags.C,
+               "INC rr leaves all flags unchanged");
+        const auto incFetch = inc.cpu.stepOneCycle();
+        reg = inc.cpu.getReg();
+        expect(incFetch.success && incFetch.fetchedNewInst &&
+                   commonPairRef(reg, pairIndex) == 0x0000 &&
+                   inc.memory.reads == std::vector<uint16_t>{0x0001},
+               "INC rr fetches the next opcode after the IDU cycle");
+
+        CpuFixture dec{{0x0000, decOpcodes[pairIndex]}, {0x0001, 0x00}};
+        reg = dec.cpu.getReg();
+        commonPairRef(reg, pairIndex) = 0x0000;
+        setFlags(reg, true, true, true, true);
+        dec.cpu.setReg(reg);
+
+        const auto decInternal = dec.cpu.stepOneCycle();
+        reg = dec.cpu.getReg();
+        expect(decInternal.success && !decInternal.fetchedNewInst &&
+                   commonPairRef(reg, pairIndex) == 0xFFFF && dec.memory.reads.empty(),
+               "DEC rr updates through the IDU in its first internal M-cycle");
+        const GB_Flag decFlags = reg.getFlag();
+        expect(decFlags.Z && decFlags.N && decFlags.H && decFlags.C,
+               "DEC rr leaves all flags unchanged");
+        const auto decFetch = dec.cpu.stepOneCycle();
+        reg = dec.cpu.getReg();
+        expect(decFetch.success && decFetch.fetchedNewInst &&
+                   commonPairRef(reg, pairIndex) == 0xFFFF &&
+                   dec.memory.reads == std::vector<uint16_t>{0x0001},
+               "DEC rr fetches the next opcode after the IDU cycle");
+    }
+
+    struct AddCase {
+        uint8_t opcode;
+        unsigned sourcePair;
+        uint16_t initialHL;
+        uint16_t source;
+        uint16_t afterLowByte;
+        uint16_t result;
+        bool lowHalfCarry;
+        bool lowCarry;
+        bool finalHalfCarry;
+        bool finalCarry;
+    };
+    const AddCase addCases[] = {
+        {0x09, 0, 0x0101, 0x0201, 0x0102, 0x0302, false, false, false, false},
+        {0x09, 0, 0x0FFF, 0x0001, 0x0F00, 0x1000, true, true, true, false},
+        {0x19, 1, 0x12FF, 0x00F0, 0x12EF, 0x13EF, false, true, false, false},
+        {0x19, 1, 0x80FE, 0x0102, 0x8000, 0x8200, true, true, false, false},
+        {0x29, 2, 0x7FFF, 0x0000, 0x7FFE, 0xFFFE, true, true, true, false},
+        {0x39, 3, 0xFFFF, 0x0001, 0xFF00, 0x0000, true, true, true, true},
+    };
+    for (const auto &test : addCases) {
+        CpuFixture add{{0x0000, test.opcode}, {0x0001, 0x00}};
+        Reg reg = add.cpu.getReg();
+        reg.getRefHL() = test.initialHL;
+        if (test.sourcePair != 2)
+            commonPairRef(reg, test.sourcePair) = test.source;
+        setFlags(reg, true, true, false, false);
+        add.cpu.setReg(reg);
+
+        const auto lowByte = add.cpu.stepOneCycle();
+        reg = add.cpu.getReg();
+        const GB_Flag lowFlags = reg.getFlag();
+        expect(lowByte.success && !lowByte.fetchedNewInst &&
+                   reg.getRefHL() == test.afterLowByte && add.memory.reads.empty(),
+               "ADD HL,rr updates L in its low-byte ALU M-cycle");
+        expect(lowFlags.Z && !lowFlags.N && lowFlags.H == test.lowHalfCarry &&
+                   lowFlags.C == test.lowCarry,
+               "ADD HL,rr exposes low-byte half-carry and carry before the high-byte phase");
+
+        const auto highByte = add.cpu.stepOneCycle();
+        reg = add.cpu.getReg();
+        const GB_Flag finalFlags = reg.getFlag();
+        expect(highByte.success && highByte.fetchedNewInst &&
+                   reg.getRefHL() == test.result &&
+                   add.memory.reads == std::vector<uint16_t>{0x0001},
+               "ADD HL,rr updates H and fetches after its high-byte ALU M-cycle");
+        expect(finalFlags.Z && !finalFlags.N &&
+                   finalFlags.H == test.finalHalfCarry && finalFlags.C == test.finalCarry,
+               "ADD HL,rr keeps Z and reports final high-byte flags");
     }
 }
 
@@ -733,6 +841,7 @@ int main() {
     testCbShiftZeroFlags();
     testDaaBoundaryCases();
     testSpOffsetFlagsAndCycles();
+    testSixteenBitArithmeticMcyclePhases();
     testPushBusOrder();
     testPopRetAndJumpBusTiming();
     testConditionalBranchAndCallBusTiming();

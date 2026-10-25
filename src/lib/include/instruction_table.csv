@@ -27,7 +27,7 @@ POP_RR, 3, POP_LD_A16_LSB, POP_LD_A16_MSB, POP_LD_R16_MEM16
 ADD_A_R, 1, AddA_R
 ADD_A_HL, 2, MemReadIndirectHL, AddA_MEMVAL
 ADD_A_N, 2, MemReadPC, AddA_MEMVAL
-ADD_HL_RR, 2, Bubble, Add_HL_RR
+ADD_HL_RR, 2, Add_HL_RR_LSB, Add_HL_RR_MSB
 ADC_A_R, 1, AddA_R_Carry
 ADC_A_HL, 2, MemReadIndirectHL, AddA_MEMVAL_Carry
 ADC_A_N, 2, MemReadPC, AddA_MEMVAL_Carry
@@ -43,10 +43,10 @@ CP_A_HL, 2, MemReadIndirectHL, CmpA_MEMVAL
 CP_A_N, 2, MemReadPC, CmpA_MEMVAL
 INC_HL, 3, MemReadIndirectHL, MemIncWriteIndirectHL, NOP
 INC_R, 1, IncR
-INC_RR, 2, Bubble, IncRR
+INC_RR, 2, IncRR, NOP
 DEC_HL, 3, MemReadIndirectHL, MemDecWriteIndirectHL, NOP
 DEC_R, 1, DecR
-DEC_RR, 2, Bubble, DecRR
+DEC_RR, 2, DecRR, NOP
 AND_A_R, 1, AndA_R
 AND_A_HL, 2, MemReadIndirectHL, AndA_MEMVAL
 AND_A_N, 2, MemReadPC, AndA_MEMVAL
