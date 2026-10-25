@@ -1,5 +1,9 @@
 # PPU mid-scanline scrolling
 
+This is a historical investigation record, not a test plan. Its screenshot
+comparisons are not formal LotusGB test items or pass/fail gates; current PPU
+acceptance is listed in the [DMG validation matrix](dmg-validation.md).
+
 ## Current status
 
 Mode 3 has separate 16-pixel BG and OBJ FIFOs. During OBJ arbitration, the BG
@@ -30,10 +34,17 @@ the preceding run in 407 of 23,040 pixels; this profile has no expected frame,
 so the comparison does not establish accuracy. Exact OBJ event alignment and
 per-dot bus arbitration remain unverified.
 
+**Decision (2026-10-26):** keep the current production PPU timing as the
+baseline; no SCX timing candidate is accepted. Retain
+`m3_scx_high_5_bits` as an optional diagnostic against the Mealybug DMG
+reference, not as a universal hardware-conformance gate. The available real-
+device photo is CPU CGB D, so it cannot by itself decide the DMG timing rule.
+
 A fresh rebuild of the current tree produced these selected Mealybug `DMG-blob`
 pixel differences: BGP 3,642; SCX-low 540; SCX-high 84; SCY 8,334; BG-map
-change 1,082; BG-enable change 2,210. All six remain **FAIL** against the
-reference. The repeatable report is under
+change 1,082; BG-enable change 2,210. All six differ from the selected
+reference images; these are comparison results, not hardware pass/fail results.
+The repeatable report is under
 `build/test-roms/mealybug-vram-arbitration-candidate/report.json`; it records the
 archive SHA-256
 `e2fa6ca96ad48bd64d7297fda042db04c15117a730da3bbd590f139e89b150bd` and runner
@@ -55,9 +66,9 @@ reason to add or remove dots from an individual stage.
 | Boundary | Existing evidence | What remains open / next action |
 | --- | --- | --- |
 | Mode 2 and entry to Mode 3 | `testVisibleLineModesAndVideoMemoryAccess` checks the 80-dot boundary; Mooneye checks selected STAT and OAM-access edges. Sprite selection tests cover the ten-object limit. | Selection is prepared at Mode 3 entry, rather than scanning OAM throughout Mode 2. The SCX ROM supplies stable OAM, so first isolate its Mode 3 behavior instead of rewriting OAM scanning. |
-| CPU register writes | CPU load/store tests cover the M-cycle sequence; SystemClock tests check device advancement before the bus transaction. The current LY 8 trace places the SCX write at dot 114. | This is the current model's write time, not a hardware bus measurement. Keep the instruction flow fixed in control ROMs; a common reporting-marker cycle alone does not prove every register write has identical timing. |
+| CPU register writes | CPU load/store tests cover the M-cycle sequence; SystemClock tests check device advancement before the bus transaction. The current LY 8 trace places the SCX write at dot 114. In the single-X=8 control, the dynamic value change is needed for the six-pixel cross-core difference; a same-value write is not enough. | This is the current model's write time, not a hardware bus measurement. Compare the BG fetch that samples the changing SCX value with OBJ disabled and enabled; keep instruction flow and the report marker fixed. |
 | Mode 3, BG without OBJ | Public PPU tests cover startup, fine discard, tile-map sampling and separate SCY bitplanes. The new OBJ-disabled control matches SameBoy exactly. | This agreement applies to the selected SCX ROM, not every BG/palette effect. Preserve this control while investigating OBJ interaction. |
-| Mode 3, OBJ wait/fetch/BG resume | One-object controls at OAM X=1 and X=8 each differ from SameBoy by six pixels on LY 8–14. | This is the next narrow investigation: compare BG address/data/push and OBJ completion around one object. Neither multiple objects nor left clipping is required to reproduce the discrepancy. Exact hardware arbitration is still unverified. |
+| Mode 3, OBJ wait/fetch/BG resume | Dynamic-SCX one-object controls at OAM X=1 and X=8 each differ from SameBoy by six pixels on LY 8–14. For X=8, holding SCX at zero removes the difference. | Trace the BG map-address sample and the SCX write around one X=8 object. The trace ordering explains the cross-core difference, but does not establish the hardware's correct phase. |
 | Mode 0 entry and line completion | The expanded 14-case Mooneye group passes, including sprite Mode 0 and SCX/HBlank timing. Public tests check several sprite penalties and 456-dot lines. | Preserve these endpoints. A correct endpoint can still contain incorrectly ordered internal fetches. Reopen an endpoint only when evidence identifies that edge. |
 | Pixel composition and final image | `dmg-acid2` and the selected sprite-priority image pass; the SCX comparison localizes differences to one BG output tile. | Keep the original image as the final integration check. Do not treat a lower mismatch count as proof of a correct timing rule. |
 
@@ -78,14 +89,45 @@ before patching; the diagnostic does not repair the global ROM checksum.
 | One object, X=1 (left clipped) | 6 |
 | One object, X=8 (fully visible) | 6 |
 
+The dynamic-SCX single-object sweep shows that the mismatch depends on object
+X alignment. Neighboring positions are controls:
+
+| OAM X | LotusGB versus SameBoy differing pixels |
+| ---: | ---: |
+| 1 | 6 |
+| 2 | 6 |
+| 3 | 0 |
+| 7 | 0 |
+| 8 | 6 |
+| 9 | 6 |
+| 10 | 6 |
+| 11 | 0 |
+
+In the original ROM, the 84 differences are confined to rows 8–14, 16–22,
+64–70, 72–78 and 80–86. Those bands align with OAM entries 1, 2, 8, 9 and 10
+(the source table sets OAM X equal to the entry index). The single-object X
+sweep reproduces this position pattern; it localizes the issue to OBJ/BG
+alignment under the changing-SCX test, without proving the hardware rule.
+
 The single-object differences have the same coordinates: x=16, 17, 21 and 22
 on a subset of LY 8–14. All four LotusGB captures reach the reporting marker
 at PC `$064C` after 222,587 M-cycles. SameBoy's 120-frame and 180-frame outputs
 are byte-identical for each variant, and its original-ROM output matches the
 upstream expected PNG exactly, calibrating this comparison's startup/palette
-settings. These are cross-core observations, not hardware validation; they
-do not establish the correct fetch dot or rule out every CPU/PPU bus-phase
-interaction.
+settings. A Pillow pixel check confirms both images are 160×144 grayscale
+with identical RGB channels (black, gray and white); the 84 differences are
+shade-pixel differences, not palette or channel-conversion artifacts. These
+are cross-core observations, not hardware validation; they do not establish
+the correct fetch dot or rule out every CPU/PPU bus-phase interaction.
+
+The text pattern also helps localize the mismatch. On the selected scanline
+bands, LotusGB's current frame keeps the first three characters as `ABC`; the
+SameBoy frame that matches Mealybug's DMG reference shifts them to `ABD`,
+`ABE`, `ABK`, `ABL` and `ABM`. A combined SCX-phase/BG-catch-up diagnostic
+candidate shows mostly `ABC` with one `ABK`, resembling the reported CGB D
+photo more closely, but remains unverified and is not the production
+implementation. This is qualitative evidence for that CGB D image, not a DMG
+acceptance result.
 
 Run this optional diagnostic with the existing Pillow venv and external ROMs:
 
@@ -107,6 +149,64 @@ reproduce the original reference cause a nonzero exit. This is not a CI job.
 The fully visible X=8 control is the small reproducer for the event comparison
 below. Preserve the OBJ-disabled control, both single-object controls,
 original image and Mode 0/Mode 2 boundary checks when evaluating a candidate.
+
+### Preconditions for a pixel-accuracy claim
+
+An image comparison is meaningful only when the setup and expected image are
+trustworthy. For this investigation, keep these assumptions explicit:
+
+1. **Same execution:** pin the ROM hash, DMG startup profile, frame/scanline,
+   input sequence and reporting point. The diagnostic ROMs reach the same
+   marker and LotusGB renders the same frame count on every run.
+2. **Comparable pixels:** compare the same 160×144 image and normalize the
+   frontend palette to DMG shade indices. A color-conversion difference must
+   not be counted as a PPU timing error.
+3. **Trusted oracle:** a matching emulator is a useful cross-check, but does
+   not prove hardware behavior. The [Mealybug test README](https://github.com/mattcurrie/mealybug-tearoom-tests)
+   describes its expected images as the author's emulator output; use them to
+   localize regressions, and require a hardware capture or independently
+   hardware-validated expectation before calling a disputed fetch rule correct.
+   The suite also has a [blurry real-device photo for this ROM on CPU CGB D](https://github.com/mattcurrie/mealybug-tearoom-tests/blob/master/photos/CPU%20CGB%20D/m3_scx_high_5_bits.jpg);
+   it is useful for visual cross-checking, but it is not a DMG-blob capture or
+   a dot-level timing oracle.
+4. **Correct event clock:** CPU writes, PPU dots, interrupt service and bus
+   visibility must share a known phase. A correct Mode 2/Mode 0 endpoint does
+   not prove the ordering of events inside Mode 3.
+5. **Correct fetch state:** for each output pixel, the tile-map address/data,
+   bitplane reads, FIFO push/pop and SCX/SCY sampling must occur in the right
+   order. OBJ selection, fetch pauses, BG catch-up and pixel priority must be
+   correct too; fixing only the final palette/compositor cannot repair a tile
+   that was fetched from the wrong address.
+
+These are dependencies, not five changes to make at once. The first three
+control the experiment; the last two are the hardware behavior under test.
+Keep a no-OBJ control, one-object controls, the original image and the existing
+Mode 2/Mode 0 timing regressions as separate checks.
+
+### Hypothesis-driven change acceptance
+
+Before changing PPU behavior, write down one hypothesis and the result that
+would distinguish it from the current model. State the expected observation
+for the target case and at least one control; keep the ROM, input, capture
+point and event phase fixed. If the result does not match the prediction,
+discard or revise the hypothesis instead of adding another timing adjustment.
+
+For this SCX/OBJ issue, the next production candidate must meet all of these
+checks:
+
+1. Its event trace explains the target pixels at the relevant BG map-address,
+   bitplane and OBJ boundaries; a smaller total difference count alone is not
+   acceptance.
+2. The original ROM, OBJ-disabled ROM, single-object X controls and same-value
+   SCX-write control produce the predicted results at the same capture marker.
+3. Existing public PPU tests and selected Mode 2/Mode 0 timing ROMs still pass;
+   an unrelated scanline or object position must not acquire displaced errors.
+4. Describe the result as a model improvement until a DMG hardware capture or
+   independently hardware-validated expectation confirms the disputed phase.
+
+Only after the behavior is supported should a focused public-interface
+regression encode it. Diagnostic ROM patches can distinguish hypotheses, but
+must not become production timing rules by themselves.
 
 ### Normalized CPU/PPU event comparison (2026-10-26)
 
@@ -153,6 +253,127 @@ the original case still has 84 differences. Next, resolve the write-phase and
 OBJ/BG scheduling contributions as separate contracts before implementing a
 combined change. Require the original and all three controls, rather than a
 lower total pixel count, to support the explanation.
+
+#### SCX value versus SCX write (2026-10-26)
+
+**Hypothesis:** in the single-X=8 reproducer, the six-pixel difference requires
+the second Mode 3 write to change SCX from 0 to LY. A same-cycle write of the
+existing value should not reproduce it. This distinguishes a changed scroll
+value from the mere existence of a register-write event; it does not decide
+which core has the hardware-correct phase.
+
+The controlled variants keep the ROM's instruction path and report marker
+stable. Each reaches `PC=1612` after 222,587 M-cycles; SameBoy's frame-120 and
+frame-180 captures are byte-identical.
+
+| Single-X=8 variant | LY 8 SCX event | LotusGB vs SameBoy | Result |
+| --- | --- | ---: | --- |
+| Original dynamic write | Dot 114, 0→8 | 6 pixels | Reproduces the issue. |
+| Replace the second `LDH [$43],A` with `LDH A,[$43]` | No second SCX write | 0 pixels | The dynamic write/value is required in this control. |
+| Replace six NOPs with `LD A,0` and four NOPs; keep the write | Dot 114, 0→0 | 0 pixels | The write event alone is insufficient. |
+
+The same-value variant preserves the six-M-cycle slot and leaves the SCX write
+at dot 114, confirmed by the per-dot trace. An earlier version accidentally
+added one M-cycle and moved the write to dot 118; it was discarded. This is
+why matching the final report marker is not enough to validate a timing
+control; check the event phase itself.
+
+The current LotusGB trace puts the BG tile-map address sample for tile column
+2 at dot 113, before its dot-114 SCX write. The normalized SameBoy trace puts
+the write at dot 110 and the corresponding map-address sample at dot 112. The
+ordering predicts that this sample sees different SCX values in the two
+models. At dot 114, LotusGB's BG fetch phase/FIFO state also varies by OAM X:
+
+| OAM X | BG map-address sample dot | BG fetch phase at dot 114 | FIFO entries at write |
+| ---: | ---: | ---: | ---: |
+| 1 | 112 | TileDataLow (3) | 3 |
+| 2 | 111 | TileDataHighAddress (4) | 2 |
+| 8 | 113 | TileDataLowAddress (2) | 4 |
+| 9 | 112 | TileDataLow (3) | 3 |
+| 10 | 111 | TileDataHighAddress (4) | 2 |
+
+The combined T2-write/BG-catch-up candidate moves the write from dot 114 to
+dot 112. In the same X sweep it fixes only X=8; X=1, 2, 9 and 10 still differ
+by six pixels, while X=3, 7 and 11 remain exact. That matches the fetch-phase
+ordering: the global write now precedes X=8's dot-113 map sample, but it is
+not earlier than the dot-111/112 samples for the other affected positions.
+The ROM, controls and cross-core traces support this explanation for the
+single-object cases; they do not prove the hardware's correct arbitration
+policy. A global earlier-write policy remains rejected because it cannot
+cover the other alignments and regresses other scanlines.
+
+The reproducible variants and reports are generated by
+`tools/diagnose_ppu_scx.py` under the ignored
+`build/test-roms/ppu-scx-decomposition/` directory.
+
+#### Object-position control for the rejected T2 candidate
+
+To locate the candidate's row-specific changes, derived ROM copies that hide
+one OAM entry by setting only its Y byte to zero. The counts below compare the
+baseline and T2-candidate LotusGB captures on those scanline bands; they are
+not counts against the Mealybug reference.
+
+| ROM variant | Changed pixels on LY 64–70 | Changed pixels on LY 128–134 |
+| --- | ---: | ---: |
+| Original object table | 19 | 12 |
+| Hide OAM entry 8 (Y=80, X=8) | 0 | 12 |
+| Hide OAM entry 16 (Y=144, X=16) | 19 | 0 |
+
+Those entries cover LY 64–71 and LY 128–135 respectively (OAM Y is the screen
+Y plus 16). The T2 candidate's image changes therefore depend on the OBJ
+fetch path on those rows. A second control moved entry 16 horizontally while
+keeping its Y, tile and attributes unchanged:
+
+| OAM X (screen X) | T2-candidate pixels changed vs baseline on LY 128–135 |
+| ---: | ---: |
+| 8 (0) | 12 |
+| 12 (4) | 0 |
+| 16 (8) | 12 |
+| 20 (12) | 0 |
+| 24 (16) | 0 |
+
+The event traces explain why the result is position-dependent. At X=8 and 16,
+the candidate samples BG map address `$1A12` at dot 113 after the SCX write;
+the baseline still samples `$1A02` there. At X=12 and 20, both builds sample
+the next BG map address at dot 117, after either write phase; at X=24 that
+sample is at dot 121. Moving the write by two dots only changes which SCX value
+the BG fetcher sees when its map-address phase occurs at dot 113.
+
+For the original X=16 object on LY 128, LotusGB's T2 candidate finishes its
+OBJ event at dots 109–110, writes SCX at dot 112, then samples `$1A12` at dot
+113. SameBoy's normalized trace places the SCX write at dot 111 and OBJ fetch
+completion at dot 112; it resumes BG map sampling at dot 120 with `$1A13`.
+Baseline LotusGB also samples `$1A13`, at dot 121. This identifies the source
+of the candidate's new pixels: its earlier register write combines with the
+current OBJ/BG schedule to sample a map entry earlier than SameBoy's first
+post-object map sample. That trace explains why a single global SCX bus phase
+can improve one object alignment and regress another, but it does not prove
+that the two implementations resume the same hardware event.
+
+#### Combined SCX-phase and BG-catch-up candidate (diagnostic only)
+
+A second isolated PPU candidate allowed one BG-fetcher advance at Push when
+the BG FIFO was empty. By itself it left the four image counts unchanged at
+84/0/6/6. Combining it with the rejected T2 SCX-write phase produced
+65/0/6/0 for the original, OBJ-off, single-X=1 and single-X=8 variants; the
+other five selected Mealybug counts stayed unchanged. The expanded Mooneye PPU
+set remained 14/14, and the unit-test suite passed on an isolated source copy.
+
+This is useful because it separates two candidate boundaries: BG catch-up
+alone did not alter these pixels, while its interaction with the SCX write
+phase did. It is still not a hardware-confirmed fix: 65 original pixels remain
+different, and both timing choices come from emulator-model comparisons. Keep
+the production implementation unchanged. The candidate source and reports are
+in an isolated temporary source copy and ignored diagnostic artifacts under
+`build/test-roms/ppu-scx-t2-push-candidate/` and
+`build/test-roms/mealybug-t2-push-candidate/`.
+
+This is a diagnosis of the rejected candidate, not proof of the hardware's
+exact fetch order. The comparison and the OAM controls do not establish which
+core has the correct event timing. Keep production timing unchanged until a
+hardware-backed observation or a focused independent test settles the
+SCX-write/OBJ-fetch interaction. The derived ROMs and traces are ignored build
+artifacts under `build/test-roms/ppu-event-traces/`.
 
 Source-build calibration, logs, instrumentation patches and rejected-candidate
 reports are under the ignored `build/test-roms/ppu-scx-source-calibration/`,

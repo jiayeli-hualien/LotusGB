@@ -11,7 +11,7 @@ hardware specification.
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html)).
 - [Nintendo Game Boy Programming Manual v1.1](https://archive.org/details/GameBoyProgManVer1.1) — programmer-facing manual for CPU, display, sound and mapper interfaces; it does not describe all internal PPU fetch timing.
-- [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr) — community hardware reference with model and revision differences; its CPU chapter documents fetch/execute overlap and per-M-cycle IDU actions. The project describes itself as incomplete.
+- [Game Boy: Complete Technical Reference](https://gekkio.fi/files/gb-docs/gbctr.pdf) ([source](https://github.com/Gekkio/gb-ctr)) — community hardware reference with model and revision differences; documents the nominal DMG/MGB quartz system clock, fetch/execute overlap and per-M-cycle IDU actions. The project describes itself as incomplete.
 - [The Cycle-Accurate Game Boy Docs](https://github.com/AntonioND/giibiiadvance/blob/master/docs/TCAGBD.pdf) — community hardware notes, including serial clock behavior.
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior and observed differences.
 
@@ -48,7 +48,7 @@ hardware specification.
 
 - [Mooneye Test Suite](https://github.com/Gekkio/mooneye-test-suite) — hardware acceptance ROMs; its README documents real-hardware verification and model-specific results.
 - [Game Boy test ROM collection](https://github.com/c-sp/game-boy-test-roms) — includes the v7.0 DMG screenshot reference used for Mooneye's manual `sprite_priority` check.
-- [Mealybug Tearoom PPU tests](https://github.com/mattcurrie/mealybug-tearoom-tests) — DMG screenshot tests for register changes during Mode 3 (MIT).
+- [GBMicrotest](https://github.com/aappleby/gbmicrotest) — MIT cycle probes checked by the author on DMG-CPU-08 hardware (revision uncertain). The 800-series PPU latch cases are visual diagnostics with source-comment expectations, not automatic pass/fail tests or current acceptance gates.
 - [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) — CPU-visible APU and CH3 wave RAM checks.
 - [Blargg test ROM archive](https://gbdev.gg8.se/files/roms/blargg-gb-tests/) — downloadable test packs, including `dmg_sound.zip`.
 - [Blargg DMG sound test sources](https://github.com/crzysdrs/blarggs-test-roms/tree/master/dmg_sound) — assembly sources and expected checksums.

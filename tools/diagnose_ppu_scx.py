@@ -13,6 +13,7 @@ import subprocess
 
 
 ROM_SHA256 = '423db91af0f87547ae46690044ef760481f7005033ffc61bd69875b7df96139b'
+EXPECTED_CAPTURE = 'CAPTURE pc=1612 mcycles=222587'
 SIZE = (160, 144)
 
 
@@ -57,13 +58,37 @@ def variants(original):
     no_objects = bytearray(original)
     no_objects[lcdc_offset] = 0x91
     result = {'obj_on': original, 'obj_off': bytes(no_objects)}
-    for x in (1, 8):
+    for x in (1, 2, 3, 7, 8, 9, 10, 11):
         single = bytearray(original)
         for i in range(18):
             single[table_offset + i * 4] = 0  # Outside visible Y range.
         single[table_offset + 4] = 24  # One object on LY 8 through 15.
         single[table_offset + 5] = x
         result[f'single_x{x}'] = bytes(single)
+
+    # Separate the changing SCX value from the timing of its second write.
+    # The pinned ROM has three LDH ($43),A instructions; the middle one is the
+    # LY-to-SCX write in the Mode 2 handler. Keep the other writes untouched.
+    scx_store = bytes.fromhex('e043')
+    scx_store_offsets = [i for i in range(len(original))
+                         if original.startswith(scx_store, i)]
+    if scx_store_offsets != [1618, 1631, 18459]:
+        raise ValueError('unexpected SCX write instructions in pinned ROM')
+
+    for x in (1, 8):
+        single = bytearray(result[f'single_x{x}'])
+        no_second_write = bytearray(single)
+        no_second_write[1631] = 0xF0  # LDH A,($43), same length and M-cycles.
+        result[f'single_x{x}_no_second_scx_write'] = bytes(no_second_write)
+
+        same_value_write = bytearray(single)
+        nop_slot = slice(1625, 1631)
+        if same_value_write[nop_slot] != bytes.fromhex('000000000000'):
+            raise ValueError('expected six NOPs before second SCX write')
+        # LD A,0 (2 M-cycles) plus four NOPs replaces six NOPs. It preserves
+        # flags, total instruction bytes, the SCX write dot, and the write.
+        same_value_write[nop_slot] = bytes.fromhex('3e0000000000')
+        result[f'single_x{x}_same_value_scx_write'] = bytes(same_value_write)
     return result
 
 
@@ -121,6 +146,8 @@ def main():
             shades.unlink(missing_ok=True)
             capture = run((args.ppu_runner.resolve(), rom, shades),
                           output / (name + '.log'))
+            if capture != EXPECTED_CAPTURE:
+                raise ValueError(f'{name}: expected {EXPECTED_CAPTURE}, got {capture}')
             shade_data = shades.read_bytes()
             if len(shade_data) != SIZE[0] * SIZE[1] or any(v > 3 for v in shade_data):
                 raise ValueError('invalid LotusGB shade framebuffer')
@@ -157,9 +184,10 @@ def main():
             diff = bytes(c for v in delta for c in ((255, 0, 0) if v else (0, 0, 0)))
             Image.frombytes('RGB', SIZE, diff).save(output / (name + '-diff.png'))
             print(f'DIAGNOSTIC {name}: {sum(delta)} differing pixels', flush=True)
-        report['patch_scope'] = ('Program LCDC.1 immediate or sprite-table bytes only; '
-                                 'instruction flow and header unchanged. '
-                                 'Global ROM checksum is not repaired.')
+        report['patch_scope'] = ('Program LCDC.1 immediate, sprite-table bytes, or the '
+                                 'two SCX-write isolation variants; all captures keep '
+                                 'the same marker and M-cycle count. Header unchanged; '
+                                 'global ROM checksum is not repaired.')
         report['completed'] = True
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         report['error'] = str(error)
