@@ -473,3 +473,26 @@ runner; Gambatte reported no system directory and loaded the plain ROM. These
 are local boot-path limitations. Mealybug's expected image remains an emulator
 reference, not a hardware capture; use this result to localize the discrepancy,
 not to copy either core's fetch rule without further evidence.
+
+## Localizing the remaining SCX mismatch (2026-10-25)
+
+The differing pixels come from BG tile-fetch timing, not layer composition.
+For each affected row, the Mode 3 fetcher reads tile-map column 2 using the old
+SCX value before the ROM's Mode 3 handler writes `SCX = LY`. For example, the
+column-2 map read is at dot 112 on LY 8, dot 111 on LY 16, and dot 113 on LY 64;
+the SCX write is at dot 114 in each case. [Pan Docs](https://gbdev.io/pandocs/Scrolling.html)
+states that SCX is sampled again for each tile fetch, matching this mechanism.
+
+A temporary, line-scoped timing probe supports the diagnosis: adding 3 dots to
+the LY 8 OBJ event moves its column-2 map read to dot 115, after the SCX write,
+and removes that row's pixel difference. Adding 4 dots on LY 16 and 2 dots on
+LY 64 likewise removes the differences on those rows. The temporary probe code
+was restored; its captures remain under the ignored `build/test-roms/` tree.
+
+This localizes the model error to the relative timing of OBJ-induced Mode 3
+stalls and subsequent BG tile fetches. LotusGB currently schedules OBJ stalls
+as precomputed alignment/setup/transfer events; exact per-dot BG/OBJ arbitration
+and same-dot CPU/PPU ordering remain unresolved. The different per-line probe
+values are diagnostic only: applying a global delay changed other rows and is
+not a valid fix. The cross-core agreement raises confidence in the expected
+pixels, but hardware behavior has not yet been independently confirmed.
