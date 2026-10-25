@@ -1241,6 +1241,48 @@ void testPushBusOrder() {
     expect(reg.getRefSP() == 0xC0FE, "PUSH decrements SP twice");
 }
 
+void testPopAFMasksUnusedFlagBits() {
+    CpuFixture f{{0x0000, 0xF1}, {0x0001, 0x00}, {0xC000, 0x2F}, {0xC001, 0xAB}};
+    Reg reg = f.cpu.getReg();
+    reg.getRefSP() = 0xC000;
+    reg.getRefAF() = 0x56D0;
+    f.cpu.setReg(reg);
+
+    const auto lowByte = f.cpu.stepOneCycle();
+    reg = f.cpu.getReg();
+    expect(lowByte.success && !lowByte.fetchedNewInst &&
+               lowByte.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               reg.getRefAF() == 0x56D0 && reg.getRefSP() == 0xC001 &&
+               f.memory.reads == std::vector<uint16_t>{0xC000} &&
+               f.memory.writes.empty(),
+           "POP AF reads the flag byte without committing AF in cycle two");
+    const GB_Flag oldFlags = reg.getFlag();
+    expect(oldFlags.Z && oldFlags.N && !oldFlags.H && oldFlags.C,
+           "POP AF keeps the old flags until the register-pair commit");
+
+    const auto highByte = f.cpu.stepOneCycle();
+    reg = f.cpu.getReg();
+    expect(highByte.success && !highByte.fetchedNewInst &&
+               highByte.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               reg.getRefAF() == 0x56D0 && reg.getRefSP() == 0xC002 &&
+               f.memory.reads == std::vector<uint16_t>{0xC000, 0xC001} &&
+               f.memory.writes.empty(),
+           "POP AF reads the accumulator byte before committing AF in cycle three");
+
+    const auto commit = f.cpu.stepOneCycle();
+    reg = f.cpu.getReg();
+    const GB_Flag flags = reg.getFlag();
+    expect(commit.success && commit.fetchedNewInst &&
+               commit.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               f.memory.reads == std::vector<uint16_t>{0xC000, 0xC001, 0x0001} &&
+               f.memory.writes.empty() && reg.getRefAF() == 0xAB20 &&
+               reg.getRefF() == 0x20 && reg.getRefSP() == 0xC002 &&
+               reg.getRefPC() == 0x0002,
+           "POP AF commits both bytes and masks the flag low nibble with next fetch");
+    expect(!flags.Z && !flags.N && flags.H && !flags.C,
+           "POP AF restores flags from the upper nibble of the popped flag byte");
+}
+
 void testPopRetAndJumpBusTiming() {
     CpuFixture pop{{0x0000, 0xC1}, {0x0001, 0x00}, {0xC000, 0x34}, {0xC001, 0x12}};
     Reg reg = pop.cpu.getReg();
@@ -1996,6 +2038,7 @@ int main() {
     testImmediate16BitLoadPhases();
     testSixteenBitArithmeticMcyclePhases();
     testPushBusOrder();
+    testPopAFMasksUnusedFlagBits();
     testPopRetAndJumpBusTiming();
     testConditionalBranchAndCallBusTiming();
     testConditionalRetStackTiming();
