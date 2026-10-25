@@ -328,6 +328,63 @@ void testHlAluReadsBeforeUpdatingAccumulatorAndFlags() {
     }
 }
 
+void testImmediateAluReadsBeforeUpdatingAccumulatorAndFlags() {
+    struct Case {
+        uint8_t opcode;
+        uint8_t accumulator;
+        uint8_t immediate;
+        bool carryIn;
+        uint8_t expectedAccumulator;
+        bool z;
+        bool n;
+        bool h;
+        bool c;
+    };
+    const Case cases[] = {
+        {0xC6, 0xFF, 0x01, false, 0x00, true,  false, true,  true},  // ADD A,n
+        {0xCE, 0xFF, 0x00, true,  0x00, true,  false, true,  true},  // ADC A,n
+        {0xD6, 0x00, 0x01, false, 0xFF, false, true,  true,  true},  // SUB A,n
+        {0xDE, 0x00, 0x00, true,  0xFF, false, true,  true,  true},  // SBC A,n
+        {0xE6, 0xF0, 0x0F, false, 0x00, true,  false, true,  false}, // AND A,n
+        {0xEE, 0xAA, 0xAA, false, 0x00, true,  false, false, false}, // XOR A,n
+        {0xF6, 0x80, 0x01, false, 0x81, false, false, false, false}, // OR A,n
+        {0xFE, 0x10, 0x10, false, 0x10, true,  true,  false, false}, // CP A,n
+        {0xFE, 0x10, 0x11, false, 0x10, false, true,  true,  true},  // CP A,n borrow
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, test.opcode}, {0x0001, test.immediate}, {0x0002, 0x00}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefA() = test.accumulator;
+        setFlags(reg, true, true, true, test.carryIn);
+        f.cpu.setReg(reg);
+
+        const auto immediateRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(immediateRead.success && !immediateRead.fetchedNewInst &&
+                   immediateRead.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() && reg.getRefA() == test.accumulator &&
+                   reg.getRefPC() == 2 && flags.Z && flags.N && flags.H &&
+                   flags.C == test.carryIn,
+               "immediate ALU reads n in M2 before changing A or flags");
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>({0x0001, 0x0002}) &&
+                   f.memory.writes.empty() &&
+                   reg.getRefA() == test.expectedAccumulator && reg.getRefPC() == 3,
+               "immediate ALU commits its result while fetching the next opcode in M3");
+        expect(flags.Z == test.z && flags.N == test.n && flags.H == test.h &&
+                   flags.C == test.c,
+               "immediate ALU commits operation flags at the next-fetch boundary");
+    }
+}
+
 void testIndirectLoadsReadOldAddressAndUpdateAtCorrectPhase() {
     struct Case {
         uint8_t opcode;
@@ -1696,6 +1753,7 @@ int main() {
     testIncDecHlReadModifyWritePhases();
     testCbHlReadModifyWritePhases();
     testHlAluReadsBeforeUpdatingAccumulatorAndFlags();
+    testImmediateAluReadsBeforeUpdatingAccumulatorAndFlags();
     testIndirectLoadsReadOldAddressAndUpdateAtCorrectPhase();
     testIndirectStoresWriteOldAddressAndUpdateAtCorrectPhase();
     testDaaBoundaryCases();
