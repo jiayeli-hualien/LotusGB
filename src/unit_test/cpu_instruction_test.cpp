@@ -1291,19 +1291,183 @@ void testMemoryAccessesOccurWithinTheirMCycle() {
            "LD (HL),n fetches the next opcode after its M3 write");
 }
 
-void testLdhReadThroughCUsesTheHighMemoryPage() {
-    CpuFixture f{{0x0000, 0xF2}, {0x0001, 0x00}}; // LDH A, (C)
-    Reg reg = f.cpu.getReg();
-    reg.getRefC() = 0x30;
-    f.cpu.setReg(reg);
-    f.memory.bytes[0xFF30] = 0xA5;
+void testAbsoluteAndHighMemoryALoadStorePhases() {
+    for (const bool isLoad : {true, false}) {
+        const uint8_t opcode = isLoad ? 0xFA : 0xEA;
+        CpuFixture f{{0x0000, opcode}, {0x0001, 0x45}, {0x0002, 0xC3},
+                     {0x0003, 0x00}, {0xC345, 0xA5}};
+        Reg reg = f.cpu.getReg();
+        const uint8_t initialA = isLoad ? 0x31 : 0x96;
+        reg.getRefA() = initialA;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
 
-    expect(f.runUntilNextOpcode() == 2, "LDH A,(C) takes two M-cycles");
-    reg = f.cpu.getReg();
-    expect(reg.getRefA() == 0xA5,
-           "LDH A,(C) reads from FF00 plus C");
-    expect(!f.memory.reads.empty() && f.memory.reads.front() == 0xFF30,
-           "LDH A,(C) presents the full high-memory address to the bus");
+        const auto addressLow = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(addressLow.success && !addressLow.fetchedNewInst &&
+                   addressLow.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() && reg.getRefA() == initialA &&
+                   reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+               "absolute A load/store reads the address low byte in M2 only");
+
+        const auto addressHigh = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(addressHigh.success && !addressHigh.fetchedNewInst &&
+                   addressHigh.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>({0x0001, 0x0002}) &&
+                   f.memory.writes.empty() && reg.getRefA() == initialA &&
+                   reg.getRefPC() == 3 && flags.Z && flags.N && flags.H && flags.C,
+               "absolute A load/store reads the address high byte before data access");
+
+        const auto dataAccess = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        if (isLoad) {
+            expect(dataAccess.success && !dataAccess.fetchedNewInst &&
+                       dataAccess.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads == std::vector<uint16_t>({0x0001, 0x0002, 0xC345}) &&
+                       f.memory.writes.empty() && f.memory.bytes[0xC345] == 0xA5 &&
+                       reg.getRefA() == initialA && reg.getRefPC() == 3 &&
+                       flags.Z && flags.N && flags.H && flags.C,
+                   "LD A,(a16) reads data in M4 without committing A or flags yet");
+        } else {
+            expect(dataAccess.success && !dataAccess.fetchedNewInst &&
+                       dataAccess.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads == std::vector<uint16_t>({0x0001, 0x0002}) &&
+                       f.memory.writes ==
+                           std::vector<std::pair<uint16_t, uint8_t>>{{0xC345, initialA}} &&
+                       f.memory.bytes[0xC345] == initialA && reg.getRefA() == initialA &&
+                       reg.getRefPC() == 3 && flags.Z && flags.N && flags.H && flags.C,
+                   "LD (a16),A writes A to the resolved address in M4");
+        }
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        const std::vector<uint16_t> expectedReads = isLoad
+            ? std::vector<uint16_t>{0x0001, 0x0002, 0xC345, 0x0003}
+            : std::vector<uint16_t>{0x0001, 0x0002, 0x0003};
+        const std::vector<std::pair<uint16_t, uint8_t>> expectedWrites = isLoad
+            ? std::vector<std::pair<uint16_t, uint8_t>>{}
+            : std::vector<std::pair<uint16_t, uint8_t>>{{0xC345, initialA}};
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == expectedReads && f.memory.writes == expectedWrites &&
+                   reg.getRefA() == (isLoad ? 0xA5 : initialA) && reg.getRefPC() == 4 &&
+                   flags.Z && flags.N && flags.H && flags.C,
+               "absolute A load/store completes at the next opcode fetch without flag changes");
+    }
+
+    for (const bool isLoad : {true, false}) {
+        const uint8_t opcode = isLoad ? 0xF0 : 0xE0;
+        CpuFixture f{{0x0000, opcode}, {0x0001, 0x80}, {0x0002, 0x00},
+                     {0xFF80, 0x5A}};
+        Reg reg = f.cpu.getReg();
+        const uint8_t initialA = isLoad ? 0x31 : 0x96;
+        reg.getRefA() = initialA;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto offsetRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(offsetRead.success && !offsetRead.fetchedNewInst &&
+                   offsetRead.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() && reg.getRefA() == initialA &&
+                   reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+               "LDH A,(n) and LDH (n),A read the offset in M2 without accessing data");
+
+        const auto dataAccess = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        if (isLoad) {
+            expect(dataAccess.success && !dataAccess.fetchedNewInst &&
+                       dataAccess.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads == std::vector<uint16_t>({0x0001, 0xFF80}) &&
+                       f.memory.writes.empty() && reg.getRefA() == initialA &&
+                       reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+                   "LDH A,(n) reads from FF00+n in M3 before A is committed");
+        } else {
+            expect(dataAccess.success && !dataAccess.fetchedNewInst &&
+                       dataAccess.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                       f.memory.writes ==
+                           std::vector<std::pair<uint16_t, uint8_t>>{{0xFF80, initialA}} &&
+                       f.memory.bytes[0xFF80] == initialA && reg.getRefA() == initialA &&
+                       reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+                   "LDH (n),A writes to FF00+n in M3");
+        }
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        const std::vector<uint16_t> expectedReads = isLoad
+            ? std::vector<uint16_t>{0x0001, 0xFF80, 0x0002}
+            : std::vector<uint16_t>{0x0001, 0x0002};
+        const std::vector<std::pair<uint16_t, uint8_t>> expectedWrites = isLoad
+            ? std::vector<std::pair<uint16_t, uint8_t>>{}
+            : std::vector<std::pair<uint16_t, uint8_t>>{{0xFF80, initialA}};
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == expectedReads && f.memory.writes == expectedWrites &&
+                   reg.getRefA() == (isLoad ? 0x5A : initialA) && reg.getRefPC() == 3 &&
+                   flags.Z && flags.N && flags.H && flags.C,
+               "LDH immediate load/store completes at the next opcode fetch");
+    }
+
+    for (const bool isLoad : {true, false}) {
+        const uint8_t opcode = isLoad ? 0xF2 : 0xE2;
+        CpuFixture f{{0x0000, opcode}, {0x0001, 0x00}, {0xFFA3, 0x6C}};
+        Reg reg = f.cpu.getReg();
+        const uint8_t initialA = isLoad ? 0x31 : 0x96;
+        reg.getRefA() = initialA;
+        reg.getRefC() = 0xA3;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto dataAccess = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        if (isLoad) {
+            expect(dataAccess.success && !dataAccess.fetchedNewInst &&
+                       dataAccess.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads == std::vector<uint16_t>{0xFFA3} &&
+                       f.memory.writes.empty() && reg.getRefA() == initialA &&
+                       reg.getRefC() == 0xA3 && reg.getRefPC() == 1 &&
+                       flags.Z && flags.N && flags.H && flags.C,
+                   "LDH A,(C) reads FF00+C in M2 before committing A");
+        } else {
+            expect(dataAccess.success && !dataAccess.fetchedNewInst &&
+                       dataAccess.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads.empty() &&
+                       f.memory.writes ==
+                           std::vector<std::pair<uint16_t, uint8_t>>{{0xFFA3, initialA}} &&
+                       f.memory.bytes[0xFFA3] == initialA && reg.getRefA() == initialA &&
+                       reg.getRefC() == 0xA3 && reg.getRefPC() == 1 &&
+                       flags.Z && flags.N && flags.H && flags.C,
+                   "LDH (C),A writes to FF00+C in M2");
+        }
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        const std::vector<uint16_t> expectedReads = isLoad
+            ? std::vector<uint16_t>{0xFFA3, 0x0001}
+            : std::vector<uint16_t>{0x0001};
+        const std::vector<std::pair<uint16_t, uint8_t>> expectedWrites = isLoad
+            ? std::vector<std::pair<uint16_t, uint8_t>>{}
+            : std::vector<std::pair<uint16_t, uint8_t>>{{0xFFA3, initialA}};
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == expectedReads && f.memory.writes == expectedWrites &&
+                   reg.getRefA() == (isLoad ? 0x6C : initialA) && reg.getRefC() == 0xA3 &&
+                   reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+               "LDH C-register load/store completes at the next opcode fetch");
+    }
 }
 
 void testEiDelay() {
@@ -1548,7 +1712,7 @@ int main() {
     testCallAndRstStackPointerMcycleTiming();
     testStopDecodeAndHaltIdle();
     testMemoryAccessesOccurWithinTheirMCycle();
-    testLdhReadThroughCUsesTheHighMemoryPage();
+    testAbsoluteAndHighMemoryALoadStorePhases();
     testEiDelay();
     testRepeatedEiDoesNotPostponePendingInterrupt();
     testDiCancelsEiWithPendingInterruptAcrossFollowingInstructions();
