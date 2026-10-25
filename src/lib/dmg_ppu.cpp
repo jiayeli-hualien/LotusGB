@@ -386,9 +386,9 @@ void DmgPpu::advanceMode3Pipeline() {
 }
 
 void DmgPpu::advanceBackgroundFetcherForObjectFetch() {
-    // OBJ arbitration advances BG fetching until a row is ready to push and
-    // the BG FIFO already contains pixels, then waits for the object fetch.
-    if (mode3.fetcher.phase == BackgroundFetcherState::Phase::Push &&
+    // OBJ arbitration stops catch-up when either the fetcher reaches Push or
+    // the BG FIFO has pixels queued. Rows still push only into an empty FIFO.
+    if (mode3.fetcher.phase == BackgroundFetcherState::Phase::Push ||
         mode3.backgroundFifo.size > 0)
         return;
 

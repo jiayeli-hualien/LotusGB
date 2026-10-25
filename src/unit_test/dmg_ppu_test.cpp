@@ -718,7 +718,7 @@ void testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles() {
            "later tile fetches retain the updated coarse scroll after an object stall");
 }
 
-void testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels() {
+void testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
 
@@ -738,8 +738,8 @@ void testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels() {
     ppu.advanceTCycles(456 - 100);
 
     const auto &frame = ppu.getFrameBuffer();
-    expect(frame[DmgPpu::FRAME_WIDTH + 8] == 1,
-           "BG bitplanes fetched during OBJ arbitration retain the earlier SCY row");
+    expect(frame[DmgPpu::FRAME_WIDTH + 8] == 2,
+           "the BG fetcher waits for a non-empty FIFO during OBJ arbitration");
 }
 
 void testBackgroundBitplanesSampleScySeparately() {
@@ -1179,7 +1179,7 @@ int main() {
     testWindowPositionAndWindowTileMap();
     testCoarseScrollSamplesLaterTilesWithoutChangingFineDiscard();
     testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles();
-    testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels();
+    testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels();
     testObjectBehindBackgroundUsesFetchedScrollPixels();
     testBackgroundEnableIsSampledForEachOutputPixel();
     testBackgroundCanBeEnabledMidScanlineAfterStartingDisabled();

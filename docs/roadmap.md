@@ -18,19 +18,22 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   selected `m3_scx_high_5_bits` image still has 84 differing pixels in one
   tile column on sprite-affected lines. Mode 3 now has named BG fetch phases
   and separate 16-pixel BG/OBJ FIFOs. During a timed OBJ fetch, BG fetching
-  advances until Push has pixels queued, then waits; a row is pushed only
-  when the BG FIFO is empty. The public regression
-  `testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels` protects the
-  sampled bitplanes during this catch-up, and the SCX-during-OBJ regression
-  still passes. `make test` and the selected 11-ROM Mooneye PPU/interrupt run
-  pass; Big2Small and Canyon Racer each complete 3,600-frame callback smoke
-  runs. The Mealybug image retains its prior hash and 84 differences. Allowing
-  a row push into a non-empty FIFO raised the mismatch to 150, so the empty-FIFO
-  rule was retained. These checks support the current model but do not prove
-  exact hardware timing. OAM descriptors and event durations are still
+  advances until it reaches Push or the BG FIFO becomes non-empty, then waits;
+  a row is pushed only when the BG FIFO is empty. The public regression
+  `testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels` checks that a
+  SCY write during the pause affects bitplanes not yet fetched. The SCX-during-
+  OBJ regression still passes. `make test` and the selected 11-ROM
+  Mooneye PPU/interrupt run pass; Big2Small and Canyon Racer each complete
+  3,600-frame callback smoke runs. The Mealybug image retains its prior hash
+  and 84 differences. Allowing a row push into a non-empty FIFO raised the
+  mismatch to 150, so the empty-FIFO rule was retained. These checks support
+  the current model but do not prove exact hardware timing. OAM descriptors
+  and event durations are still
   prepared at scanline entry; per-dot OBJ bus reads and BG/OBJ arbitration
-  remain open. Next, investigate one measured sprite/fetch boundary while
-  keeping line, STAT, and pixel regressions intact; see the
+  remain open. Next, recapture the BG fetch stages after OBJ catch-up and test
+  the following tile-map sampling boundary against a spec-backed expectation;
+  retain the Mealybug pixel mismatch as a diagnostic instead of tuning to it.
+  Keep line, STAT, and pixel regressions intact; see the
   [measured diagnosis](ppu-scrolling.md#bounded-investigation-of-the-remaining-scx-pixels).
   Do not tune the global fetch phase or add CGB FIFO behavior to chase a lower
   diagnostic pixel count.

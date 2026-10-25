@@ -2,10 +2,11 @@
 
 ## Current status
 
-Mode 3 has separate 16-pixel BG and OBJ FIFOs. During an OBJ fetch, the BG
-fetcher advances until it reaches Push with BG pixels queued; a new BG row is
-pushed only when that FIFO is empty. A public PPU regression checks that a
-SCY write during this catch-up does not change bitplanes already fetched.
+Mode 3 has separate 16-pixel BG and OBJ FIFOs. During OBJ arbitration, the BG
+fetcher advances until it reaches Push or the BG FIFO has pixels queued, then
+waits; a new BG row is pushed only when that FIFO is empty. A public PPU
+regression checks that a SCY write during this pause affects bitplanes not yet
+fetched.
 `m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
 hash, so this step does not claim better visual accuracy. `make test`, the
 selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
@@ -174,12 +175,13 @@ independent proof of every T-cycle in sprite/FIFO arbitration.
 
 ### Bounded investigation of the remaining SCX pixels
 
-An instrumented build of the current source, started after the ROM writes
-LCDC=`0x93`, shows line 8's third tile-map address sampled at dot 111 and the
-SCX write at dot 114; line 64 samples that address at dot 112, again before
-the write at dot 114. The modeled initial OBJ stalls are 9 and 10 dots on
-those lines. Earlier temporary traces captured the pre-setup post-boot frame
-or an older source copy and are not valid timing evidence. Testing
+The saved instrumented trace predates the BG catch-up condition correction.
+In that trace, started after the ROM writes LCDC=`0x93`, line 8's third
+tile-map address is sampled at dot 111 and the SCX write at dot 114; line 64
+samples that address at dot 112, again before the write at dot 114. The modeled
+initial OBJ stalls are 9 and 10 dots on those lines. Earlier temporary traces
+captured the pre-setup post-boot frame or an older source copy and are not
+valid timing evidence. Testing
 coarse-sampling phases 6, 7, 8, 9 and 10 yielded 84, 84, 77, 80 and 45
 SCX-high differing pixels. None reached an exact match, and the lower mismatch
 count alone does not establish hardware timing. Those variants were
@@ -197,38 +199,39 @@ calculates the map address at `GET_TILE_T1` from live SCX and the current
 position in the line. That is a useful implementation comparison, not
 independent hardware evidence.
 
-The current-model stage trace around the affected tile is:
+The pre-correction model's stage trace around the affected tile was:
 
 | LY | First OBJ output stall | Tile-column 2 map / low / high / push | SCX write |
 | ---: | ---: | --- | ---: |
 | 8 | dots 93–101 (9 dots) | 111 / 113 / 115 / 117 | dot 114 |
 | 64 | dots 93–102 (10 dots) | 112 / 114 / 116 / 118 | dot 114, after that dot's low-plane read |
 
-The current model therefore latches the tile-map address before the write on
-both lines. On line 8, the write lands between the low- and high-plane reads;
-on line 64, it follows the low-plane read. This matches the code's stage
-ordering, but the reference image differs in the output tile at x=16–23. The
+That pre-correction model latched the tile-map address before the write on both
+lines. On line 8, the write landed between the low- and high-plane reads; on
+line 64, it followed the low-plane read. This matched that version's stage
+ordering, but the reference image differed in the output tile at x=16–23. The
 candidate error is the modeled map-fetch position around OBJ arbitration, not
 whether later tile fetches reread SCX. This is still a comparison against the
-Mealybug emulator reference image, not a hardware capture.
+Mealybug emulator reference image, not a hardware capture; the trace has not
+been regenerated after the catch-up correction.
 
 A temporary public-interface probe isolated line 8 with one object at OAM
-Y=24/X=1 and changed SCX at dot 114. The current model still used tile-map
-column 2 for pixel x=16, while the Mealybug DMG reference shows the tile shifted
-by the new SCX value. The probe failed against the current model and was
+Y=24/X=1 and changed SCX at dot 114. The pre-correction model still used
+tile-map column 2 for pixel x=16, while the Mealybug DMG reference shows the
+tile shifted by the new SCX value. The probe failed against that model and was
 removed rather than keeping a speculative expected value in the normal unit
 suite. The external ROM comparison remains the reproducible target for this
-case. A fresh capture from the current `ppu_frame_runner` still differs in 84
-pixels and has shade-buffer SHA-256
+case. A fresh capture from the corrected `ppu_frame_runner` still differs in
+84 pixels and has shade-buffer SHA-256
 `0655c10657494025ae466e223502bb9ef6aa5f0c0378cce02386ae6a7a382cf805`.
 
 The likely modeling gap is that LotusGB still schedules each object as a
 precomputed output stall. BG and OBJ pixels pass through separate FIFOs, and
 OBJ bitplanes are sampled at two coarse event boundaries, but the event's
-duration and descriptor are still prepared at scanline start. The current
-catch-up rule advances BG fetching only until Push has queued pixels; it does
-not model per-dot OAM/VRAM bus access or the full sprite sequence. An earlier
-candidate that advanced BG without waiting for an empty FIFO increased the
+duration and descriptor are still prepared at scanline start. The catch-up
+rule now stops when the fetcher reaches Push or the BG FIFO becomes non-empty;
+it does not model per-dot OAM/VRAM bus access or the full sprite sequence. An
+earlier candidate that pushed a BG row into a non-empty FIFO increased the
 Mealybug mismatch from 84 to 150 pixels (x=16–31, y=8–142). Requiring an empty
 FIFO before pushing a row restored the previous 84-pixel capture hash. This
 supports the FIFO condition in the model but does not prove exact hardware
@@ -243,20 +246,19 @@ comparison and an inference from the Mealybug reference, not a proven hardware
 root cause.
 
 The public PPU regression
-`testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles` now changes SCX at
-line 1 dot 95, during the current model's first OBJ stall, and checks that the
-later tile columns use the updated coarse offset. It passes with the current
-model. This protects live SCX sampling after a stall; it does not reproduce the
-84-pixel Mealybug mismatch or establish the disputed fetch boundary as hardware
-truth. The separate regression `testObjectFetchAdvancesBackgroundFetcherToTheQueuedPixels`
-places a transparent object on line 1 and changes SCY during the OBJ catch-up;
-it checks that already-read bitplanes stay latched for the emitted pixel. It
-failed before the catch-up behavior was added and passes now. This validates
-the modeled sampling boundary, not the disputed Mealybug case. Keep line timing,
-STAT, palette-write, and pixel regressions as constraints while investigating
-the remaining per-dot OBJ schedule. Re-run the selected Mealybug ROM after
-each measured change; do not tune the global phase to chase a lower pixel
-count. Keep CGB FIFO behavior and unrelated fetch quirks out of scope.
+`testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles` changes SCX at
+line 1 dot 95, during the first OBJ stall, and checks that later tile columns
+use the updated coarse offset. The regression
+`testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels` places a transparent
+object at screen x=3 and changes SCY during its fetch. The test failed with the
+old conjunction (waiting for both Push and a non-empty FIFO); it passes when
+catch-up stops on either condition, and confirms that unread BG bitplanes use
+the new SCY value. This follows Pan Docs' described stopping condition, while
+the remaining per-dot OBJ schedule is still incomplete. Keep line timing,
+STAT, palette-write, and pixel regressions as constraints. Re-run the selected
+Mealybug ROM after each measured change; do not tune the global phase to chase
+a lower pixel count. Keep CGB FIFO behavior and unrelated fetch quirks out of
+scope.
 
 ### Mode 3 state and BG FIFO foundation (2026-10-25)
 
@@ -408,11 +410,11 @@ position, retaining the ability to reveal upcoming pixels after LCDC.1 is
 enabled mid-line.
 
 The existing alignment/setup/data-transfer durations are retained. During a
-timed OBJ event, BG fetching now advances until it reaches Push with pixels
-already queued, then waits; BG rows push only into an empty FIFO. A public
-regression changes SCY during that catch-up and confirms that the sampled
-bitplanes remain latched. The test failed before this behavior change and now
-passes. `make test` and the selected 11-ROM Mooneye PPU/interrupt run pass; the
+timed OBJ event, BG fetching advances until it reaches Push or the BG FIFO has
+pixels queued, then waits; BG rows push only into an empty FIFO. A public
+regression changes SCY during the pause and confirms that unread bitplanes
+sample the new row. The test failed under the prior conjunction condition and
+now passes. `make test` and the selected 11-ROM Mooneye PPU/interrupt run pass; the
 Big2Small and Canyon Racer callbacks each completed 3,600 frames. The direct
 `m3_scx_high_5_bits` capture remains at 84 differing pixels with the previous
 shade-buffer hash. A permissive FIFO push candidate increased the mismatch to
