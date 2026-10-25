@@ -17,6 +17,18 @@ the preceding run in 407 of 23,040 pixels; this profile has no expected frame,
 so the comparison does not establish accuracy. Exact OBJ event alignment and
 per-dot bus arbitration remain unverified.
 
+A fresh rebuild of the current tree produced these selected Mealybug `DMG-blob`
+pixel differences: BGP 3,642; SCX-low 540; SCX-high 84; SCY 8,334; BG-map
+change 1,082; BG-enable change 2,210. All six remain **FAIL** against the
+reference. The repeatable report is under
+`build/test-roms/mealybug-pillow-recheck/report.json`; it records archive SHA-256
+`e2fa6ca96ad48bd64d7297fda042db04c15117a730da3bbd590f139e89b150bd` and runner
+SHA-256 `0fb0d7eab45a076278b8d39ef660b3aee738ea6aec9d432af5fa34cf0df4dacb`.
+The linked `liblotusgb.so` SHA-256 for this run is
+`a6687a61dc1f942ac7cb5c1cdc3eaf66239c19f4a8e8454f8a9b56993c60ad88`.
+Earlier counts in the dated investigation sections are historical outputs
+from prior builds; use this fresh run as the current image baseline.
+
 ## Scope
 
 The active route is one observable SCX/SCY fetch behavior at a time, with
