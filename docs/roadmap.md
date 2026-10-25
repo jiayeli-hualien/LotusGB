@@ -77,6 +77,7 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - CPU instruction execution advances in M-cycle steps.
 - Decoder metadata is compiled into typed C++ tables from the CSV source files.
 - CPU interface and instruction unit tests run through `make test`.
+- Libretro contains runtime exceptions at the callback boundary, logs once, and stops execution until reset or content reload.
 - GitHub Actions builds the project, runs unit tests, and checks instructions against a pinned GBIT fork.
 - Regression coverage includes DAA, `ADD SP,e8` flags, EI delay, stack/jump memory-cycle sequences, and the M-cycle when PUSH/POP update SP.
 - Interrupt sampling treats a CB prefix and its second opcode byte as one instruction; a pending interrupt waits until the CB operation completes. A CPU regression checks the executed opcode and pushed return address.

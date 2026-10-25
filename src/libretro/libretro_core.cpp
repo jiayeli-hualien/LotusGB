@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "game_boy_system.hpp"
+#include "callback_exception_boundary.hpp"
 
 namespace {
 
@@ -28,6 +29,7 @@ constexpr double DMG_FRAME_RATE = 4194304.0 / GameBoySystem::DMG_FRAME_T_CYCLES;
 retro_environment_t environmentCallback = nullptr;
 retro_log_printf_t logCallback = nullptr;
 bool frameProblemReported = false;
+bool emulationFaulted = false;
 
 void logMessage(retro_log_level level, const char *message) {
     if (logCallback)
@@ -262,6 +264,7 @@ void retro_init(void) {
     useXrgb8888 = false;
     logCallback = nullptr;
     frameProblemReported = false;
+    emulationFaulted = false;
     if (environmentCallback) {
         retro_log_callback logging{};
         if (environmentCallback(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
@@ -279,6 +282,8 @@ void retro_deinit(void) {
     audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
+    frameProblemReported = false;
+    emulationFaulted = false;
 }
 
 void retro_get_system_info(retro_system_info *info) {
@@ -319,6 +324,7 @@ void retro_reset(void) {
             std::make_unique<GameBoySystem>(loadedRom, saveRam, saveRtc);
         emulatorSystem = std::move(newSystem);
         frameProblemReported = false;
+        emulationFaulted = false;
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());
         emulatorSystem.reset();
@@ -332,25 +338,40 @@ void retro_run(void) {
     if (!emulatorSystem)
         return;
 
-    pollInput();
-    const auto step = emulatorSystem->stepFrame();
-    if (!step.success || !step.frameCompleted) {
-        if (!frameProblemReported) {
-            char message[192];
-            auto registers = emulatorSystem->getCpuRegisters();
-            std::snprintf(message, sizeof(message), "%s; PC=0x%04X frame_tcycles=%llu",
-                          step.success ? "CPU clock stopped before frame completion (STOP)"
-                                       : "CPU execution failed before frame completion",
-                          static_cast<unsigned>(registers.getRefPC()),
-                          static_cast<unsigned long long>(step.tCyclesElapsed));
-            logMessage(step.success ? RETRO_LOG_WARN : RETRO_LOG_ERROR, message);
-        }
-        frameProblemReported = true;
-    } else {
-        frameProblemReported = false;
-    }
-    renderFrame();
-    submitAudio();
+    LOTUSGB::LibretroInternal::invokeCallbackSafely(
+        emulationFaulted,
+        [] {
+            pollInput();
+            const auto step = emulatorSystem->stepFrame();
+            if (!step.success || !step.frameCompleted) {
+                if (!frameProblemReported) {
+                    char message[192];
+                    auto registers = emulatorSystem->getCpuRegisters();
+                    std::snprintf(message, sizeof(message),
+                                  "%s; PC=0x%04X frame_tcycles=%llu",
+                                  step.success
+                                      ? "CPU clock stopped before frame completion (STOP)"
+                                      : "CPU execution failed before frame completion",
+                                  static_cast<unsigned>(registers.getRefPC()),
+                                  static_cast<unsigned long long>(step.tCyclesElapsed));
+                    logMessage(step.success ? RETRO_LOG_WARN : RETRO_LOG_ERROR,
+                               message);
+                }
+                frameProblemReported = true;
+                if (!step.success)
+                    emulationFaulted = true;
+            } else {
+                frameProblemReported = false;
+            }
+            renderFrame();
+            submitAudio();
+        },
+        [](const char *error) {
+            char message[256];
+            std::snprintf(message, sizeof(message),
+                          "Exception during retro_run: %s", error);
+            logMessage(RETRO_LOG_ERROR, message);
+        });
 }
 
 size_t retro_serialize_size(void) {
@@ -394,6 +415,7 @@ bool retro_load_game(const retro_game_info *game) {
         loadedRom = std::move(rom);
         emulatorSystem = std::move(newSystem);
         frameProblemReported = false;
+        emulationFaulted = false;
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());
         return false;
@@ -412,6 +434,8 @@ void retro_unload_game(void) {
     audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
+    frameProblemReported = false;
+    emulationFaulted = false;
 }
 
 unsigned retro_get_region(void) {

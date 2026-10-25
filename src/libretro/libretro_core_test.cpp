@@ -1,4 +1,5 @@
 #include "libretro.h"
+#include "callback_exception_boundary.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #ifndef LOTUSGB_LIBRETRO_TEST_ASSET_DIR
@@ -541,6 +543,39 @@ void testLibretroReportsLoadAndStoppedFrameDiagnostics() {
     retro_unload_game();
 }
 
+void testLibretroCallbackExceptionBoundaryFaultsOnce() {
+    bool faulted = false;
+    bool callbackRan = false;
+    std::string diagnostic;
+    const bool completed = LOTUSGB::LibretroInternal::invokeCallbackSafely(
+        faulted,
+        [&] {
+            callbackRan = true;
+            throw std::runtime_error("synthetic frame failure");
+        },
+        [&](const char *message) { diagnostic = message; });
+
+    expect(callbackRan && !completed && faulted,
+           "exception boundary catches a runtime callback failure and faults execution");
+    expect(diagnostic == "synthetic frame failure",
+           "exception boundary passes the exception message to the logger");
+
+    bool retried = false;
+    const bool retriedSuccessfully = LOTUSGB::LibretroInternal::invokeCallbackSafely(
+        faulted, [&] { retried = true; }, [](const char *) {});
+    expect(!retriedSuccessfully && !retried,
+           "faulted execution does not re-enter the failing callback");
+
+    bool unknownFaulted = false;
+    std::string unknownDiagnostic;
+    const bool unknownCompleted = LOTUSGB::LibretroInternal::invokeCallbackSafely(
+        unknownFaulted, [] { throw 17; },
+        [&](const char *message) { unknownDiagnostic = message; });
+    expect(!unknownCompleted && unknownFaulted &&
+               unknownDiagnostic == "unknown C++ exception",
+           "exception boundary contains exceptions without a std::exception message");
+}
+
 void testLibretroReportsApiAndVideoTiming() {
     expect(retro_api_version() == RETRO_API_VERSION,
            "core reports the libretro API version");
@@ -585,6 +620,7 @@ int main() {
     testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();
     testLibretroExposesAndPreservesMbc3RtcMemory();
     testLibretroReportsLoadAndStoppedFrameDiagnostics();
+    testLibretroCallbackExceptionBoundaryFaultsOnce();
 
     retro_unload_game();
     retro_deinit();

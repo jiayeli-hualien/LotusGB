@@ -3,6 +3,7 @@ CPPFLAGS := -Wall -Wextra -std=c++17 -O2 -fPIC -Iinclude -I../lib/include
 build_dir ?= build
 
 libretro_header := include/libretro.h
+libretro_headers := $(wildcard include/*.hpp)
 generated_tables := ../lib/include/generated_decode_tables.hpp
 csv_sources := $(wildcard ../lib/include/*.csv)
 core_headers := $(wildcard ../lib/include/*.hpp)
@@ -25,11 +26,11 @@ $(generated_tables): $(csv_sources) ../../tools/generate_decode_tables.py
 	python3 ../../tools/generate_decode_tables.py
 
 $(build_dir)/lotusgb_libretro.so: libretro_core.cpp $(core_sources) \
-		$(core_headers) $(libretro_header) $(generated_tables) | $(build_dir)
+		$(core_headers) $(libretro_header) $(libretro_headers) $(generated_tables) | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ libretro_core.cpp $(core_sources) -shared
 
 $(build_dir)/libretro_core_test: libretro_core_test.cpp libretro_core.cpp \
-		$(core_sources) $(core_headers) $(libretro_header) $(generated_tables) | $(build_dir)
+		$(core_sources) $(core_headers) $(libretro_header) $(libretro_headers) $(generated_tables) | $(build_dir)
 	$(CXX) $(CPPFLAGS) -DLOTUSGB_LIBRETRO_TEST_ASSET_DIR=\"$(asset_dir)\" \
 		-o $@ libretro_core_test.cpp libretro_core.cpp $(core_sources)
 
