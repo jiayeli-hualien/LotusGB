@@ -30,21 +30,19 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   mismatch to 150, so the empty-FIFO rule was retained. These checks support
   the current model but do not prove exact hardware timing. OAM descriptors
   and event durations are still prepared at scanline entry. OBJ low/high plane
-  reads now occupy separate dot actions, and a read action reserves the modeled
-  VRAM slot so BG catch-up does not also advance on that dot. The selected ROMs
-  show no output change, so this scheduling rule remains a hypothesis. The BG
-  catch-up predicate is unresolved: Pan Docs describes
-  stopping at Push or a non-empty FIFO, while SameBoy's current source waits
-  for both its high-data T2 state and a non-empty FIFO before two more fetcher
-  advances. Copying that predicate into the coarse scheduler failed the
-  existing SCX-during-OBJ regression. BG address/data and OBJ plane-read
-  actions are now explicit per-dot steps, with OBJ taking the modeled VRAM
-  slot on read dots; OAM/OBJ durations and joint fetch scheduling are still
-  coarse. Current tests preserve their previous results, including
-  byte-identical Mealybug captures, but do not distinguish this bus policy.
-  A scan across all 31 existing Mealybug OBJ/sprite ROMs also found no changed
-  output; none validates the candidate read-slot rule. See the
-  [scan results](ppu-scrolling.md#timed-objbg-vram-read-candidate-scan-2026-10-25).
+  reads happen at separate coarse event steps. A candidate gate that prevented
+  BG catch-up on OBJ read dots was removed because no current output exposed
+  it: 31 OBJ/sprite Mealybug ROMs and two 13,527-case public-interface sweeps
+  were unchanged. The gate's observed overlaps occurred while the renderer
+  sourced pixels from its precomputed window buffer. Shared bus arbitration is
+  therefore still unimplemented. The BG catch-up predicate is unresolved: Pan
+  Docs describes stopping at Push or a non-empty FIFO, while SameBoy's current
+  source waits for both its high-data T2 state and a non-empty FIFO before two
+  more fetcher advances. Copying that predicate into the coarse scheduler failed the
+  existing SCX-during-OBJ regression. BG address/data phases and OBJ plane-read
+  points are explicit, but OAM/OBJ durations and joint fetch scheduling remain
+  coarse. See the
+  [candidate scan and follow-up](ppu-scrolling.md#timed-objbg-vram-read-candidate-scan-and-follow-up-2026-10-25).
   Next design a DMG-observable case for the competing catch-up and bus-order
   hypotheses before changing event durations. Treat the SCY regression as the
   Pan Docs hypothesis, not

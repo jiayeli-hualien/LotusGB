@@ -264,8 +264,7 @@ private:
     void advanceDot();
     void advanceMode3Pipeline();
     void advanceBackgroundFetcherForObjectFetch();
-    void advanceFetchersDuringObjectFetch();
-    ObjectFetcherState::FetchAction advanceActiveObjectFetch();
+    void advanceActiveObjectFetch();
     void emitMode3Pixel();
     void prepareScanline();
     void renderPixel(size_t screenX, uint8_t backgroundColorIndex,

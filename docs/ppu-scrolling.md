@@ -13,14 +13,11 @@ The BG fetcher now exposes per-dot tile-map/bitplane address (T1) and data (T2)
 phases, followed by separate FIFO-push and tile-column-advance phases. This
 refactor preserves the current visible output and tested timing; OBJ events are
 still coarse, precomputed stalls, so shared BG/OBJ bus arbitration is not yet
-fully modeled. Timed OBJ plane reads now take the modeled VRAM slot for their
-dot, and BG catch-up advances only on OBJ-fetch dots without a plane read. This
-is an explicit scheduling hypothesis; current ROM comparisons do not
-distinguish it from the prior behavior.
-I also compared the prior `a7b3139` runner with this candidate across all 31
-Mealybug PPU ROMs whose assembly mentions OBJ or sprites. Every pair of
-160x144 shade buffers was byte-identical, so this suite does not validate the
-new read-slot rule.
+fully modeled. The attempted OBJ read-slot gate was removed after it proved
+unobservable in the current renderer; OBJ plane reads remain separate coarse
+actions, but the shared bus schedule is still unresolved. Across all 31
+Mealybug PPU ROMs whose assembly mentions OBJ or sprites, the candidate and
+prior `a7b3139` shade buffers were byte-identical.
 `m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
 hash, so this step does not claim better visual accuracy. `make test`, the
 selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
@@ -583,7 +580,7 @@ not a hardware capture, and the different output may reflect mGBA's behavior or
 an unresolved difference in test execution. Keep the mGBA result as a recorded
 cross-check, not as a reason to change LotusGB's timing model by itself.
 
-## Timed OBJ/BG VRAM-read candidate scan (2026-10-25)
+## Timed OBJ/BG VRAM-read candidate scan and follow-up (2026-10-25)
 
 To check whether an existing visual ROM distinguishes the timed OBJ read-slot
 candidate, I built `ppu_frame_runner` from the preceding `a7b3139` revision in
@@ -592,6 +589,18 @@ covered all 31 Mealybug PPU assembly files mentioning `OBJ` or `sprite`; all
 candidate and prior buffers were byte-identical. The two inspected cases,
 `m3_bgp_change_sprites` and `m3_wx_4_change_sprites`, also produced identical
 buffers across revisions.
+
+I then swept public PPU writes over sprite X positions 1–167 and write dots
+80–160, once changing SCY between distinct tile rows and once switching the BG
+tile map between distinct patterns. Each 13,527-case sweep produced the same
+framebuffer with and without the read-slot gate. Instrumentation found gate
+overlaps only after a window had started in the tested scenarios; the current
+renderer emits window pixels from line-prepared data, so those BG catch-up
+steps cannot affect visible window pixels or Mode 3 duration. The gate was
+removed as unobservable in the current model. This does not prove that hardware
+allows simultaneous BG/OBJ VRAM reads; implementing shared arbitration should
+wait until the renderer has an observable path and a test that distinguishes
+the competing schedules.
 
 These results show only that this candidate does not change the current
 Mealybug outputs. They do not confirm shared-bus arbitration. The BGP sprite
