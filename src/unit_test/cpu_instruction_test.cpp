@@ -344,6 +344,84 @@ void testJpHlFetchesAtTargetInSameMcycle() {
            "JP HL leaves flags unchanged while redirecting the fetch");
 }
 
+void testImmediate16BitLoadPhases() {
+    const uint8_t loadPairOpcodes[] = {0x01, 0x11, 0x21, 0x31};
+    for (unsigned pairIndex = 0; pairIndex < 4; ++pairIndex) {
+        CpuFixture f{{0x0000, loadPairOpcodes[pairIndex]},
+                     {0x0001, 0x34}, {0x0002, 0x12}, {0x0003, 0x00}};
+        Reg reg = f.cpu.getReg();
+        commonPairRef(reg, pairIndex) = 0xA5A5;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto lowByte = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        expect(lowByte.success && !lowByte.fetchedNewInst &&
+                   commonPairRef(reg, pairIndex) == 0xA5A5 &&
+                   reg.getRefPC() == 2 && f.memory.reads == std::vector<uint16_t>{1},
+               "LD rr,d16 reads the low immediate byte without committing the pair");
+
+        const auto highByte = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        expect(highByte.success && !highByte.fetchedNewInst &&
+                   commonPairRef(reg, pairIndex) == 0xA5A5 &&
+                   reg.getRefPC() == 3 &&
+                   f.memory.reads == std::vector<uint16_t>({1, 2}),
+               "LD rr,d16 reads the high immediate byte before pair commit");
+
+        const auto commit = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        const GB_Flag flags = reg.getFlag();
+        expect(commit.success && commit.fetchedNewInst &&
+                   commonPairRef(reg, pairIndex) == 0x1234 && reg.getRefPC() == 4 &&
+                   f.memory.reads == std::vector<uint16_t>({1, 2, 3}),
+               "LD rr,d16 commits the pair with the next opcode fetch");
+        expect(flags.Z && flags.N && flags.H && flags.C,
+               "LD rr,d16 preserves flags through both immediate reads and commit");
+    }
+
+    CpuFixture store{{0x0000, 0x08}, {0x0001, 0x00}, {0x0002, 0xC0},
+                     {0x0003, 0x00}};
+    Reg reg = store.cpu.getReg();
+    reg.getRefSP() = 0xABCD;
+    setFlags(reg, true, true, true, true);
+    store.cpu.setReg(reg);
+
+    const auto lowAddress = store.cpu.stepOneCycle();
+    expect(lowAddress.success && !lowAddress.fetchedNewInst &&
+               store.memory.writes.empty() &&
+               store.memory.reads == std::vector<uint16_t>{1},
+           "LD (a16),SP reads the low address byte before writing");
+    const auto highAddress = store.cpu.stepOneCycle();
+    expect(highAddress.success && !highAddress.fetchedNewInst &&
+               store.memory.writes.empty() &&
+               store.memory.reads == std::vector<uint16_t>({1, 2}),
+           "LD (a16),SP reads the high address byte before either write");
+
+    const auto lowWrite = store.cpu.stepOneCycle();
+    expect(lowWrite.success && !lowWrite.fetchedNewInst &&
+               store.memory.writes ==
+                   std::vector<std::pair<uint16_t, uint8_t>>{{0xC000, 0xCD}},
+           "LD (a16),SP writes SPL at the target in its first write M-cycle");
+    const auto highWrite = store.cpu.stepOneCycle();
+    expect(highWrite.success && !highWrite.fetchedNewInst &&
+               store.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+                   {0xC000, 0xCD}, {0xC001, 0xAB}},
+           "LD (a16),SP writes SPH to the following address in the next M-cycle");
+
+    const auto nextFetch = store.cpu.stepOneCycle();
+    reg = store.cpu.getReg();
+    const GB_Flag storeFlags = reg.getFlag();
+    expect(nextFetch.success && nextFetch.fetchedNewInst && reg.getRefSP() == 0xABCD &&
+               reg.getRefPC() == 4 && store.memory.reads ==
+                   std::vector<uint16_t>({1, 2, 3}) &&
+               store.memory.bytes[0xC000] == 0xCD &&
+               store.memory.bytes[0xC001] == 0xAB,
+           "LD (a16),SP fetches after its two ordered writes without changing SP");
+    expect(storeFlags.Z && storeFlags.N && storeFlags.H && storeFlags.C,
+           "LD (a16),SP leaves flags unchanged");
+}
+
 void testSixteenBitArithmeticMcyclePhases() {
     const uint8_t incOpcodes[] = {0x03, 0x13, 0x23, 0x33};
     const uint8_t decOpcodes[] = {0x0B, 0x1B, 0x2B, 0x3B};
@@ -950,6 +1028,7 @@ int main() {
     testSpOffsetFlagsAndCycles();
     testLdSpFromHlMcycle();
     testJpHlFetchesAtTargetInSameMcycle();
+    testImmediate16BitLoadPhases();
     testSixteenBitArithmeticMcyclePhases();
     testPushBusOrder();
     testPopRetAndJumpBusTiming();
