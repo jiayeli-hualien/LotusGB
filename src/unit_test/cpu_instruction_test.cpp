@@ -312,6 +312,76 @@ void testHlAluReadsBeforeUpdatingAccumulatorAndFlags() {
     }
 }
 
+void testIndirectLoadsReadOldAddressAndUpdateAtCorrectPhase() {
+    struct Case {
+        uint8_t opcode;
+        uint16_t initialPair;
+        uint16_t readAddress;
+        uint16_t expectedPair;
+        uint8_t memoryValue;
+    };
+    const Case cases[] = {
+        {0x0A, 0xC001, 0xC001, 0xC001, 0xA5}, // LD A,(BC)
+        {0x1A, 0xC002, 0xC002, 0xC002, 0x5A}, // LD A,(DE)
+        {0x2A, 0xFFFF, 0xFFFF, 0x0000, 0xA5}, // LD A,(HL+), 16-bit wrap
+        {0x3A, 0x0000, 0x0000, 0xFFFF, 0x3A}, // LD A,(HL-), opcode byte at address 0
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, test.opcode}, {0x0001, 0x00}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefA() = 0x42;
+        if (test.opcode == 0x0A)
+            reg.getRefBC() = test.initialPair;
+        else if (test.opcode == 0x1A)
+            reg.getRefDE() = test.initialPair;
+        else
+            reg.getRefHL() = test.initialPair;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+        f.memory.bytes[test.readAddress] = test.memoryValue;
+
+        const auto dataRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(dataRead.success && !dataRead.fetchedNewInst &&
+                   f.memory.reads == std::vector<uint16_t>{test.readAddress} &&
+                   f.memory.writes.empty() && reg.getRefA() == 0x42 &&
+                   reg.getRefPC() == 1 && flags.Z && flags.N && flags.H && flags.C,
+               "indirect A load reads through the old address before committing A");
+        if (test.opcode == 0x0A) {
+            expect(reg.getRefBC() == test.expectedPair,
+                   "LD A,(BC) leaves BC unchanged after the data read");
+        } else if (test.opcode == 0x1A) {
+            expect(reg.getRefDE() == test.expectedPair,
+                   "LD A,(DE) leaves DE unchanged after the data read");
+        } else {
+            expect(reg.getRefHL() == test.expectedPair,
+                   "LD A,(HL+/-) updates HL during the memory-read M-cycle");
+        }
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   f.memory.reads ==
+                       std::vector<uint16_t>{test.readAddress, 0x0001} &&
+                   f.memory.writes.empty() && reg.getRefA() == test.memoryValue &&
+                   reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+               "indirect A load commits data while fetching the next opcode in M3");
+        if (test.opcode == 0x0A) {
+            expect(reg.getRefBC() == test.expectedPair,
+                   "LD A,(BC) preserves BC through completion");
+        } else if (test.opcode == 0x1A) {
+            expect(reg.getRefDE() == test.expectedPair,
+                   "LD A,(DE) preserves DE through completion");
+        } else {
+            expect(reg.getRefHL() == test.expectedPair,
+                   "LD A,(HL+/-) retains its incremented or decremented HL");
+        }
+    }
+}
+
 void testDaaBoundaryCases() {
     struct Case { uint8_t a; bool n; bool h; bool c; uint8_t result; bool z; bool outC; };
     const Case cases[] = {
@@ -1237,6 +1307,7 @@ int main() {
     testIncDecHlReadModifyWritePhases();
     testCbHlReadModifyWritePhases();
     testHlAluReadsBeforeUpdatingAccumulatorAndFlags();
+    testIndirectLoadsReadOldAddressAndUpdateAtCorrectPhase();
     testDaaBoundaryCases();
     testSpOffsetFlagsAndCycles();
     testLdSpFromHlMcycle();
