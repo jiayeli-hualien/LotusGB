@@ -2,7 +2,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <iterator>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -101,21 +100,66 @@ uint8_t& byteRegisterRef(Reg &reg, unsigned index) {
     }
 }
 
-void testCbShiftZeroFlags() {
-    for (const auto &[opcode, carryIn, label] : {
-             std::tuple<uint8_t, bool, const char *>(0x20, false, "SLA B"),
-             std::tuple<uint8_t, bool, const char *>(0x10, false, "RL B")}) {
-        CpuFixture f{{0x0000, 0xCB}, {0x0001, opcode}, {0x0002, 0x00}};
+void testCbRegisterOperationsCompleteAfterPrefixCycle() {
+    struct Case {
+        uint8_t cbOpcode;
+        uint8_t initialB;
+        bool initialZ;
+        bool initialN;
+        bool initialH;
+        bool initialC;
+        uint8_t expectedB;
+        bool z;
+        bool n;
+        bool h;
+        bool c;
+    };
+    const Case cases[] = {
+        {0x00, 0x81, false, true,  true,  false, 0x03, false, false, false, true},  // RLC B
+        {0x08, 0x01, true,  true,  true,  false, 0x80, false, false, false, true},  // RRC B
+        {0x10, 0x80, true,  true,  true,  true,  0x01, false, false, false, true},  // RL B
+        {0x18, 0x01, false, true,  true,  true,  0x80, false, false, false, true},  // RR B
+        {0x20, 0x80, false, true,  true,  false, 0x00, true,  false, false, true},  // SLA B
+        {0x28, 0x81, true,  true,  true,  false, 0xC0, false, false, false, true},  // SRA B
+        {0x30, 0xF0, true,  true,  true,  true,  0x0F, false, false, false, false}, // SWAP B
+        {0x38, 0x01, false, true,  true,  false, 0x00, true,  false, false, true},  // SRL B
+        {0x40, 0x00, false, true,  false, true,  0x00, true,  false, true,  true},  // BIT 0,B
+        {0x78, 0x80, true,  true,  false, false, 0x80, false, false, true,  false}, // BIT 7,B
+        {0x80, 0xFF, true,  true,  true,  false, 0xFE, true,  true,  true,  false}, // RES 0,B
+        {0xF8, 0x00, false, true,  false, true,  0x80, false, true,  false, true},  // SET 7,B
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, 0xCB}, {0x0001, test.cbOpcode}, {0x0002, 0x00}};
         Reg reg = f.cpu.getReg();
-        reg.getRefB() = 0x80;
-        setFlags(reg, false, false, false, carryIn);
+        reg.getRefB() = test.initialB;
+        setFlags(reg, test.initialZ, test.initialN, test.initialH, test.initialC);
         f.cpu.setReg(reg);
 
-        f.runUntilNextOpcode();
+        const auto cbOpcodeFetch = f.cpu.stepOneCycle();
         reg = f.cpu.getReg();
-        const GB_Flag flags = reg.getFlag();
-        expect(reg.getRefB() == 0, "CB shift writes the low 8-bit result");
-        expect(flags.Z && flags.C, "CB shift sets Z and C from the 8-bit result");
+        GB_Flag flags = reg.getFlag();
+        expect(cbOpcodeFetch.success && !cbOpcodeFetch.fetchedNewInst &&
+                   cbOpcodeFetch.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() && reg.getRefB() == test.initialB &&
+                   reg.getRefPC() == 2 && flags.Z == test.initialZ &&
+                   flags.N == test.initialN && flags.H == test.initialH &&
+                   flags.C == test.initialC,
+               "CB register opcode fetch leaves the operand register and flags unchanged");
+
+        const auto operation = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(operation.success && operation.fetchedNewInst &&
+                   operation.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>({0x0001, 0x0002}) &&
+                   f.memory.writes.empty() && reg.getRefB() == test.expectedB &&
+                   reg.getRefPC() == 3,
+               "CB register operation commits with the following opcode fetch");
+        expect(flags.Z == test.z && flags.N == test.n && flags.H == test.h &&
+                   flags.C == test.c,
+               "CB register operation applies its documented flag behavior");
     }
 }
 
@@ -1895,7 +1939,7 @@ void testHaltWakeAndHaltBug() {
 } // namespace
 
 int main() {
-    testCbShiftZeroFlags();
+    testCbRegisterOperationsCompleteAfterPrefixCycle();
     testBitHlUsesReadAndNextFetchCycles();
     testIncDecHlReadModifyWritePhases();
     testRegisterIncDecCompletesInOneCycle();
