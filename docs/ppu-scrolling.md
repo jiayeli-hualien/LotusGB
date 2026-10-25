@@ -496,3 +496,35 @@ and same-dot CPU/PPU ordering remain unresolved. The different per-line probe
 values are diagnostic only: applying a global delay changed other rows and is
 not a valid fix. The cross-core agreement raises confidence in the expected
 pixels, but hardware behavior has not yet been independently confirmed.
+
+### Isolating the left-edge OBJ boundary
+
+A standalone PPU probe gives the same boundary in a smaller setup. It writes
+SCX from 0 to 8 at different dots on line 1, samples pixel x=16, and places a
+transparent OBJ at different OAM X coordinates. Without an OBJ, the write
+boundary is dot 103. With OAM X=0, 1 and 2, it moves to dots 113, 112 and 111;
+with OAM X=8, 9 and 10, it moves to dots 113, 112 and 111. These are measured
+write boundaries in LotusGB's current model, not hardware timings. They show
+that the prepared OBJ event's start position and length jointly set when the
+next tile becomes insensitive to SCX.
+
+An isolated candidate changed the first-event overlap, clamped the alignment
+coordinate for left-clipped OBJs, and added one dot. It clears the existing
+differences on lines 8–22 and 64–70, but the full image regresses from 84 to
+159 differing pixels: new differences appear on lines 24–62 and 128–134, while
+lines 72–86 still differ. The candidate was discarded. This rules out that
+simple coordinate clamp and global first-event adjustment as a complete fix;
+it does not rule out a narrower left-edge behavior.
+
+An isolated catch-up candidate that advanced BG fetch while the FIFO was
+non-empty until the fetcher reached Push left the Mealybug result unchanged at
+84 differing pixels. It also failed the existing public PPU regression that
+writes SCY during an OBJ fetch and checks the unread BG bitplanes. This broad
+catch-up change was discarded; the test is evidence that the BG wait rule
+cannot be changed independently of the bitplane sampling behavior.
+
+The next implementation experiment should represent the BG/OBJ arbitration
+and register sampling as one per-dot state transition, then compare the full
+selected visual set and existing PPU regressions. Keep that experiment
+separate until it improves the known SCX rows without moving differences into
+currently matching rows.
