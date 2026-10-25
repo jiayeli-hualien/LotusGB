@@ -17,6 +17,10 @@ fully modeled. Timed OBJ plane reads now take the modeled VRAM slot for their
 dot, and BG catch-up advances only on OBJ-fetch dots without a plane read. This
 is an explicit scheduling hypothesis; current ROM comparisons do not
 distinguish it from the prior behavior.
+I also compared the prior `a7b3139` runner with this candidate across all 31
+Mealybug PPU ROMs whose assembly mentions OBJ or sprites. Every pair of
+160x144 shade buffers was byte-identical, so this suite does not validate the
+new read-slot rule.
 `m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
 hash, so this step does not claim better visual accuracy. `make test`, the
 selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
@@ -578,6 +582,26 @@ identify which image matches physical DMG hardware: the Mealybug reference is
 not a hardware capture, and the different output may reflect mGBA's behavior or
 an unresolved difference in test execution. Keep the mGBA result as a recorded
 cross-check, not as a reason to change LotusGB's timing model by itself.
+
+## Timed OBJ/BG VRAM-read candidate scan (2026-10-25)
+
+To check whether an existing visual ROM distinguishes the timed OBJ read-slot
+candidate, I built `ppu_frame_runner` from the preceding `a7b3139` revision in
+`/tmp` and compared its shade buffers with the `d4e1254` candidate. The scan
+covered all 31 Mealybug PPU assembly files mentioning `OBJ` or `sprite`; all
+candidate and prior buffers were byte-identical. The two inspected cases,
+`m3_bgp_change_sprites` and `m3_wx_4_change_sprites`, also produced identical
+buffers across revisions.
+
+These results show only that this candidate does not change the current
+Mealybug outputs. They do not confirm shared-bus arbitration. The BGP sprite
+case uses boot-ROM tile `$19` without loading it, so its image is not a valid
+visual oracle for LotusGB's skipped-boot test profile. The WX sprite case
+combines window reactivation with object priority; its expected PNG is the
+Mealybug author's emulator output, while the accompanying real-device photo is
+too blurry to identify individual fetch dots. Do not change OBJ durations or
+BG catch-up rules based on these comparisons; a discriminating DMG observation
+or a purpose-built case with a separate hardware oracle is still needed.
 
 ## Global CPU bus-phase experiment (2026-10-25)
 

@@ -42,6 +42,9 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   slot on read dots; OAM/OBJ durations and joint fetch scheduling are still
   coarse. Current tests preserve their previous results, including
   byte-identical Mealybug captures, but do not distinguish this bus policy.
+  A scan across all 31 existing Mealybug OBJ/sprite ROMs also found no changed
+  output; none validates the candidate read-slot rule. See the
+  [scan results](ppu-scrolling.md#timed-objbg-vram-read-candidate-scan-2026-10-25).
   Next design a DMG-observable case for the competing catch-up and bus-order
   hypotheses before changing event durations. Treat the SCY regression as the
   Pan Docs hypothesis, not
