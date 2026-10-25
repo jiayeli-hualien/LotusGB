@@ -307,6 +307,43 @@ void testRegisterIncDecCompletesInOneCycle() {
     }
 }
 
+void testRegisterToRegisterLoadsCompleteInOneCycle() {
+    constexpr unsigned registerIndexes[] = {0, 1, 2, 3, 4, 5, 7};
+    constexpr uint8_t initialValues[] = {
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x00, 0x77};
+
+    for (const unsigned destination : registerIndexes) {
+        for (const unsigned source : registerIndexes) {
+            const uint8_t opcode = static_cast<uint8_t>(
+                0x40U | (destination << 3U) | source);
+            CpuFixture f{{0x0000, opcode}, {0x0001, 0x00}};
+            Reg reg = f.cpu.getReg();
+            for (const unsigned index : registerIndexes)
+                byteRegisterRef(reg, index) = initialValues[index];
+            setFlags(reg, true, true, true, true);
+            f.cpu.setReg(reg);
+
+            const auto load = f.cpu.stepOneCycle();
+            reg = f.cpu.getReg();
+            expect(load.success && load.fetchedNewInst &&
+                       load.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                       f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                       f.memory.writes.empty() && reg.getRefPC() == 2,
+                   "LD r,r completes in one cycle with only the next opcode fetch");
+
+            for (const unsigned index : registerIndexes) {
+                const uint8_t expected = index == destination
+                    ? initialValues[source] : initialValues[index];
+                expect(byteRegisterRef(reg, index) == expected,
+                       "LD r,r changes only its destination register");
+            }
+            const GB_Flag flags = reg.getFlag();
+            expect(flags.Z && flags.N && flags.H && flags.C,
+                   "LD r,r preserves all flags");
+        }
+    }
+}
+
 void testSingleCycleFlagAndAccumulatorOperations() {
     struct Case {
         uint8_t opcode;
@@ -1943,6 +1980,7 @@ int main() {
     testBitHlUsesReadAndNextFetchCycles();
     testIncDecHlReadModifyWritePhases();
     testRegisterIncDecCompletesInOneCycle();
+    testRegisterToRegisterLoadsCompleteInOneCycle();
     testSingleCycleFlagAndAccumulatorOperations();
     testCbHlReadModifyWritePhases();
     testHlAluReadsBeforeUpdatingAccumulatorAndFlags();
