@@ -55,6 +55,8 @@ static uint16_t& _getPushPopReg16(uint8_t op, Reg *pReg) {
 SUB_FUNC_IMPL(PUSH_LD_A16_RR) {
     pInstState->memMode = MEM_MODE_SLEEP;
     pInstState->a16Addr = _getPushPopReg16(pInstState->opcode, pReg);
+    // The IDU decrements SP in PUSH's internal M-cycle, before either write.
+    --pReg->getRefSP();
 }
 
 SUB_FUNC_IMPL(POP_LD_R16_MEM16) {
@@ -196,13 +198,15 @@ SUB_FUNC_IMPL(LD_R16_MEM16) {
 
 SUB_FUNC_IMPL(PUSH_A16_MSB) {
     pInstState->memMode = MEM_MODE_WRITE;
-    pInstState->memAddr = --pReg->getRefSP();
+    pInstState->memAddr = pReg->getRefSP();
+    // The high-byte write shares its M-cycle with the second IDU decrement.
+    --pReg->getRefSP();
     pInstState->memValue = (pInstState->a16Addr>>8)&0xFF;
 }
 
 SUB_FUNC_IMPL(PUSH_A16_LSB) {
     pInstState->memMode = MEM_MODE_WRITE;
-    pInstState->memAddr = --pReg->getRefSP();
+    pInstState->memAddr = pReg->getRefSP();
     pInstState->memValue = (pInstState->a16Addr)&0xFF;
 }
 
@@ -527,6 +531,8 @@ SUB_FUNC_IMPL(CondJR) {
 }
 
 SUB_FUNC_IMPL(SwapPC_MEM16) {
+    // CALL decrements SP in this internal M-cycle before the stack writes.
+    --pReg->getRefSP();
     std::swap(pReg->getRefPC(),pInstState->a16Addr);
     pInstState->memMode = MEM_MODE_SLEEP;
 }
@@ -535,6 +541,8 @@ SUB_FUNC_IMPL(CondSwapPC_MEM16) {
     GB_Flag flag;
     pReg->getFlag(flag);
     if (_jpConditionTrue(pInstState->opcode, flag)) {
+        // The taken CALL's internal M-cycle performs the first IDU decrement.
+        --pReg->getRefSP();
         std::swap(pReg->getRefPC(), pInstState->a16Addr);
         pInstState->memMode = MEM_MODE_SLEEP;
     }
@@ -562,6 +570,8 @@ SUB_FUNC_IMPL(LD_PC_MEM16_RETI) {
 SUB_FUNC_IMPL(LD_MEM16_PC) {
     pInstState->a16Addr = pReg->getRefPC();
     pInstState->memMode = MEM_MODE_SLEEP;
+    // RST decrements SP in its internal M-cycle before the stack writes.
+    --pReg->getRefSP();
 }
 
 static inline uint8_t __getRstAddr(const uint8_t &op) {

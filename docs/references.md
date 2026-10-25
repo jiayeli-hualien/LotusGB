@@ -11,23 +11,27 @@ hardware specification.
 
 - [Pan Docs](https://gbdev.io/pandocs/) — community-maintained Game Boy hardware reference ([about and license](https://eldred.fr/pandocs/About.html)).
 - [Nintendo Game Boy Programming Manual v1.1](https://archive.org/details/GameBoyProgManVer1.1) — programmer-facing manual for CPU, display, sound and mapper interfaces; it does not describe all internal PPU fetch timing.
-- [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr) — community hardware reference with model and revision differences; the project describes itself as incomplete.
+- [Game Boy: Complete Technical Reference](https://github.com/Gekkio/gb-ctr) — community hardware reference with model and revision differences; its CPU chapter documents fetch/execute overlap and per-M-cycle IDU actions. The project describes itself as incomplete.
 - [The Cycle-Accurate Game Boy Docs](https://github.com/AntonioND/giibiiadvance/blob/master/docs/TCAGBD.pdf) — community hardware notes, including serial clock behavior.
 - [Game Boy sound hardware (GbdevWiki)](https://gbdev.gg8.se/wiki/articles/Gameboy_sound_hardware) — register layout, trigger behavior and observed differences.
 
 ### CPU, interrupts, timer and memory
 
 - [Pan Docs: Interrupts](https://gbdev.io/pandocs/Interrupts.html) and [HALT](https://gbdev.io/pandocs/halt.html) — interrupt requests and CPU behavior.
+- [Pan Docs: OAM Corruption Bug](https://gbdev.io/pandocs/OAM_Corruption_Bug.html) — DMG OAM effects from memory access and 16-bit IDU operations, including implicit SP decrements during stack pushes.
 - [Pan Docs: Timer obscure behaviour](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html) — divider edges, overflow delay and TIMA/TMA reload writes.
 - [Pan Docs: OAM DMA Transfer](https://gbdev.io/pandocs/OAM_DMA_Transfer.html) — transfer timing and bus conflicts.
 - [Pan Docs: Serial Data Transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_%28Link_Cable%29.html) — SB/SC, internal/external clocks and completion interrupt.
 
 ### PPU
 
+- [Nesdev discussion: Game Boy CPU and PPU timing](https://forums.nesdev.org/viewtopic.php?t=17754) — high-level explanation of parallel CPU/PPU clocks and mode timing; use for the scheduling model, not the precise fetcher boundary.
+- [Stack Overflow: How do GPU/PPU timings work on the Game Boy?](https://stackoverflow.com/questions/52153636/how-do-gpu-ppu-timings-work-on-the-gameboy) — introductory discussion of shared time progression and updating devices around CPU memory accesses; it is not a hardware timing specification.
 - [Pan Docs: Rendering](https://gbdev.io/pandocs/Rendering.html) — PPU modes, pixel output and Mode 3 penalties.
 - [Pan Docs: Pixel FIFO](https://gbdev.io/pandocs/pixel_fifo.html) — BG/OBJ FIFOs and sprite-fetch interaction; detailed timing still needs independent validation.
 - [Pan Docs: Scrolling](https://gbdev.io/pandocs/Scrolling.html) — SCX/SCY sampling behavior.
 - [Nitty Gritty Gameboy Cycle Timing](http://blog.kevtris.org/blogfiles/Nitty%20Gritty%20Gameboy%20VRAM%20Timing.txt) — Kevin Horton's preliminary logic-analyzer notes on video memory access timing.
+- [The Comprehensive Game Boy PPU Documentation](https://github.com/mattcurrie/mealybug-tearoom-tests/blob/master/the-comprehensive-game-boy-ppu-documentation.md) — Matt Currie's notes based on test-ROM results and emulator implementation; useful for raster-register behavior, but not an independent hardware measurement.
 - [GBEDG PPU guide](https://github.com/Ashiepaws/GBEDG/blob/master/ppu/index.md) — secondary overview of the DMG PPU pipeline.
 - [SameBoy PPU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c) — fetcher/FIFO implementation comparison, not a hardware specification.
 

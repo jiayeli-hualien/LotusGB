@@ -236,17 +236,17 @@ void testPushBusOrder() {
     f.cpu.setReg(reg);
 
     expect(!f.cpu.stepOneCycle().fetchedNewInst, "PUSH starts with an internal cycle");
-    expect(f.cpu.getReg().getRefSP() == 0xC100,
-           "PUSH leaves SP unchanged during its internal cycle");
+    expect(f.cpu.getReg().getRefSP() == 0xC0FF,
+           "PUSH decrements SP during its internal cycle");
     expect(f.memory.writes.empty(), "PUSH has no bus write in its first M-cycle");
     expect(!f.cpu.stepOneCycle().fetchedNewInst, "PUSH writes the high byte before low byte");
-    expect(f.cpu.getReg().getRefSP() == 0xC0FF,
-           "PUSH decrements SP in the high-byte write M-cycle");
+    expect(f.cpu.getReg().getRefSP() == 0xC0FE,
+           "PUSH decrements SP again in the high-byte write M-cycle");
     expect(f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{{0xC0FF, 0x12}},
            "PUSH writes high byte at SP-1");
     expect(!f.cpu.stepOneCycle().fetchedNewInst, "PUSH writes its low byte in the next M-cycle");
     expect(f.cpu.getReg().getRefSP() == 0xC0FE,
-           "PUSH decrements SP again in the low-byte write M-cycle");
+           "PUSH keeps the decremented SP during the low-byte write M-cycle");
     expect(f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
                {0xC0FF, 0x12}, {0xC0FE, 0x34}},
            "PUSH writes low byte at SP-2");
@@ -308,6 +308,8 @@ void testConditionalBranchAndCallBusTiming() {
     call.cpu.setReg(reg);
     expect(call.runUntilNextOpcode() == 3, "untaken CALL cc ends after decoding its target");
     expect(call.memory.writes.empty(), "untaken CALL cc does not push a return address");
+    expect(call.cpu.getReg().getRefSP() == 0xC100,
+           "untaken CALL cc does not decrement SP");
 
     CpuFixture taken{{0x0000, 0xCD}, {0x0001, 0x34}, {0x0002, 0x12}, {0x1234, 0x00}};
     reg = taken.cpu.getReg();
@@ -319,6 +321,72 @@ void testConditionalBranchAndCallBusTiming() {
            "CALL pushes the return PC high byte then low byte");
     expect(taken.memory.reads == std::vector<uint16_t>{0x0001, 0x0002, 0x1234},
            "CALL reads the target then fetches from it after stack writes");
+}
+
+void testCallAndRstStackPointerMcycleTiming() {
+    CpuFixture call{{0x0000, 0xCD}, {0x0001, 0x34}, {0x0002, 0x12},
+                    {0x1234, 0x00}};
+    Reg reg = call.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    call.cpu.setReg(reg);
+
+    expect(!call.cpu.stepOneCycle().fetchedNewInst &&
+               call.cpu.getReg().getRefSP() == 0xC100,
+           "CALL reads the low target byte before touching SP");
+    expect(!call.cpu.stepOneCycle().fetchedNewInst &&
+               call.cpu.getReg().getRefSP() == 0xC100,
+           "CALL reads the high target byte before touching SP");
+    expect(!call.cpu.stepOneCycle().fetchedNewInst &&
+               call.cpu.getReg().getRefSP() == 0xC0FF &&
+               call.memory.writes.empty(),
+           "CALL decrements SP in its internal M-cycle before writing");
+    expect(!call.cpu.stepOneCycle().fetchedNewInst &&
+               call.cpu.getReg().getRefSP() == 0xC0FE,
+           "CALL performs its second SP decrement in the high-byte write cycle");
+    expect(call.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+               {0xC0FF, 0x00}},
+           "CALL writes the return-PC high byte at the first decremented address");
+    expect(!call.cpu.stepOneCycle().fetchedNewInst &&
+               call.cpu.getReg().getRefSP() == 0xC0FE,
+           "CALL keeps SP stable during the low-byte write cycle");
+    expect(call.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+               {0xC0FF, 0x00}, {0xC0FE, 0x03}},
+           "CALL writes the return-PC low byte at the second decremented address");
+    expect(call.cpu.stepOneCycle().fetchedNewInst,
+           "CALL fetches the next opcode after both stack writes");
+
+    CpuFixture conditionalCall{{0x0000, 0xC4}, {0x0001, 0x34}, {0x0002, 0x12},
+                               {0x1234, 0x00}}; // CALL NZ
+    reg = conditionalCall.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    setFlags(reg, false, false, false, false);
+    conditionalCall.cpu.setReg(reg);
+    conditionalCall.cpu.stepOneCycle();
+    conditionalCall.cpu.stepOneCycle();
+    expect(!conditionalCall.cpu.stepOneCycle().fetchedNewInst &&
+               conditionalCall.cpu.getReg().getRefSP() == 0xC0FF,
+           "taken CALL cc decrements SP in its internal M-cycle");
+
+    CpuFixture rst{{0x0000, 0xCF}, {0x0008, 0x00}}; // RST 08
+    reg = rst.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    rst.cpu.setReg(reg);
+    expect(!rst.cpu.stepOneCycle().fetchedNewInst &&
+               rst.cpu.getReg().getRefSP() == 0xC0FF &&
+               rst.memory.writes.empty(),
+           "RST decrements SP during its internal M-cycle before writing");
+    expect(!rst.cpu.stepOneCycle().fetchedNewInst &&
+               rst.cpu.getReg().getRefSP() == 0xC0FE,
+           "RST performs its second SP decrement in the high-byte write cycle");
+    expect(!rst.cpu.stepOneCycle().fetchedNewInst &&
+               rst.cpu.getReg().getRefSP() == 0xC0FE,
+           "RST keeps SP stable during the low-byte write cycle");
+    expect(rst.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+               {0xC0FF, 0x00}, {0xC0FE, 0x01}},
+           "RST writes the return address in high-byte then low-byte order");
+    expect(rst.cpu.stepOneCycle().fetchedNewInst &&
+               rst.cpu.getReg().getRefSP() == 0xC0FE,
+           "RST fetches its vector after completing the stack writes");
 }
 
 void testStopDecodeAndHaltIdle() {
@@ -609,6 +677,7 @@ int main() {
     testPushBusOrder();
     testPopRetAndJumpBusTiming();
     testConditionalBranchAndCallBusTiming();
+    testCallAndRstStackPointerMcycleTiming();
     testStopDecodeAndHaltIdle();
     testMemoryAccessesOccurWithinTheirMCycle();
     testLdhReadThroughCUsesTheHighMemoryPage();
