@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -1115,26 +1116,137 @@ void testStopDecodeAndHaltIdle() {
 }
 
 void testMemoryAccessesOccurWithinTheirMCycle() {
-    CpuFixture f{{0x0000, 0x7E}, {0x0001, 0x00}, {0xC000, 0xA5}}; // LD A,(HL)
-    Reg reg = f.cpu.getReg();
-    reg.getRefH() = 0xC0;
-    reg.getRefL() = 0x00;
-    f.cpu.setReg(reg);
-
     expect(T_CYCLES_PER_M_CYCLE == 4, "one CPU machine cycle contains four T-cycles");
-    const auto readData = f.cpu.stepOneCycle();
-    expect(readData.success && !readData.fetchedNewInst,
-           "LD A,(HL) performs its data access in the first instruction cycle");
-    expect(f.memory.reads == std::vector<uint16_t>{0xC000},
-           "the first instruction cycle exposes only the HL data read");
 
-    const auto fetchNext = f.cpu.stepOneCycle();
-    expect(fetchNext.success && fetchNext.fetchedNewInst,
-           "LD A,(HL) fetches the next opcode in its second instruction cycle");
-    expect(f.memory.reads == std::vector<uint16_t>({0xC000, 0x0001}),
-           "the second instruction cycle exposes the next opcode fetch");
-    expect(f.cpu.getReg().getRefA() == 0xA5,
-           "the data read is committed to A by the end of the instruction");
+    auto byteRegisterRef = [](Reg &reg, unsigned index) -> uint8_t& {
+        switch (index) {
+            case 0: return reg.getRefB();
+            case 1: return reg.getRefC();
+            case 2: return reg.getRefD();
+            case 3: return reg.getRefE();
+            case 4: return reg.getRefH();
+            case 5: return reg.getRefL();
+            case 7: return reg.getRefA();
+            default:
+                expect(false, "test selects a valid 8-bit register");
+                return reg.getRefA();
+        }
+    };
+
+    const unsigned targetIndices[] = {0, 1, 2, 3, 4, 5, 7};
+    const uint8_t targetOldValues[] = {0x11, 0x22, 0x33, 0x44, 0xC0, 0x00, 0x77};
+    const uint8_t loadOpcodes[] = {0x46, 0x4E, 0x56, 0x5E, 0x66, 0x6E, 0x7E};
+    for (size_t i = 0; i < std::size(loadOpcodes); ++i) {
+        CpuFixture f{{0x0000, loadOpcodes[i]}, {0x0001, 0x00}, {0xC000, 0xA5}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefB() = 0x11;
+        reg.getRefC() = 0x22;
+        reg.getRefD() = 0x33;
+        reg.getRefE() = 0x44;
+        reg.getRefH() = 0xC0;
+        reg.getRefL() = 0x00;
+        reg.getRefA() = 0x77;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto dataRead = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(dataRead.success && !dataRead.fetchedNewInst &&
+                   dataRead.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0xC000} &&
+                   f.memory.writes.empty() && reg.getRefHL() == 0xC000 &&
+                   byteRegisterRef(reg, targetIndices[i]) == targetOldValues[i] &&
+                   reg.getRefPC() == 1 && flags.Z && flags.N && flags.H && flags.C,
+               "LD r,(HL) reads in M2 and leaves its target and flags unchanged during that phase");
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>({0xC000, 0x0001}) &&
+                   f.memory.writes.empty() &&
+                   byteRegisterRef(reg, targetIndices[i]) == 0xA5 &&
+                   reg.getRefPC() == 2 && flags.Z && flags.N && flags.H && flags.C,
+               "LD r,(HL) commits the selected register with the following opcode fetch");
+    }
+
+    const uint8_t storeOpcodes[] = {0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x77};
+    const uint8_t sourceValues[] = {0x11, 0x22, 0x33, 0x44, 0xC0, 0x00, 0x77};
+    for (size_t i = 0; i < std::size(storeOpcodes); ++i) {
+        CpuFixture f{{0x0000, storeOpcodes[i]}, {0x0001, 0x00}, {0xC000, 0x00}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefB() = 0x11;
+        reg.getRefC() = 0x22;
+        reg.getRefD() = 0x33;
+        reg.getRefE() = 0x44;
+        reg.getRefH() = 0xC0;
+        reg.getRefL() = 0x00;
+        reg.getRefA() = 0x77;
+        setFlags(reg, true, true, true, true);
+        f.cpu.setReg(reg);
+
+        const auto dataWrite = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        GB_Flag flags = reg.getFlag();
+        expect(dataWrite.success && !dataWrite.fetchedNewInst &&
+                   dataWrite.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads.empty() &&
+                   f.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+                       {0xC000, sourceValues[i]}} &&
+                   f.memory.bytes[0xC000] == sourceValues[i] && reg.getRefHL() == 0xC000 &&
+                   reg.getRefPC() == 1 && flags.Z && flags.N && flags.H && flags.C,
+               "LD (HL),r writes the selected register in M2 without changing flags");
+
+        const auto nextOpcode = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        flags = reg.getFlag();
+        expect(nextOpcode.success && nextOpcode.fetchedNewInst &&
+                   nextOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.size() == 1 && reg.getRefHL() == 0xC000 &&
+                   flags.Z && flags.N && flags.H && flags.C,
+               "LD (HL),r fetches the next opcode after its data write");
+    }
+
+    CpuFixture immediate{{0x0000, 0x36}, {0x0001, 0xB6},
+                         {0x0002, 0x00}, {0xC000, 0x00}};
+    Reg reg = immediate.cpu.getReg();
+    reg.getRefHL() = 0xC000;
+    setFlags(reg, true, true, true, true);
+    immediate.cpu.setReg(reg);
+
+    const auto immediateRead = immediate.cpu.stepOneCycle();
+    reg = immediate.cpu.getReg();
+    GB_Flag flags = reg.getFlag();
+    expect(immediateRead.success && !immediateRead.fetchedNewInst &&
+               immediateRead.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               immediate.memory.reads == std::vector<uint16_t>{0x0001} &&
+               immediate.memory.writes.empty() && immediate.memory.bytes[0xC000] == 0 &&
+               reg.getRefHL() == 0xC000 && reg.getRefPC() == 2 &&
+               flags.Z && flags.N && flags.H && flags.C,
+           "LD (HL),n reads the immediate in M2 without writing memory or changing flags");
+
+    const auto immediateWrite = immediate.cpu.stepOneCycle();
+    expect(immediateWrite.success && !immediateWrite.fetchedNewInst &&
+               immediateWrite.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               immediate.memory.reads == std::vector<uint16_t>{0x0001} &&
+               immediate.memory.writes ==
+                   std::vector<std::pair<uint16_t, uint8_t>>{{0xC000, 0xB6}} &&
+               immediate.memory.bytes[0xC000] == 0xB6 &&
+               immediate.cpu.getReg().getRefPC() == 2,
+           "LD (HL),n writes the saved immediate to (HL) in M3");
+
+    const auto followingOpcode = immediate.cpu.stepOneCycle();
+    reg = immediate.cpu.getReg();
+    flags = reg.getFlag();
+    expect(followingOpcode.success && followingOpcode.fetchedNewInst &&
+               followingOpcode.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               immediate.memory.reads == std::vector<uint16_t>({0x0001, 0x0002}) &&
+               immediate.memory.writes.size() == 1 && reg.getRefHL() == 0xC000 &&
+               reg.getRefPC() == 3 && flags.Z && flags.N && flags.H && flags.C,
+           "LD (HL),n fetches the next opcode after its M3 write");
 }
 
 void testLdhReadThroughCUsesTheHighMemoryPage() {
