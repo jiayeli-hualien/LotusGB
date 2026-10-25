@@ -5,6 +5,7 @@ A completed diagnostic is not a hardware-conformance pass. Comparison-core
 output is calibrated against the upstream image, then used only for localization.
 """
 import argparse
+import ctypes
 import hashlib
 import json
 from pathlib import Path
@@ -17,6 +18,29 @@ SIZE = (160, 144)
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def core_info(path):
+    # The installed .info file can describe a different binary revision.
+    class SystemInfo(ctypes.Structure):
+        _fields_ = [('library_name', ctypes.c_char_p),
+                    ('library_version', ctypes.c_char_p),
+                    ('valid_extensions', ctypes.c_char_p),
+                    ('need_fullpath', ctypes.c_bool),
+                    ('block_extract', ctypes.c_bool)]
+
+    library = ctypes.CDLL(str(path.resolve()))
+    try:
+        get_info = library.retro_get_system_info
+    except AttributeError as error:
+        raise ValueError('comparison core is missing retro_get_system_info') from error
+    get_info.argtypes = [ctypes.POINTER(SystemInfo)]
+    get_info.restype = None
+    info = SystemInfo()
+    get_info(ctypes.byref(info))
+    if not info.library_name or not info.library_version:
+        raise ValueError('comparison core returned incomplete system info')
+    return {'name': info.library_name.decode(), 'version': info.library_version.decode()}
 
 
 def variants(original):
@@ -81,6 +105,7 @@ def main():
     report = {'completed': False, 'scope': __doc__, 'results': []}
     try:
         report['inputs'] = {str(path): sha256(path) for path in inputs}
+        report['comparison_core_info'] = core_info(args.comparison_core)
         library = args.ppu_runner.resolve().parent / 'liblotusgb.so'
         report['lotus_library_sha256'] = sha256(library)
         with Image.open(args.reference) as image:

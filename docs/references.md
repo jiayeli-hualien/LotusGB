@@ -36,6 +36,7 @@ hardware specification.
 - [The Comprehensive Game Boy PPU Documentation](https://github.com/mattcurrie/mealybug-tearoom-tests/blob/master/the-comprehensive-game-boy-ppu-documentation.md) — Matt Currie's notes based on test-ROM results and emulator implementation; useful for raster-register behavior, but not an independent hardware measurement.
 - [GBEDG PPU guide](https://github.com/Ashiepaws/GBEDG/blob/master/ppu/index.md) — secondary overview of the DMG PPU pipeline.
 - [SameBoy PPU implementation](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c) — fetcher/FIFO implementation comparison, not a hardware specification.
+- [SameBoy 1.0.4 CPU write-conflict handling](https://github.com/LIJI32/SameBoy/blob/c87d2565ea2eef1d342d0828c041ca71b5784aff/Core/sm83_cpu.c#L115-L306) — pinned register-specific timing policies, including DMG SCX; use for implementation comparison and distinguish them from hardware measurements. Match source to the version returned by `retro_get_system_info`, since an installed `.info` file may be stale.
 
 ### Audio and cartridges
 

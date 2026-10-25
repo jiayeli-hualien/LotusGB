@@ -104,12 +104,62 @@ version control. A completed diagnostic reports differences and is not a
 conformance pass. Runner errors, unstable comparison frames, or failure to
 reproduce the original reference cause a nonzero exit. This is not a CI job.
 
-Next, use the fully visible X=8 control as the small reproducer. Record one
-line's CPU write, BG address/data/push, FIFO occupancy, OBJ stages and pixel
-output on the same timeline. Establish which event differs and what evidence
-supports its expected ordering before changing production timing. Preserve
-the OBJ-disabled control, both single-object controls, original image and
-Mode 0/Mode 2 boundary checks when evaluating a candidate.
+The fully visible X=8 control is the small reproducer for the event comparison
+below. Preserve the OBJ-disabled control, both single-object controls,
+original image and Mode 0/Mode 2 boundary checks when evaluating a candidate.
+
+### Normalized CPU/PPU event comparison (2026-10-26)
+
+An independent SameBoy build from the installed core's actual commit,
+`c87d2565ea2eef1d342d0828c041ca71b5784aff` (1.0.4), reproduces the four
+84/0/6/6 results. Instrumented builds of both emulators retain their baseline
+frames. Align events to the **visible Mode 2 entry**, rather than comparing
+their private line counters: SameBoy's `cycles_for_line` includes four dots
+before that entry. PPU event timestamps account for its pending display-cycle
+budget; CPU write timestamps are taken after synchronizing the PPU.
+
+| Event on LY 8, single X=8 object | LotusGB, T-cycles from Mode 2 entry | SameBoy, T-cycles from Mode 2 entry |
+| --- | ---: | ---: |
+| Mode 2 STAT request | 0 | -1 |
+| CPU accepts interrupt | 2 | 0 |
+| CPU reads vector opcode | 22 | 20 |
+| Visible Mode 3 entry | 80 | 80 |
+| First visible pixel | 103 | 104 |
+| SCX write of value 8 | 114 | 110 |
+| Map address for BG output tile at x=16 | 113 | 112 |
+| Map data for that tile | 114 | 113 |
+
+Interrupt entry itself takes 20 T-cycles from acceptance to vector read in
+both models. The SCX write is four dots later relative to Mode 2 in LotusGB,
+while the disputed BG address sample is only one dot later. Thus the earlier
+observation that the BG tile is sampled before the write does **not** establish
+OBJ stall duration as the sole cause. CPU/PPU phase and register-write
+visibility must be considered separately. SameBoy has an explicit
+[DMG SCX write-conflict phase](https://github.com/LIJI32/SameBoy/blob/c87d2565ea2eef1d342d0828c041ca71b5784aff/Core/sm83_cpu.c#L302-L306),
+two T-cycles earlier than its ordinary write handling. That is implementation
+evidence, not an independent hardware measurement.
+
+Two isolated candidates were checked without changing repository timing code:
+
+| Candidate | Original / OBJ off / single X=1 / single X=8 differences | Expanded Mooneye PPU result | Decision |
+| --- | --- | --- | --- |
+| Mode 2 source one dot before visible entry | 84 / 0 / 6 / 6 | 14/14 | No change in the SCX write or images; not retained. |
+| SCX CPU writes at T2 instead of T4, preserving four total T-cycles per step | 77 / 0 / 6 / 0 | 14/14 | Not retained: fixes 19 original differences but introduces 12 on rows 128–134. |
+
+The other five selected Mealybug counts remain unchanged under the T2-write
+candidate. Resolving the single X=8 case alone is insufficient evidence to
+keep that policy. All production timing remains at the preceding baseline;
+the original case still has 84 differences. Next, resolve the write-phase and
+OBJ/BG scheduling contributions as separate contracts before implementing a
+combined change. Require the original and all three controls, rather than a
+lower total pixel count, to support the explanation.
+
+Source-build calibration, logs, instrumentation patches and rejected-candidate
+reports are under the ignored `build/test-roms/ppu-scx-source-calibration/`,
+`ppu-event-traces/`, `ppu-mode2-source-candidate/`,
+`ppu-scx-write-phase-candidate/`, and matching `mooneye-*` directories.
+`diagnose_ppu_scx.py` now records the comparison core's identity through
+`retro_get_system_info`; `.info` metadata is not used as its version source.
 
 ## Scope
 
@@ -594,7 +644,7 @@ boundary without changing the established total stall schedule.
 ## Cross-core comparison for the remaining SCX pixels (2026-10-25)
 
 The Mealybug `m3_scx_high_5_bits` ROM was run through the locally installed
-SameBoy libretro core (0.14.7) and Gambatte libretro core (v0.5.0) using
+SameBoy libretro core (1.0.4, `c87d256`) and Gambatte libretro core (v0.5.0) using
 headless frontends based on `libretro_rom_runner`, with no input. Each core's
 final image was identical across runs of 120, 180, and 240 frames. SameBoy's
 120-frame RGB image matches the Mealybug `DMG-blob` reference pixel-for-pixel.
@@ -606,6 +656,10 @@ reference in 84 pixels, all within x=16–23 and y=8–86. Agreement between two
 cores and the Mealybug reference raises confidence that this is a real LotusGB
 output discrepancy, but it does not establish which behavior matches physical
 DMG hardware.
+
+The SameBoy version was corrected on 2026-10-26 by calling its
+`retro_get_system_info` entry point. The installed `.info` file says 0.14.7
+and is stale; the binary and frame hashes recorded below are unchanged.
 
 The stock `libretro_rom_runner` rejected Gambatte because it does not advertise
 `RETRO_ENVIRONMENT_GET_CAN_DUPE` or accept RGB565. A temporary runner under
