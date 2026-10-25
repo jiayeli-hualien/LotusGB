@@ -302,8 +302,9 @@ line 64, it followed the low-plane read. This matched that version's stage
 ordering, but the reference image differed in the output tile at x=16–23. The
 candidate error is the modeled map-fetch position around OBJ arbitration, not
 whether later tile fetches reread SCX. This is still a comparison against the
-Mealybug emulator reference image, not a hardware capture; the trace has not
-been regenerated after the catch-up correction.
+Mealybug emulator reference image, not a hardware capture. This table and the
+following probe describe the pre-correction model; the current-build LY 8
+trace is recorded in [the later timing note](#localizing-the-remaining-scx-mismatch-2026-10-25).
 
 A temporary public-interface probe isolated line 8 with one object at OAM
 Y=24/X=1 and changed SCX at dot 114. The pre-correction model still used
@@ -656,11 +657,23 @@ phase and continue investigating the OBJ/BG fetch ordering within Mode 3.
 ## Localizing the remaining SCX mismatch (2026-10-25)
 
 The differing pixels come from BG tile-fetch timing, not layer composition.
-For each affected row, the Mode 3 fetcher reads tile-map column 2 using the old
-SCX value before the ROM's Mode 3 handler writes `SCX = LY`. For example, the
-column-2 map read is at dot 112 on LY 8, dot 111 on LY 16, and dot 113 on LY 64;
-the SCX write is at dot 114 in each case. [Pan Docs](https://gbdev.io/pandocs/Scrolling.html)
-states that SCX is sampled again for each tile fetch, matching this mechanism.
+A fresh trace of the current build confirms the ordering on LY 8: the fetcher
+computes tile-column 2's map address at dot 112 with `SCX=0`, reads that map
+entry at dot 113, and the CPU's `SCX=8` write reaches the PPU at dot 114. At
+the write, the fetcher has completed the low-plane address phase and is in its
+low-plane data phase. The OBJ fetcher is idle by then; its preceding stall has
+shifted the BG schedule. The later tile-column 3 map address is computed at
+dot 120 using `SCX=8`.
+[Pan Docs](https://gbdev.io/pandocs/Scrolling.html) states that SCX is sampled
+again for each tile fetch, matching this mechanism.
+
+The trace used compile-time instrumentation in a separate debug build, which
+was then removed. Its captured shade buffer has the same SHA-256 as the normal
+runner's prior capture, and the visual result remains at 84 differing pixels.
+This establishes the current model's CPU-to-PPU event order at its M-cycle
+boundary; it does not establish the physical CPU's exact bus phase within that
+M-cycle. It narrows the modeled mismatch to the earlier OBJ stall and following
+BG fetch schedule without proving which hardware timing should replace it.
 
 A temporary, line-scoped timing probe supports the diagnosis: adding 3 dots to
 the LY 8 OBJ event moves its column-2 map read to dot 115, after the SCX write,
