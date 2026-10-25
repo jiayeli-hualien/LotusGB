@@ -482,8 +482,9 @@ uint8_t DmgPpu::readBackgroundBitplane(bool high) const {
 
 void DmgPpu::advanceBackgroundFetch() {
     // Preserve the current six-dot startup and two-dot read/push stages while
-    // making the fetcher phase explicit. OBJ stalls still pause this BG fetcher;
-    // bus-driven BG/OBJ FIFO arbitration remains future work.
+    // making the fetcher phase explicit. OBJ-fetch catch-up is coordinated by
+    // advanceBackgroundFetcherForObjectFetch(); per-dot bus arbitration remains
+    // future work.
     auto &fetcher = mode3.fetcher;
     if (fetcher.startupDotsRemaining > 0) {
         --fetcher.startupDotsRemaining;

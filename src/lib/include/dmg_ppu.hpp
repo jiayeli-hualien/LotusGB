@@ -166,7 +166,7 @@ private:
         void begin(const ObjectFetchEvent &event) {
             // Keep the four-dot setup and remaining transfer time separate.
             // Low/high plane reads are attached to their respective boundaries;
-            // the BG fetcher still pauses for the complete event.
+            // DmgPpu coordinates BG fetch catch-up around this coarse schedule.
             fetchSetupDotsRemaining = 4;
             dataTransferDotsRemaining =
                 static_cast<uint8_t>(event.transferDots - fetchSetupDotsRemaining);

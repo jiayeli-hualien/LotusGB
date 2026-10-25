@@ -218,7 +218,9 @@ column 2 for pixel x=16, while the Mealybug DMG reference shows the tile shifted
 by the new SCX value. The probe failed against the current model and was
 removed rather than keeping a speculative expected value in the normal unit
 suite. The external ROM comparison remains the reproducible target for this
-case.
+case. A fresh capture from the current `ppu_frame_runner` still differs in 84
+pixels and has shade-buffer SHA-256
+`0655c10657494025ae466e223502bb9ef6aa5f0c0378cce02386ae6a7a382cf805`.
 
 The likely modeling gap is that LotusGB still schedules each object as a
 precomputed output stall. BG and OBJ pixels pass through separate FIFOs, and
