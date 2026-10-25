@@ -1392,6 +1392,93 @@ void testConditionalBranchAndCallBusTiming() {
            "CALL reads the target then fetches from it after stack writes");
 }
 
+void testConditionalJumpConditionsAndTiming() {
+    for (unsigned condition = 0; condition < 4; ++condition) {
+        for (const bool taken : {false, true}) {
+            bool z = false;
+            bool c = false;
+            switch (condition) {
+                case 0: z = !taken; break; // NZ
+                case 1: z = taken; break;  // Z
+                case 2: c = !taken; break; // NC
+                case 3: c = taken; break;  // C
+            }
+
+            const auto opcode = static_cast<uint8_t>(0xC2 + (condition << 3));
+            CpuFixture jp{{0x0000, opcode}, {0x0001, 0x34}, {0x0002, 0x12},
+                          {0x0003, 0x00}, {0x1234, 0x00}};
+            Reg reg = jp.cpu.getReg();
+            setFlags(reg, z, true, true, c);
+            jp.cpu.setReg(reg);
+
+            const auto expectedCycles = taken ? 4U : 3U;
+            expect(jp.runUntilNextOpcode() == expectedCycles,
+                   "JP cc takes its extra M-cycle only when the condition is true");
+            reg = jp.cpu.getReg();
+            const GB_Flag flags = reg.getFlag();
+            const std::vector<uint16_t> expectedReads = taken
+                ? std::vector<uint16_t>{0x0001, 0x0002, 0x1234}
+                : std::vector<uint16_t>{0x0001, 0x0002, 0x0003};
+            expect(jp.memory.reads == expectedReads && jp.memory.writes.empty() &&
+                       reg.getRefPC() == (taken ? 0x1235 : 0x0004),
+                   "JP cc reads both operand bytes and fetches from the selected path");
+            expect(flags.Z == z && flags.N && flags.H && flags.C == c,
+                   "JP cc preserves all flags on both branch paths");
+        }
+    }
+}
+
+void testRelativeJumpTakenAndSignedOffsetTiming() {
+    CpuFixture taken{{0x0000, 0x20}, {0x0001, 0x05}, {0x0002, 0x00}, {0x0007, 0x00}};
+    Reg reg = taken.cpu.getReg();
+    setFlags(reg, false, true, true, true);
+    taken.cpu.setReg(reg);
+
+    const auto displacement = taken.cpu.stepOneCycle();
+    reg = taken.cpu.getReg();
+    GB_Flag flags = reg.getFlag();
+    expect(displacement.success && !displacement.fetchedNewInst &&
+               displacement.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               taken.memory.reads == std::vector<uint16_t>{0x0001} &&
+               reg.getRefPC() == 0x0002 && flags.Z == false && flags.N &&
+               flags.H && flags.C,
+           "taken JR NZ reads its displacement without changing PC or flags");
+
+    const auto branch = taken.cpu.stepOneCycle();
+    reg = taken.cpu.getReg();
+    expect(branch.success && !branch.fetchedNewInst &&
+               branch.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               taken.memory.reads == std::vector<uint16_t>{0x0001} &&
+               reg.getRefPC() == 0x0007,
+           "taken JR NZ applies its signed offset in the branch M-cycle");
+
+    const auto targetFetch = taken.cpu.stepOneCycle();
+    reg = taken.cpu.getReg();
+    flags = reg.getFlag();
+    expect(targetFetch.success && targetFetch.fetchedNewInst &&
+               targetFetch.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+               taken.memory.reads == std::vector<uint16_t>{0x0001, 0x0007} &&
+               reg.getRefPC() == 0x0008 && flags.Z == false && flags.N &&
+               flags.H && flags.C,
+           "taken JR NZ fetches the target opcode after its extra M-cycle");
+
+    CpuFixture backwards{{0x0000, 0x18}, {0x0001, 0xFE}}; // JR -2
+    const auto backwardOperand = backwards.cpu.stepOneCycle();
+    expect(backwardOperand.success && !backwardOperand.fetchedNewInst &&
+               backwards.cpu.getReg().getRefPC() == 0x0002 &&
+               backwards.memory.reads == std::vector<uint16_t>{0x0001},
+           "JR reads the signed displacement before applying it");
+    const auto backwardBranch = backwards.cpu.stepOneCycle();
+    expect(backwardBranch.success && !backwardBranch.fetchedNewInst &&
+               backwards.cpu.getReg().getRefPC() == 0x0000,
+           "JR sign-extends a negative displacement when updating PC");
+    const auto backwardFetch = backwards.cpu.stepOneCycle();
+    expect(backwardFetch.success && backwardFetch.fetchedNewInst &&
+               backwards.cpu.getReg().getRefPC() == 0x0001 &&
+               backwards.memory.reads == std::vector<uint16_t>{0x0001, 0x0000},
+           "JR fetches from its backward target after applying the offset");
+}
+
 void testConditionalRetStackTiming() {
     CpuFixture taken{{0x0000, 0xC0}, {0x0001, 0x00},
                      {0xC000, 0x34}, {0xC001, 0x12}, {0x1234, 0x00}}; // RET NZ
@@ -1475,6 +1562,24 @@ void testCallAndRstStackPointerMcycleTiming() {
     expect(!conditionalCall.cpu.stepOneCycle().fetchedNewInst &&
                conditionalCall.cpu.getReg().getRefSP() == 0xC0FF,
            "taken CALL cc decrements SP in its internal M-cycle");
+    expect(conditionalCall.memory.reads == std::vector<uint16_t>{0x0001, 0x0002} &&
+               conditionalCall.memory.writes.empty(),
+           "taken CALL cc reads both target bytes before stack writes");
+    expect(!conditionalCall.cpu.stepOneCycle().fetchedNewInst &&
+               conditionalCall.cpu.getReg().getRefSP() == 0xC0FE &&
+               conditionalCall.memory.writes ==
+                   std::vector<std::pair<uint16_t, uint8_t>>{{0xC0FF, 0x00}},
+           "taken CALL cc writes the return-PC high byte in its second SP phase");
+    expect(!conditionalCall.cpu.stepOneCycle().fetchedNewInst &&
+               conditionalCall.cpu.getReg().getRefSP() == 0xC0FE &&
+               conditionalCall.memory.writes == std::vector<std::pair<uint16_t, uint8_t>>{
+                   {0xC0FF, 0x00}, {0xC0FE, 0x03}},
+           "taken CALL cc writes the return-PC low byte without another SP decrement");
+    expect(conditionalCall.cpu.stepOneCycle().fetchedNewInst &&
+               conditionalCall.cpu.getReg().getRefPC() == 0x1235 &&
+               conditionalCall.cpu.getReg().getRefSP() == 0xC0FE &&
+               conditionalCall.memory.reads == std::vector<uint16_t>{0x0001, 0x0002, 0x1234},
+           "taken CALL cc fetches from its target after the two stack writes");
 
     CpuFixture rst{{0x0000, 0xCF}, {0x0008, 0x00}}; // RST 08
     reg = rst.cpu.getReg();
@@ -2083,6 +2188,8 @@ int main() {
     testPopAFMasksUnusedFlagBits();
     testPopRetAndJumpBusTiming();
     testConditionalBranchAndCallBusTiming();
+    testConditionalJumpConditionsAndTiming();
+    testRelativeJumpTakenAndSignedOffsetTiming();
     testConditionalRetStackTiming();
     testCallAndRstStackPointerMcycleTiming();
     testStopDecodeAndHaltIdle();
