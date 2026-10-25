@@ -236,27 +236,34 @@ Mealybug mismatch from 84 to 150 pixels (x=16–31, y=8–142). Requiring an emp
 FIFO before pushing a row restored the previous 84-pixel capture hash. This
 supports the FIFO condition in the model but does not prove exact hardware
 timing.
-Pan Docs describes separate BG and OBJ FIFOs, with sprite arbitration advancing
-the BG fetcher and depending on FIFO contents ([Pixel FIFO](https://github.com/gbdev/pandocs/blob/master/src/pixel_fifo.md)). SameBoy's
-[OBJ-fetch path](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L1871-L1931)
-also advances the BG fetcher during object fetch. This matches the missing
-state in LotusGB's current model and supports adding an explicit fetch/FIFO
-interaction to its coarse event schedule. It remains an implementation
-comparison and an inference from the Mealybug reference, not a proven hardware
-root cause.
+Pan Docs describes separate BG and OBJ FIFOs, and says sprite arbitration
+advances the BG fetcher until it reaches step 5 or the BG FIFO becomes
+non-empty ([Pixel FIFO](https://gbdev.io/pandocs/pixel_fifo.html)). SameBoy's
+[OBJ-fetch path](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L1876-L1901)
+uses a different wait predicate: its loop continues while the fetcher is
+before `GET_TILE_DATA_HIGH_T2` **or** the BG FIFO is empty, so it exits only
+after both conditions are satisfied. It then advances the fetcher two more
+times. The enum is declared
+[here](https://github.com/LIJI32/SameBoy/blob/master/Core/display.c#L824-L834).
+These descriptions do not establish which sequence matches DMG hardware.
+SameBoy is an implementation comparison, not a hardware oracle, and the new
+SCY regression currently encodes the Pan Docs interpretation rather than an
+independently verified hardware result. Keep the two predicates as an open
+question until a targeted hardware-backed test can distinguish them.
 
 The public PPU regression
 `testCoarseScrollWrittenDuringObjectFetchAffectsLaterTiles` changes SCX at
 line 1 dot 95, during the first OBJ stall, and checks that later tile columns
 use the updated coarse offset. The regression
 `testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels` places a transparent
-object at screen x=3 and changes SCY during its fetch. The test failed with the
-old conjunction (waiting for both Push and a non-empty FIFO); it passes when
-catch-up stops on either condition, and confirms that unread BG bitplanes use
-the new SCY value. This follows Pan Docs' described stopping condition, while
-the remaining per-dot OBJ schedule is still incomplete. Keep line timing,
-STAT, palette-write, and pixel regressions as constraints. Re-run the selected
-Mealybug ROM after each measured change; do not tune the global phase to chase
+object at screen x=3 and changes SCY during its fetch. It fails with the prior
+conjunction (waiting for both Push and a non-empty FIFO) and passes when
+catch-up stops on either condition. This is a regression for the selected
+Pan Docs interpretation; it does not establish which predicate matches DMG
+hardware, because SameBoy's current source uses a different wait sequence.
+Keep line timing, STAT, palette-write, and pixel regressions as constraints.
+Use a targeted hardware-backed result to resolve this question before treating
+either implementation as the reference. Do not tune the global phase to chase
 a lower pixel count. Keep CGB FIFO behavior and unrelated fetch quirks out of
 scope.
 

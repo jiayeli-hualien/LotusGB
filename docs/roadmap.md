@@ -30,10 +30,13 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
   the current model but do not prove exact hardware timing. OAM descriptors
   and event durations are still
   prepared at scanline entry; per-dot OBJ bus reads and BG/OBJ arbitration
-  remain open. Next, recapture the BG fetch stages after OBJ catch-up and test
-  the following tile-map sampling boundary against a spec-backed expectation;
-  retain the Mealybug pixel mismatch as a diagnostic instead of tuning to it.
-  Keep line, STAT, and pixel regressions intact; see the
+  remain open. The BG catch-up predicate is unresolved: Pan Docs describes
+  stopping at Push or a non-empty FIFO, while SameBoy's current source waits
+  for both its high-data T2 state and a non-empty FIFO before two more fetcher
+  advances. Next, design a DMG-observable case that can distinguish these
+  sequences; treat the new SCY regression as the Pan Docs hypothesis, not
+  hardware verification. Keep the Mealybug mismatch diagnostic instead of
+  tuning to it, and preserve line, STAT, and pixel regressions; see the
   [measured diagnosis](ppu-scrolling.md#bounded-investigation-of-the-remaining-scx-pixels).
   Do not tune the global fetch phase or add CGB FIFO behavior to chase a lower
   diagnostic pixel count.
