@@ -263,6 +263,56 @@ void testRegisterIncDecCompletesInOneCycle() {
     }
 }
 
+void testSingleCycleFlagAndAccumulatorOperations() {
+    struct Case {
+        uint8_t opcode;
+        uint8_t accumulator;
+        bool initialZ;
+        bool initialN;
+        bool initialH;
+        bool initialC;
+        uint8_t expectedAccumulator;
+        bool z;
+        bool n;
+        bool h;
+        bool c;
+    };
+    const Case cases[] = {
+        {0x3F, 0x55, true,  true,  true,  false, 0x55, true,  false, false, true},  // CCF: 0 -> 1
+        {0x3F, 0x55, false, true,  true,  true,  0x55, false, false, false, false}, // CCF: 1 -> 0
+        {0x37, 0x55, true,  true,  true,  false, 0x55, true,  false, false, true},  // SCF
+        {0x2F, 0x55, true,  false, false, true,  0xAA, true,  true,  true,  true},  // CPL
+        {0x07, 0x80, true,  true,  true,  false, 0x01, false, false, false, true},  // RLCA
+        {0x07, 0x00, true,  true,  true,  true,  0x00, false, false, false, false}, // RLCA zero result
+        {0x17, 0x80, false, true,  true,  true,  0x01, false, false, false, true},  // RLA carries in
+        {0x17, 0x80, true,  true,  true,  false, 0x00, false, false, false, true},  // RLA carries out
+        {0x0F, 0x01, true,  true,  true,  true,  0x80, false, false, false, true},  // RRCA
+        {0x1F, 0x00, true,  true,  true,  true,  0x80, false, false, false, false}, // RRA carries in
+        {0x1F, 0x01, true,  true,  true,  false, 0x00, false, false, false, true},  // RRA carries out
+    };
+
+    for (const Case &test : cases) {
+        CpuFixture f{{0x0000, test.opcode}, {0x0001, 0x00}};
+        Reg reg = f.cpu.getReg();
+        reg.getRefA() = test.accumulator;
+        setFlags(reg, test.initialZ, test.initialN, test.initialH, test.initialC);
+        f.cpu.setReg(reg);
+
+        const auto operation = f.cpu.stepOneCycle();
+        reg = f.cpu.getReg();
+        const GB_Flag flags = reg.getFlag();
+        expect(operation.success && operation.fetchedNewInst &&
+                   operation.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   f.memory.reads == std::vector<uint16_t>{0x0001} &&
+                   f.memory.writes.empty() && reg.getRefA() == test.expectedAccumulator &&
+                   reg.getRefPC() == 2,
+               "flag and accumulator operation completes with the next fetch in one cycle");
+        expect(flags.Z == test.z && flags.N == test.n && flags.H == test.h &&
+                   flags.C == test.c,
+               "flag and accumulator operation applies the documented flag behavior");
+    }
+}
+
 void testCbHlReadModifyWritePhases() {
     struct Case {
         uint8_t opcode;
@@ -1849,6 +1899,7 @@ int main() {
     testBitHlUsesReadAndNextFetchCycles();
     testIncDecHlReadModifyWritePhases();
     testRegisterIncDecCompletesInOneCycle();
+    testSingleCycleFlagAndAccumulatorOperations();
     testCbHlReadModifyWritePhases();
     testHlAluReadsBeforeUpdatingAccumulatorAndFlags();
     testImmediateAluReadsBeforeUpdatingAccumulatorAndFlags();
