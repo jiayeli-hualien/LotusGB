@@ -130,6 +130,18 @@ These are execution/visible-progress observations, not exact hardware rendering
 or sound-quality acceptance. The game is difficult and the scripted run loses
 lives; this is not a full-level gameplay assertion.
 
+On 2026-10-26, two 3,600-frame runs with the same ROM, core and input script
+produced byte-identical final frames. The framebuffer SHA-256 was
+`8b2cba922ae41dcb3e9cfb107b37cbb0dc870e687acc1da0226c2735d73cd313`; ROM,
+core and input-script SHA-256 values were
+`19f57c1fefe8ebdcef0ff9def783246a6618d4b822b5c44188a1e9c1e7448c51`,
+`80ec278b8906ac60ce3f865098cec05c50bddef291461aff5cb5a4963fa1b006`, and
+`b0e199174963c1fae245255a3c1a9af3a289d1de09355d81eefb2cdab8cb5796`.
+This shows repeatability for this profile and build, not hardware accuracy.
+The 407-pixel difference recorded in the validation matrix was between
+separate historical captures; those records do not retain enough detail to
+attribute that difference to one cause.
+
 A temporary build of `c13d0f0` (before separate SCY bitplane sampling) was run
 with the same startup/input sequence. At frame 1800 it differed from the
 current frame by 3,463 pixels, mainly canyon texture/row positions. Both
