@@ -9,7 +9,7 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - Once behavior is tested and stable, measure performance before optimizing. Implementation and storage choices must not define emulation behavior or rely on operating-system-specific semantics in the core.
 - Keep platform-specific file access behind a narrow boundary so the emulator core can use portable ROM storage and support alternate backends when profiling justifies them.
 
-## Current route (2026-10-25)
+## Current route (2026-10-26)
 
 ### Active: DMG PPU visual and raster-effect accuracy
 
@@ -33,6 +33,14 @@ measurement or a ROM with a hardware-backed expected result. Keep the remaining
 Mealybug differences visible and change one observable behavior at a time.
 The detailed implementation record, captures and bounded experiments are in
 the [PPU guide](ppu-scrolling.md).
+
+Investigate the remaining SCX discrepancy by [scanline boundary and controlled
+ROM variants](ppu-scrolling.md#investigation-by-boundary-2026-10-26). The
+OBJ-disabled variant matches SameBoy; one fully visible object is enough to
+reproduce a six-pixel difference. Focus next on that object's Mode 3 BG/OBJ
+fetch ordering while preserving the tested Mode 2/Mode 0 endpoints. Require
+an event-level explanation before changing timing; do not tune stall lengths
+from the final image's mismatch count.
 
 ### Product follow-ups
 
@@ -270,3 +278,5 @@ Use Linux as the primary development and CI platform for now. Raspberry Pi runni
 - **Fresh SCX/OBJ dot trace (2026-10-25):** use compile-time tracing in a separate build to capture the current `m3_scx_high_5_bits` run. On LY 8, the model computes BG tile-column 2's map address at dot 112 and reads it at dot 113; the `SCX=8` CPU write reaches the PPU at dot 114, after the fetcher has moved into its low-plane data phase and the prior OBJ stall has ended. The captured shade buffer is identical to the ordinary runner and still differs from the Mealybug reference by 84 pixels. This confirms current CPU-to-PPU ordering at the modeled M-cycle boundary, not the real CPU's sub-M-cycle bus phase. No runtime timing changed; see the [PPU trace notes](ppu-scrolling.md#localizing-the-remaining-scx-mismatch-2026-10-25).
 
 - **OBJ fetch lifecycle ownership (2026-10-25):** centralize pending-event selection, fetch startup and per-dot advancement in `advanceObjectFetchPipeline()`. Both newly started and active fetches use the same advancement path; the completion dot still stalls output, and another same-position fetch starts on the following dot. `make test`, `make build` and the expanded 14-case Mooneye PPU group pass. All six selected Mealybug shade buffers are byte-identical to the preceding baseline; this is a structural change with no claimed accuracy gain. Local reports are under `build/test-roms/mooneye-obj-lifecycle/` and `build/test-roms/mealybug-obj-lifecycle/`. Record the current-dot outcome rule in the [refactoring guideline](architecture.md#refactoring-guideline); coarse OBJ event timing remains open.
+
+- **SCX problem decomposition (2026-10-26):** add an optional controlled-ROM diagnostic and split the investigation into Mode 2 entry/selection, CPU writes, Mode 3 BG-only/OBJ interaction, Mode 0 exit and final pixel composition. SameBoy matches LotusGB with OBJ disabled; single objects at X=1 and X=8 each reproduce the same six differing pixels, versus 84 for the original ROM. The comparison output is stable at 120/180 frames and its original image matches the upstream PNG. No emulator timing changed and no hardware correctness is claimed. See the [diagnostic procedure and next boundary](ppu-scrolling.md#investigation-by-boundary-2026-10-26).

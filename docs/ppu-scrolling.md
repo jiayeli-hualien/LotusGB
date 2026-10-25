@@ -44,6 +44,73 @@ Earlier counts in the dated investigation sections are historical outputs
 from prior builds; use this fresh run as the current image baseline. The new
 report has the same six counts as the preceding baseline.
 
+## Investigation by boundary (2026-10-26)
+
+For the remaining SCX discrepancy, isolate one part of a scanline before
+changing its timing. Passing Mode 2/Mode 3/Mode 0 boundaries constrains total
+duration and interrupt/access edges; it does not establish the order of
+fetches inside Mode 3. The 84-pixel image is an integration result, not a
+reason to add or remove dots from an individual stage.
+
+| Boundary | Existing evidence | What remains open / next action |
+| --- | --- | --- |
+| Mode 2 and entry to Mode 3 | `testVisibleLineModesAndVideoMemoryAccess` checks the 80-dot boundary; Mooneye checks selected STAT and OAM-access edges. Sprite selection tests cover the ten-object limit. | Selection is prepared at Mode 3 entry, rather than scanning OAM throughout Mode 2. The SCX ROM supplies stable OAM, so first isolate its Mode 3 behavior instead of rewriting OAM scanning. |
+| CPU register writes | CPU load/store tests cover the M-cycle sequence; SystemClock tests check device advancement before the bus transaction. The current LY 8 trace places the SCX write at dot 114. | This is the current model's write time, not a hardware bus measurement. Keep the instruction flow fixed in control ROMs; a common reporting-marker cycle alone does not prove every register write has identical timing. |
+| Mode 3, BG without OBJ | Public PPU tests cover startup, fine discard, tile-map sampling and separate SCY bitplanes. The new OBJ-disabled control matches SameBoy exactly. | This agreement applies to the selected SCX ROM, not every BG/palette effect. Preserve this control while investigating OBJ interaction. |
+| Mode 3, OBJ wait/fetch/BG resume | One-object controls at OAM X=1 and X=8 each differ from SameBoy by six pixels on LY 8–14. | This is the next narrow investigation: compare BG address/data/push and OBJ completion around one object. Neither multiple objects nor left clipping is required to reproduce the discrepancy. Exact hardware arbitration is still unverified. |
+| Mode 0 entry and line completion | The expanded 14-case Mooneye group passes, including sprite Mode 0 and SCX/HBlank timing. Public tests check several sprite penalties and 456-dot lines. | Preserve these endpoints. A correct endpoint can still contain incorrectly ordered internal fetches. Reopen an endpoint only when evidence identifies that edge. |
+| Pixel composition and final image | `dmg-acid2` and the selected sprite-priority image pass; the SCX comparison localizes differences to one BG output tile. | Keep the original image as the final integration check. Do not treat a lower mismatch count as proof of a correct timing rule. |
+
+### Controlled SCX ROM decomposition
+
+`tools/diagnose_ppu_scx.py` derives four variants from the pinned upstream
+`m3_scx_high_5_bits` ROM, leaving the instruction flow and cartridge header
+unchanged. The OBJ-disabled control changes only the immediate LCDC value
+from `$93` to `$91`. Single-object controls retain LCDC `$93`, hide the other
+objects through their OAM Y data, and place one object on LY 8–15 at OAM X=1
+or X=8. The source ROM hash and unique instruction/table patterns are checked
+before patching; the diagnostic does not repair the global ROM checksum.
+
+| Variant | LotusGB versus SameBoy differing pixels |
+| --- | ---: |
+| Original objects enabled | 84 |
+| Objects disabled | 0 |
+| One object, X=1 (left clipped) | 6 |
+| One object, X=8 (fully visible) | 6 |
+
+The single-object differences have the same coordinates: x=16, 17, 21 and 22
+on a subset of LY 8–14. All four LotusGB captures reach the reporting marker
+at PC `$064C` after 222,587 M-cycles. SameBoy's 120-frame and 180-frame outputs
+are byte-identical for each variant, and its original-ROM output matches the
+upstream expected PNG exactly, calibrating this comparison's startup/palette
+settings. These are cross-core observations, not hardware validation; they
+do not establish the correct fetch dot or rule out every CPU/PPU bus-phase
+interaction.
+
+Run this optional diagnostic with the existing Pillow venv and external ROMs:
+
+```sh
+make -C src/lib ppu-frame-runner build_dir="$PWD/build"
+make -C src/libretro rom-test-runner build_dir="$PWD/build"
+build/visual-venv/bin/python tools/diagnose_ppu_scx.py \
+  --rom /path/to/m3_scx_high_5_bits.gb \
+  --reference /path/to/expected/DMG-blob/m3_scx_high_5_bits.png \
+  --comparison-core /path/to/sameboy_libretro.so
+```
+
+Reports, derived ROMs, logs, images and diff
+maps go under `build/test-roms/ppu-scx-decomposition/`; binaries remain outside
+version control. A completed diagnostic reports differences and is not a
+conformance pass. Runner errors, unstable comparison frames, or failure to
+reproduce the original reference cause a nonzero exit. This is not a CI job.
+
+Next, use the fully visible X=8 control as the small reproducer. Record one
+line's CPU write, BG address/data/push, FIFO occupancy, OBJ stages and pixel
+output on the same timeline. Establish which event differs and what evidence
+supports its expected ordering before changing production timing. Preserve
+the OBJ-disabled control, both single-object controls, original image and
+Mode 0/Mode 2 boundary checks when evaluating a candidate.
+
 ## Scope
 
 The active route is one observable SCX/SCY fetch behavior at a time, with
@@ -371,7 +438,7 @@ old total duration and do not model individual bus reads; sprite interaction
 is not hardware-complete.
 
 `make test` passes, including the framebuffer and line/STAT regressions. A
-direct `m3_scx_high_5_bits` capture still stops at PC `$1612`; comparing the
+direct `m3_scx_high_5_bits` capture still stops at PC `$064C` (decimal 1612); comparing the
 shade buffer against the external DMG reference gives 84 differing pixels in
 x=16–23, y=8–86, unchanged from the prior model. The repository comparison
 wrapper requires Pillow, which is unavailable here; a small standard-library
