@@ -514,7 +514,7 @@ void testLycZeroHandlerRunsBeforeVblankEnds() {
            "CPU receives LYC=0 while readable LY is zero and STAT is still in VBlank");
 }
 
-void testPpuBusRejectionsDoNotStallCpuOrReplayWrites() {
+void testPpuAccessWindowsSupportSafeCpuUpdates() {
     std::vector<uint8_t> rom(0x8000, 0);
     const uint8_t program[] = {
         0x3E, 0x12,             // A = original VRAM value
@@ -529,10 +529,16 @@ void testPpuBusRejectionsDoNotStallCpuOrReplayWrites() {
         0x3E, 0x88,             // A = attempted OAM replacement
         0xEA, 0x00, 0xFE,       // Blocked Mode 3 write must be discarded
         0xF0, 0x41, 0x4F,       // C = STAT after both writes
-        // Poll until Mode 0, when both memories are accessible again.
+        // Poll until Mode 0, then verify old values before valid updates.
         0xF0, 0x41, 0xE6, 0x03, 0xFE, 0x00, 0x20, 0xF8,
-        0xFA, 0x00, 0x80, 0x47, // B = VRAM value after Mode 3
-        0xFA, 0x00, 0xFE, 0x57, // D = OAM value after Mode 3
+        0xFA, 0x00, 0x80, 0x47, // B = original VRAM value
+        0xFA, 0x00, 0xFE, 0x57, // D = original OAM value
+        0x3E, 0x56,             // A = valid VRAM update
+        0xEA, 0x00, 0x80,       // Mode 0 VRAM write succeeds
+        0x3E, 0x78,             // A = valid OAM update
+        0xEA, 0x00, 0xFE,       // Mode 0 OAM write succeeds
+        0xFA, 0x00, 0x80, 0x67, // H = updated VRAM value
+        0xFA, 0x00, 0xFE, 0x6F, // L = updated OAM value
         0x1E, 0x99,             // E = completion marker
         0x18, 0xFE,             // Loop
     };
@@ -552,12 +558,14 @@ void testPpuBusRejectionsDoNotStallCpuOrReplayWrites() {
            "rejected writes do not wait until the PPU leaves Mode 3");
     expect(registers.getRefB() == 0x12 && registers.getRefD() == 0x34,
            "rejected writes are discarded rather than replayed in Mode 0");
+    expect(registers.getRefH() == 0x56 && registers.getRefL() == 0x78,
+           "CPU writes to VRAM and OAM succeed after polling until Mode 0");
 }
 
 }
 
 int main() {
-    testPpuBusRejectionsDoNotStallCpuOrReplayWrites();
+    testPpuAccessWindowsSupportSafeCpuUpdates();
     testLycZeroHandlerRunsBeforeVblankEnds();
     testVblankInterruptWakesHaltAndRunsHandler();
     testDisconnectedSerialWakesHaltAndRunsHandler();
