@@ -4,6 +4,12 @@ This is a historical investigation record, not a test plan. Its screenshot
 comparisons are not formal LotusGB test items or pass/fail gates; current PPU
 acceptance is listed in the [DMG validation matrix](dmg-validation.md).
 
+**Disputed optional case:** Mealybug's `m3_scx_high_5_bits` has no DMG hardware
+reference result. Keep its archived comparison as a diagnostic record only; it
+is not a LotusGB regression, acceptance criterion, or active development task.
+Prioritize playable games and author-described effects such as Canyon Racer's
+parallax.
+
 ## Current status
 
 Mode 3 has separate 16-pixel BG and OBJ FIFOs. During OBJ arbitration, the BG

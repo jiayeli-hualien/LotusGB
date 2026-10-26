@@ -41,8 +41,10 @@ its per-scanline SCY updates and vertical parallax effect, so that game can
 guide compatibility work without a physical-DMG screenshot.
 Require target-model hardware evidence before claiming an exact hardware
 timing result; do not make that claim a prerequisite for improving a
-documented game effect. Keep the 84-pixel Mealybug difference optional unless
-it maps to an observable game issue. See the recorded
+documented game effect. Classify Mealybug's `m3_scx_high_5_bits` as a disputed,
+optional diagnostic only: it is not a LotusGB acceptance test, regression gate,
+or active task. Focus current PPU work on playable games and their documented
+visual effects. See the recorded
 [boundary analysis](ppu-scrolling.md#investigation-by-boundary-2026-10-26) and
 [rejected timing candidates](ppu-scrolling.md#normalized-cpuppu-event-comparison-2026-10-26).
 
