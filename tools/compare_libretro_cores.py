@@ -8,6 +8,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 import zlib
 
 
@@ -57,7 +58,9 @@ def run_core(label: str, core: Path, rom: Path, runner: Path, frames: int,
                str(rgb_path), str(sram_path)]
     if input_script:
         command.append(str(input_script))
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    with tempfile.TemporaryDirectory(prefix=f"{label}-cwd-", dir=output) as cwd:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                check=False, cwd=cwd)
     log_path.write_text(result.stdout + result.stderr)
     if result.returncode:
         raise RuntimeError(f"{label} runner failed ({result.returncode}); see {log_path}")
@@ -136,6 +139,11 @@ def main() -> int:
         "input_path": str(inputs) if inputs else None,
         "input_sha256": sha256(inputs.read_bytes()) if inputs else None,
         "frames": args.frames,
+        "firmware_supplied": [],
+        "working_directory_policy": (
+            "Each core runs in a fresh empty temporary directory so a local "
+            "relative-path boot ROM cannot change its startup mode."
+        ),
         "scope": "Local cross-core diagnostic only; neither core is treated as a hardware oracle.",
     }
     try:

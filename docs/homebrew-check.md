@@ -65,7 +65,10 @@ python3 tools/compare_libretro_cores.py \
 The script records ROM, core, runner and input hashes, both final frame hashes,
 runner logs and a comparison image. `--require-identical` makes a pixel
 mismatch return failure; omit it when collecting a diagnostic comparison.
-This is a local cross-core check, not a hardware-accuracy assertion or CI gate.
+Each core runs in a fresh empty temporary working directory and receives no
+firmware files, preventing an incidental `./dmg_boot.bin` from changing the
+startup path. The report records this policy. This is a local cross-core check,
+not a hardware-accuracy assertion or CI gate.
 
 ### Super Mario Land scripted run (2026-10-26)
 
