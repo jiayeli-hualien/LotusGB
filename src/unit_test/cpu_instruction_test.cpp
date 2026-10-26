@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <iterator>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -2161,6 +2162,32 @@ void testHaltWakeAndHaltBug() {
            "HALT bug makes the opcode byte repeat as the immediate operand");
 }
 
+void testUnsupportedBaseOpcodesFailWithAddressAndOpcode() {
+    constexpr uint8_t unsupportedOpcodes[] = {
+        0xD3, 0xDB, 0xDD, 0xE3, 0xE4, 0xEB,
+        0xEC, 0xED, 0xF4, 0xFC, 0xFD,
+    };
+
+    for (const uint8_t opcode : unsupportedOpcodes) {
+        CpuFixture f{{0x0000, opcode}};
+        bool failedExplicitly = false;
+        try {
+            f.cpu.stepOneCycle();
+        } catch (const std::runtime_error &error) {
+            const std::string message = error.what();
+            const char hexDigits[] = "0123456789ABCDEF";
+            std::string expectedOpcode = "0x00";
+            expectedOpcode[2] = hexDigits[opcode >> 4];
+            expectedOpcode[3] = hexDigits[opcode & 0x0F];
+            failedExplicitly =
+                message.find("unsupported opcode " + expectedOpcode +
+                             " at 0x0000") != std::string::npos;
+        }
+        expect(failedExplicitly,
+               "unsupported base opcode fails with its opcode and address");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -2202,6 +2229,7 @@ int main() {
     testInterruptEntryPriorityStackAndVector();
     testInterruptWaitsUntilCbInstructionCompletes();
     testHaltWakeAndHaltBug();
+    testUnsupportedBaseOpcodesFailWithAddressAndOpcode();
     std::cout << "CPU instruction tests passed\n";
     return EXIT_SUCCESS;
 }

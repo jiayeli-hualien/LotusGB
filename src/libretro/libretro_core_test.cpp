@@ -543,6 +543,35 @@ void testLibretroReportsLoadAndStoppedFrameDiagnostics() {
     retro_unload_game();
 }
 
+void testLibretroReportsUnsupportedOpcodeAndCanReset() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x0147] = 0x00;
+    rom[0x0100] = 0xD3;
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+
+    expect(retro_load_game(&game), "unsupported-opcode diagnostic ROM loads");
+    logMessages.clear();
+    logLevels.clear();
+    retro_run();
+    expect(logMessages.size() == 1 && logLevels.back() == RETRO_LOG_ERROR &&
+               logMessages.back().find("unsupported opcode 0xD3 at 0x0100") !=
+                   std::string::npos,
+           "frontend receives a precise unsupported-opcode error");
+
+    retro_run();
+    expect(logMessages.size() == 1,
+           "a faulted unsupported-opcode run does not flood the frontend log");
+
+    retro_reset();
+    logMessages.clear();
+    retro_run();
+    expect(logMessages.size() == 1 && logLevels.back() == RETRO_LOG_ERROR,
+           "reset clears the execution fault and reports it on the next run");
+    retro_unload_game();
+}
+
 void testLibretroCallbackExceptionBoundaryFaultsOnce() {
     bool faulted = false;
     bool callbackRan = false;
@@ -620,6 +649,7 @@ int main() {
     testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();
     testLibretroExposesAndPreservesMbc3RtcMemory();
     testLibretroReportsLoadAndStoppedFrameDiagnostics();
+    testLibretroReportsUnsupportedOpcodeAndCanReset();
     testLibretroCallbackExceptionBoundaryFaultsOnce();
 
     retro_unload_game();

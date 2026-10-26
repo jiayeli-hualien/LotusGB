@@ -1,6 +1,9 @@
 #include <iostream>
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
 #include "include/instSubFunc.hpp"
 #include "include/instSubFuncCommon.hpp"
 #include "include/instruction.hpp"
@@ -20,11 +23,15 @@ static uint8_t* getRegLHS(const uint8_t &op, Reg *pReg) {
 }
 
 SUB_FUNC_IMPL(NOT_SUPPORT) {
-    // TODO: handle unsupported opcodes explicitly.
-    std::cerr << "Unsupported opcode 0x" << std::hex
-              << static_cast<unsigned>(pInstState->opcode)
-              << " (PC after fetch: 0x" << static_cast<unsigned>(pReg->getRefPC())
-              << ")" << std::dec << std::endl;
+    const uint16_t opcodeAddress =
+        static_cast<uint16_t>(pReg->getRefPC() - 1);
+    std::ostringstream message;
+    message << "unsupported opcode 0x" << std::uppercase << std::hex
+            << std::setw(2) << std::setfill('0')
+            << static_cast<unsigned>(pInstState->opcode)
+            << " at 0x" << std::setw(4)
+            << static_cast<unsigned>(opcodeAddress);
+    throw std::runtime_error(message.str());
 }
 
 SUB_FUNC_IMPL(LDRR) {
