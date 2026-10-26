@@ -87,7 +87,16 @@ hardware-backed expected result is available. See the recorded
   not register LotusGB in EmulationStation, whose generator uses the fixed
   `/usr/lib/libretro/` core path. A parallel SSH-launched RetroArch fails at
   KMS while EmulationStation owns the display. See the
-  [Recalbox procedure and evidence](recalbox.md).
+  [Recalbox procedure and evidence](recalbox.md). Recalbox 10's documented
+  custom-system XML can add an ES system entry but reuses available emulators;
+  first-class LotusGB selection still needs Recalbox packaging/build
+  integration or another supported launcher mechanism.
+- **Steam Deck RetroArch gameplay check (2026-10-26):** the user reports that
+  the x86_64 LotusGB core loaded through Steam RetroArch and played F-1 Race
+  and Pokémon Yellow normally. This confirms basic core loading and gameplay
+  on that Steam Deck. It does not independently establish sound quality, save
+  persistence, hardware accuracy, or broad compatibility. Commercial ROMs
+  and game-derived files remain private and are not included in the repository.
 
 ### Deferred goals
 
@@ -117,8 +126,10 @@ hardware-backed expected result is available. See the recorded
 3. **Raspberry Pi with Recalbox — active.** The ARM64 headless core check
    passes. Verify controls, video, audio and saves in the actual RetroArch
    frontend; see the [platform check](recalbox.md).
-4. **Steam Deck.** Verify RetroArch loading, controls, display scaling and
-   audio on SteamOS.
+4. **Steam Deck — basic load and gameplay verified.** The user reports normal
+   play in F-1 Race and Pokémon Yellow. Separately verify controls, display
+   scaling, audio quality and battery-save persistence before closing the
+   platform check.
 5. **Windows.** Add a Windows build and CI job, then verify Windows RetroArch.
 
 ## Implemented foundation

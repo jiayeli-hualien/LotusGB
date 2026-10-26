@@ -51,6 +51,16 @@ RetroArch menu, load the LotusGB core, then load
 `/recalbox/share/lotusgb-test/gb-pong.gb`. This manual-load setup has not yet
 been checked through the physical display and controller.
 
+This does not make LotusGB a selectable core in Recalbox's EmulationStation
+Game Boy options. Recalbox's documented custom-system file can add a system
+entry, but custom systems reuse the emulators already available to Recalbox;
+it is not a general installer for a core from an arbitrary path. The normal
+Recalbox launcher also constructs an absolute path under `/usr/lib/libretro/`,
+while the tested device keeps that system directory read-only. Therefore,
+first-class ES selection needs Recalbox packaging/build integration or a
+separately verified supported launcher mechanism. BIOS support does not affect
+this registration/path limitation.
+
 To undo the user-core install, restore the saved config and remove the two
 installed files:
 
