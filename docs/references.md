@@ -82,6 +82,7 @@ hardware specification.
 - [Recalbox libretro config generator](https://github.com/recalbox/recalbox-configgen/blob/master/configgen/generators/libretro/libretroGenerator.py) — Recalbox resolves the selected core name under its configured core directory when launching content.
 - [RetroArch on Steam](https://www.libretro.com/index.php/retroarch-finally-released-on-steam/) — Steam/SteamOS core installation constraints and manual core placement.
 - [RetroArch CLI guide](https://docs.libretro.com/guides/cli-intro/) — launch RetroArch through Steam with an explicit core and ROM path.
+- [Optimal VSync Performance](https://docs.libretro.com/guides/optimal-vsync/) — RetroArch VSync, swap interval, refresh-rate and frame-pacing guidance.
 - [Steam Deck Desktop Mode](https://help.steampowered.com/en/faqs/view/69E3-14AF-9764-4C28) — Valve's guide to running desktop applications on SteamOS.
 - [Steam Deck technical specifications](https://www.steamdeck.com/en/tech) — SteamOS and device hardware reference.
 

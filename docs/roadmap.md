@@ -60,6 +60,25 @@ hardware-backed expected result is available. See the recorded
   result; leave frame stepping unchanged pending target-game or hardware-backed
   evidence. See the
   [canonical report](dmg-validation.md#libretro-input-phase-and-vblank-response-2026-10-26).
+- **Player-facing polish (active):** the user reports normal play in F-1 Race
+  and Pokémon Yellow on Steam Deck. Follow up on controller mapping, display
+  scaling, audio quality, and battery-save persistence there. Keep the current
+  completed-frame software callback path. Apparent screen tearing has now been
+  reported on Steam Deck with LotusGB; the user reports SameBoy does not tear
+  there. This makes a global display-sync problem less likely, but per-core
+  overrides and core/frontend pacing remain open. The local Ubuntu RetroArch
+  configs request VSync on, swap interval 1, threaded video off, and the GL
+  driver; this does not prove that the display driver applied VSync. An earlier
+  user-provided WSL log reported `glXSwapInterval(1) failed`. The user also
+  reports that direct frame output looks normal, which is consistent with a
+  presentation-stage tear and does not verify scanout synchronization. Compare
+  the same content and scene before changing the core. The core advances one
+  emulated frame per `retro_run()` and submits one frame through the libretro
+  callback. The API accepts a frame pointer, dimensions, and pitch; it does
+  not require the core to alternate buffers. Add internal buffering only if
+  diagnosis identifies a core-side buffer lifetime/synchronization issue or a
+  measured performance need. See the
+  [RetroArch VSync guide](references.md#retroarch-and-platform-guides).
 - **Compiler-warning pass (2026-10-26):** enabled `-Wextra` for the core
   library. Left unused callback parameter names out of implementation
   signatures, narrowed arithmetic helper parameters, and documented the fixed
@@ -100,10 +119,11 @@ hardware-backed expected result is available. See the recorded
 
 ### Deferred goals
 
-- **Remaining platform quality pass:** verify content switching, controls,
-  video, audio, and saves in the actual Recalbox frontend. Keep this
-  evidence-driven; it does not require finishing every rare DMG hardware edge
-  case or doing a broad style refactor.
+- **Raspberry Pi / Recalbox frontend integration — deferred:** an ARM64
+  headless core check passed, but controls, video, audio, and saves have not
+  been verified in the actual frontend. Pause this platform-specific work
+  while polishing the Steam Deck experience. Keep the core and build portable
+  so the target can be resumed later.
 - **Long-term direction:** explore emulation of Nintendo systems beyond Game Boy.
   Keep LotusGB focused on its current Game Boy/DMG compatibility goal first.
   Revisit CGB, NES and GBA as later scope decisions; avoid cross-system
@@ -111,8 +131,10 @@ hardware-backed expected result is available. See the recorded
 - Boot-ROM execution and CGB support remain outside the current DMG target.
 - Save-state, rewind and replay remain deferred; discuss the desired player
   workflow before designing the state snapshot mechanism.
-- Raspberry Pi with Recalbox is the next platform target after Ubuntu
-  RetroArch; Steam Deck and Windows follow without an immediate deadline.
+- Steam Deck is the current player-facing platform for the polish pass.
+  Raspberry Pi with Recalbox and Windows remain later platform checks; preserve
+  portability without adding target-specific work until the current pass is
+  complete.
 
 ## Delivery targets
 
@@ -123,13 +145,14 @@ hardware-backed expected result is available. See the recorded
    progress, visible input response, stable video/audio, and battery-save
    persistence where applicable. Use targeted ROMs and hardware evidence for
    specific behavior; SameBoy and mGBA are comparison points, not authorities.
-3. **Raspberry Pi with Recalbox — active.** The ARM64 headless core check
-   passes. Verify controls, video, audio and saves in the actual RetroArch
-   frontend; see the [platform check](recalbox.md).
-4. **Steam Deck — basic load and gameplay verified.** The user reports normal
-   play in F-1 Race and Pokémon Yellow. Separately verify controls, display
-   scaling, audio quality and battery-save persistence before closing the
-   platform check.
+3. **Steam Deck — polish active.** Basic load and gameplay are verified by the
+   user's report of normal play in F-1 Race and Pokémon Yellow. Verify controls,
+   display scaling, audio quality, and battery-save persistence before closing
+   this platform check.
+4. **Raspberry Pi with Recalbox — deferred.** The ARM64 headless core check
+   passes. Actual frontend controls, video, audio and saves remain unverified;
+   resume this check after the current player-facing polish pass. See the
+   [platform check](recalbox.md).
 5. **Windows.** Add a Windows build and CI job, then verify Windows RetroArch.
 
 ## Implemented foundation
@@ -227,7 +250,7 @@ For each step, state what externally observable behavior changes, add a focused 
 
 ## Platform support
 
-Use Linux as the primary development and CI platform for now. Raspberry Pi running Recalbox is the preferred next target, followed by Steam Deck and Windows. Build the portable emulator core and libretro adapter first, then add platform-specific build and integration checks. Keep code and build configuration portable where practical; defer dedicated checks for each target until the core and libretro adapter are established.
+Use Linux as the primary development and CI platform for now. The Steam Deck is the current player-facing polish target; Raspberry Pi with Recalbox and Windows are deferred platform checks. Keep the core and build configuration portable where practical, and add target-specific integration work when that platform becomes active.
 
 - **Big2Small battery-save acceptance (2026-10-23):** the user played the locally supplied, freely available [Big2Small ROM](https://mdsteele.itch.io/big2small), kept outside the repository at `../test-roms/homebrew/big2small.gb`. Its header declares 64 KiB ROM, MBC5 + RAM + battery (`$1B`), and 8 KiB RAM. RetroArch created an 8 KiB `big2small.srm`; the user confirmed that game progress remained after reopening the game. This completes the actual RetroArch disk-save/reload check for this MBC5 game. Existing `testLibretroPersistsMbc5BatteryRamAcrossFrontendReload` covers SRAM writes and frontend restoration with a synthetic ROM; retain both forms of evidence. MBC3 RTC disk persistence and broader game compatibility remain separate follow-up work.
 
