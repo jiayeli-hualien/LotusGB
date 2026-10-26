@@ -514,9 +514,50 @@ void testLycZeroHandlerRunsBeforeVblankEnds() {
            "CPU receives LYC=0 while readable LY is zero and STAT is still in VBlank");
 }
 
+void testPpuBusRejectionsDoNotStallCpuOrReplayWrites() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {
+        0x3E, 0x12,             // A = original VRAM value
+        0xEA, 0x00, 0x80,       // [VRAM] = A while LCD is disabled
+        0x3E, 0x34,             // A = original OAM value
+        0xEA, 0x00, 0xFE,       // [OAM] = A while LCD is disabled
+        0x3E, 0x91, 0xE0, 0x40, // Enable LCD and BG
+        // Poll until Mode 3.
+        0xF0, 0x41, 0xE6, 0x03, 0xFE, 0x03, 0x20, 0xF8,
+        0x3E, 0x99,             // A = attempted VRAM replacement
+        0xEA, 0x00, 0x80,       // Blocked Mode 3 write must be discarded
+        0x3E, 0x88,             // A = attempted OAM replacement
+        0xEA, 0x00, 0xFE,       // Blocked Mode 3 write must be discarded
+        0xF0, 0x41, 0x4F,       // C = STAT after both writes
+        // Poll until Mode 0, when both memories are accessible again.
+        0xF0, 0x41, 0xE6, 0x03, 0xFE, 0x00, 0x20, 0xF8,
+        0xFA, 0x00, 0x80, 0x47, // B = VRAM value after Mode 3
+        0xFA, 0x00, 0xFE, 0x57, // D = OAM value after Mode 3
+        0x1E, 0x99,             // E = completion marker
+        0x18, 0xFE,             // Loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[i] = program[i];
+
+    GameBoySystem system = GameBoySystem::createForTest(std::move(rom));
+    for (unsigned cycle = 0;
+         cycle < 500 && system.getCpuRegisters().getRefE() != 0x99; ++cycle)
+        expect(system.stepOneCycle().success,
+               "CPU/PPU bus access program advances successfully");
+
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefE() == 0x99,
+           "CPU continues past VRAM and OAM writes rejected in Mode 3");
+    expect((registers.getRefC() & 0x03) == 3,
+           "rejected writes do not wait until the PPU leaves Mode 3");
+    expect(registers.getRefB() == 0x12 && registers.getRefD() == 0x34,
+           "rejected writes are discarded rather than replayed in Mode 0");
+}
+
 }
 
 int main() {
+    testPpuBusRejectionsDoNotStallCpuOrReplayWrites();
     testLycZeroHandlerRunsBeforeVblankEnds();
     testVblankInterruptWakesHaltAndRunsHandler();
     testDisconnectedSerialWakesHaltAndRunsHandler();

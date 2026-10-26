@@ -66,6 +66,15 @@ bus: CPU reads on the occupied bus see the latest DMA byte, and CPU writes to
 that bus are discarded. Write-induced corruption and PPU/DMA rendering
 contention are not implemented. This is DMG behavior, not a CGB bus model.
 
+The PPU applies its own mode-based VRAM/OAM access restrictions at the bus
+boundary. In LotusGB's DMG model, a denied read returns `$FF` and a denied write
+is discarded immediately; the CPU does not wait for the next accessible mode,
+and the write is not replayed later. Games schedule updates around these windows
+by polling LY/STAT or using their interrupts. A system-level CPU test exercises
+that pattern and checks both the denied transaction and the subsequent
+accessible read. The exact transition-dot behavior remains a separate PPU
+timing question.
+
 `GameBoySystem` owns the hardware components. `AddressBus` routes CPU accesses to mapped regions and borrows those regions; the system keeps them alive. RetroArch callbacks and lifecycle handling stay in the libretro adapter, outside CPU and hardware components. The adapter catches exceptions during `retro_run`, logs the failure, and leaves emulation faulted until reset or content reload so a C++ exception cannot escape the libretro callback.
 
 ## Main code boundaries

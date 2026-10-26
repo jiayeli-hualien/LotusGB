@@ -95,6 +95,13 @@ it maps to an observable game issue. See the recorded
   storage behavior of the GBIT memory adapter. Both `make -B build` and
   `make test` completed without C++ warning diagnostics. Leak checking, repeated
   frontend lifecycle, and target-architecture checks remain.
+- **PPU access-window system regression (2026-10-26):** run CPU code that polls
+  STAT, attempts VRAM and OAM writes during Mode 3, then reads both memories
+  during Mode 0. The CPU continues through the denied writes, does not wait for
+  access to reopen, and sees the original values rather than delayed writes.
+  This protects the software-visible bus contract; it does not claim exact
+  transition-dot accuracy. Existing direct PPU tests still cover the blocked
+  read/write windows.
 - **Sanitizer and lifecycle baseline (2026-10-26):** the full `make test`
   workflow passed with AddressSanitizer, UndefinedBehaviorSanitizer, and
   LeakSanitizer enabled outside the `ptrace`-restricted sandbox. The dynamic
