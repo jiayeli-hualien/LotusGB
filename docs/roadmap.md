@@ -81,9 +81,11 @@ hardware-backed expected result is available. See the recorded
   AArch64 and runs on Recalbox 10.1.1. The included GB Pong ROM completed
   repeated core load/run/unload cycles; neutral and scripted Up final frames
   match Ubuntu x86-64 hashes. Actual RetroArch video, audio, controls, and
-  saves on this device remain to be checked. Recalbox's generator uses the
-  fixed `/usr/lib/libretro/` core path; the test copy in writable share is not
-  registered in EmulationStation. A parallel SSH-launched RetroArch fails at
+  saves on this device remain to be checked. LotusGB is now installed in the
+  writable RetroArch user-core directory with an `.info` file, and RetroArch's
+  user core/info paths point there. This supports manual core loading; it does
+  not register LotusGB in EmulationStation, whose generator uses the fixed
+  `/usr/lib/libretro/` core path. A parallel SSH-launched RetroArch fails at
   KMS while EmulationStation owns the display. See the
   [Recalbox procedure and evidence](recalbox.md).
 

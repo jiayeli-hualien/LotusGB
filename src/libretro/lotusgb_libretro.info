@@ -1,0 +1,28 @@
+# Software information
+display_name = "Nintendo - Game Boy (LotusGB)"
+authors = "LotusGB contributors"
+supported_extensions = "gb"
+corename = "LotusGB"
+license = "MIT"
+permissions = ""
+display_version = "0.1"
+categories = "Emulator"
+
+# Hardware information
+manufacturer = "Nintendo"
+systemname = "Game Boy"
+systemid = "game_boy"
+
+# Libretro features
+database = "Nintendo - Game Boy"
+supports_no_game = "false"
+savestate = "false"
+cheats = "false"
+input_descriptors = "true"
+libretro_saves = "true"
+load_subsystem = "false"
+hw_render = "false"
+needs_fullpath = "false"
+disk_control = "false"
+is_experimental = "true"
+firmware_count = 0

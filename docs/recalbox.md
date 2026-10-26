@@ -28,14 +28,44 @@ script. The audio count does not establish audible quality. The matching
 framebuffer hashes establish cross-architecture reproducibility for these
 particular runs, not hardware accuracy or general game compatibility.
 
-The files currently live under `/recalbox/share/lotusgb-test`; they are not
-registered in EmulationStation. Recalbox's installed config generator resolves
-core names under `/usr/lib/libretro/` and adds the `_libretro.so` suffix. A
-separate RetroArch process launched over SSH loaded the LotusGB core and ROM,
-then failed while switching the KMS display mode because EmulationStation was
-still using the display. This is a display ownership conflict, not a core-load
-failure. Launch through Recalbox's normal frontend path before judging actual
-video or audio; do not start a second RetroArch process beside EmulationStation.
+## Install for manual RetroArch loading
+
+The tested device's root filesystem is read-only, so `/usr/lib/libretro/` is
+not a writable install location. Recalbox's EmulationStation config generator
+also constructs core paths under `/usr/lib/libretro/` and appends
+`_libretro.so`; adding a file to the share does not register it as the GB
+system's selected core.
+
+For manual selection in RetroArch, the core and its metadata are installed in
+the writable user core directory:
+
+```text
+/recalbox/share/system/.config/retroarch/cores/lotusgb_libretro.so
+/recalbox/share/system/.config/retroarch/cores/lotusgb_libretro.info
+```
+
+The device's `retroarchcustom.cfg` now sets both `libretro_directory` and
+`libretro_info_path` to that directory. Its original contents were saved to
+`/recalbox/share/lotusgb-test/retroarchcustom.cfg.before-lotusgb`. In the
+RetroArch menu, load the LotusGB core, then load
+`/recalbox/share/lotusgb-test/gb-pong.gb`. This manual-load setup has not yet
+been checked through the physical display and controller.
+
+To undo the user-core install, restore the saved config and remove the two
+installed files:
+
+```sh
+cp /recalbox/share/lotusgb-test/retroarchcustom.cfg.before-lotusgb \
+   /recalbox/share/system/configs/retroarch/retroarchcustom.cfg
+rm /recalbox/share/system/.config/retroarch/cores/lotusgb_libretro.so \
+   /recalbox/share/system/.config/retroarch/cores/lotusgb_libretro.info
+```
+
+A separate RetroArch process launched over SSH loaded the LotusGB core and
+ROM, then failed while switching the KMS display mode because EmulationStation
+was still using the display. Launch through Recalbox's normal frontend path
+before judging actual video or audio; do not start a second RetroArch process
+beside EmulationStation.
 
 ## Reproduce the headless check
 
@@ -49,14 +79,15 @@ make -C src/libretro build rom-test-runner \
 file build/recalbox-aarch64/lotusgb_libretro.so
 ```
 
-Copy the two ARM64 binaries and the included GB Pong ROM to a separate test
-directory in Recalbox's writable share. The share is exFAT on the tested
-device and mounts transferred files without execute permission. Copy the
-runner and core into executable `/tmp` before using them:
+Copy the ARM64 core, its `.info` file, runner and included GB Pong ROM to a
+separate test directory in Recalbox's writable share. The share is exFAT on
+the tested device and mounts transferred files without execute permission.
+Copy the runner and core into executable `/tmp` before using them:
 
 ```sh
 ssh root@recalbox 'mkdir -p /recalbox/share/lotusgb-test'
 scp build/recalbox-aarch64/lotusgb_libretro.so \
+    build/recalbox-aarch64/lotusgb_libretro.info \
     build/recalbox-aarch64/libretro_rom_runner \
     tests/roms/gb-pong/gb-pong.gb \
     root@recalbox:/recalbox/share/lotusgb-test/
@@ -77,7 +108,7 @@ ssh root@recalbox '
 
 `/tmp` is cleared by a device reboot. The test directory under
 `/recalbox/share` remains until removed. This procedure does not register a
-core in EmulationStation or modify the system's installed cores.
+core in EmulationStation or modify the system's installed core files.
 
 ## Next acceptance step
 

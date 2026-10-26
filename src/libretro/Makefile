@@ -5,6 +5,7 @@ build_dir ?= build
 libretro_header := include/libretro.h
 libretro_headers := $(wildcard include/*.hpp)
 generated_tables := ../lib/include/generated_decode_tables.hpp
+core_info := lotusgb_libretro.info
 csv_sources := $(wildcard ../lib/include/*.csv)
 core_headers := $(wildcard ../lib/include/*.hpp)
 core_sources := $(filter-out ../lib/GBITCPU.cpp ../lib/lotusGBIT.cpp \
@@ -15,7 +16,7 @@ asset_dir := ../../tests/roms
 
 all: build
 
-build: $(build_dir)/lotusgb_libretro.so
+build: $(build_dir)/lotusgb_libretro.so $(build_dir)/lotusgb_libretro.info
 
 test: $(build_dir)/libretro_core_test
 	$(build_dir)/libretro_core_test
@@ -28,6 +29,9 @@ $(generated_tables): $(csv_sources) ../../tools/generate_decode_tables.py
 $(build_dir)/lotusgb_libretro.so: libretro_core.cpp $(core_sources) \
 		$(core_headers) $(libretro_header) $(libretro_headers) $(generated_tables) | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ libretro_core.cpp $(core_sources) -shared
+
+$(build_dir)/lotusgb_libretro.info: $(core_info) | $(build_dir)
+	cp $< $@
 
 $(build_dir)/libretro_core_test: libretro_core_test.cpp libretro_core.cpp \
 		$(core_sources) $(core_headers) $(libretro_header) $(libretro_headers) $(generated_tables) | $(build_dir)

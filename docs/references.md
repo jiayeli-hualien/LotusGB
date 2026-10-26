@@ -77,6 +77,8 @@ hardware specification.
 - [Recalbox for Raspberry Pi 4 / 400 (64 bits)](https://www.recalbox.com/download/rpi/rpi4_64) — official Recalbox image and installation target for Pi 4.
 - [Recalbox emulator compatibility](https://wiki.recalbox.com/en/hardware-compatibility/emulators-compatibility) and [Recalbox glossary](https://wiki-next.recalbox.com/en/basic-usage/glossary) — supported emulator/core matrix and the relationship between RetroArch, libretro and Recalbox.
 - [Installing cores in RetroArch](https://docs.libretro.com/guides/download-cores/) — manual `.so` installation, architecture-specific builds and core info files.
+- [RetroArch directory configuration](https://docs.libretro.com/guides/change-directories/) — `libretro_directory` and writable core-directory setup.
+- [Recalbox libretro config generator](https://github.com/recalbox/recalbox-configgen/blob/master/configgen/generators/libretro/libretroGenerator.py) — Recalbox resolves the selected core name under its configured core directory when launching content.
 - [RetroArch on Steam](https://www.libretro.com/index.php/retroarch-finally-released-on-steam/) — Steam/SteamOS core installation constraints and manual core placement.
 - [Steam Deck technical specifications](https://www.steamdeck.com/en/tech) — SteamOS and device hardware reference.
 
