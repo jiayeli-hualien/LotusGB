@@ -77,7 +77,11 @@ count differed at 1,999 pixels; inspection showed World 0-1 with the scripted
 run's timer at 386 versus 400 without input. This confirms a repeatable
 startup/input path and one matching sampled frame across these two cores. It
 does not prove complete game compatibility, hardware accuracy, or audio
-equivalence. The ROM remains outside the repository. Reports and images are in
+equivalence. No boot ROM was supplied: LotusGB starts from its DMG post-boot
+profile, while SameBoy logged that `./dmg_boot.bin` could not be opened. The
+matching frame applies to this no-boot startup pairing; it does not validate
+boot-ROM execution or prove the two cores begin from identical internal state.
+The ROM remains outside the repository. Reports and images are in
 `build/test-roms/core-comparison/super-mario-land/`.
 
 ## General ROM runner interface
