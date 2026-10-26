@@ -1,0 +1,5 @@
+# Zero-based frame intervals; end frame is exclusive.
+600 605 START
+700 820 RIGHT
+700 820 B
+760 780 A

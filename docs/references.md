@@ -65,6 +65,20 @@ hardware specification.
 - [Canyon Racer](https://bbbbbr.itch.io/canyon-racer) — homebrew with mid-scanline SCY changes for parallax effects.
 - [Game Boy Noise Test](https://github.com/not-chciken/gb-noise-test) — interactive CH4 settings and presets with DMG-01 reference recordings (Apache-2.0).
 
+## Potential future systems (exploratory)
+
+- [Pan Docs: CGB registers](https://gbdev.io/pandocs/CGB_Registers.html) — Game Boy Color-only register behavior, including speed switching, banked VRAM/WRAM, HDMA and color palettes.
+- [GBATEK](https://mgba-emu.github.io/gbatek/) — detailed GBA hardware reference, including its ARM7TDMI execution mode and backwards-compatible CGB mode for Game Boy cartridges.
+- [NESdev: 2A03](https://www.nesdev.org/wiki/2A03), [PPU](https://www.nesdev.org/wiki/NES_PPU), and [CPU/PPU catch-up](https://www.nesdev.org/wiki/Catch-up) — NES processor/audio, video and synchronization behavior for a separate NES core.
+
+## Target platforms and frontend deployment
+
+- [Recalbox for Raspberry Pi 4 / 400 (64 bits)](https://www.recalbox.com/download/rpi/rpi4_64) — official Recalbox image and installation target for Pi 4.
+- [Recalbox emulator compatibility](https://wiki.recalbox.com/en/hardware-compatibility/emulators-compatibility) and [Recalbox glossary](https://wiki-next.recalbox.com/en/basic-usage/glossary) — supported emulator/core matrix and the relationship between RetroArch, libretro and Recalbox.
+- [Installing cores in RetroArch](https://docs.libretro.com/guides/download-cores/) — manual `.so` installation, architecture-specific builds and core info files.
+- [RetroArch on Steam](https://www.libretro.com/index.php/retroarch-finally-released-on-steam/) — Steam/SteamOS core installation constraints and manual core placement.
+- [Steam Deck technical specifications](https://www.steamdeck.com/en/tech) — SteamOS and device hardware reference.
+
 ## Emulator development and build references
 
 - [GBIT](https://github.com/jiayeli-hualien/gbit) — CPU instruction comparison used by this project.

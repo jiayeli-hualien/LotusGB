@@ -45,6 +45,41 @@ scene. Callback counts do not prove audible sound quality, responsive gameplay,
 puzzle completion, or save persistence. The user's separate RetroArch
 save/reload check remains the evidence for actual disk persistence.
 
+## Local cross-core comparison
+
+To replay one fixed input sequence through LotusGB and another libretro core,
+use `tools/compare_libretro_cores.py`. The Super Mario Land input profile is
+tracked, but the game ROM and comparison core stay local:
+
+```sh
+python3 tools/compare_libretro_cores.py \
+  --rom "/absolute/path/to/Super Mario Land.gb" \
+  --core-a build/lotusgb_libretro.so \
+  --core-b /absolute/path/to/sameboy_libretro.so \
+  --frames 1200 \
+  --inputs tests/input_scripts/super-mario-land-smoke.txt \
+  --output-dir build/test-roms/core-comparison/super-mario-land \
+  --require-identical
+```
+
+The script records ROM, core, runner and input hashes, both final frame hashes,
+runner logs and a comparison image. `--require-identical` makes a pixel
+mismatch return failure; omit it when collecting a diagnostic comparison.
+This is a local cross-core check, not a hardware-accuracy assertion or CI gate.
+
+### Super Mario Land scripted run (2026-10-26)
+
+The local user-supplied ROM (`470d6c45c9bcf7f0397d00c1ae6de727c63dd471049c8eedbefdc540ceea80b4`)
+ran for 1,200 frames with the tracked input profile. LotusGB and the installed
+SameBoy core produced the same final RGB frame (`cc05c13583db4a9fb313e862237c0d5ef215cd740934db681fd0a9814626bff7`,
+0 of 23,040 pixels different). A neutral-input LotusGB run at the same frame
+count differed at 1,999 pixels; inspection showed World 0-1 with the scripted
+run's timer at 386 versus 400 without input. This confirms a repeatable
+startup/input path and one matching sampled frame across these two cores. It
+does not prove complete game compatibility, hardware accuracy, or audio
+equivalence. The ROM remains outside the repository. Reports and images are in
+`build/test-roms/core-comparison/super-mario-land/`.
+
 ## General ROM runner interface
 
 ```sh

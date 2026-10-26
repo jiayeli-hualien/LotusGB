@@ -46,9 +46,16 @@ hardware-backed expected result is available. See the recorded
 
 - Continue validating common DMG games and PPU effects with the available
   homebrew profiles; keep commercial ROMs and saves outside the repository.
+  The local Super Mario Land script reached World 0-1 and matched SameBoy's
+  sampled frame; this is comparison evidence, not hardware validation. See the
+  [recorded run](homebrew-check.md#super-mario-land-scripted-run-2026-10-26).
 
 ### Deferred goals
 
+- **Long-term direction:** explore emulation of Nintendo systems beyond Game Boy.
+  Keep LotusGB focused on its current Game Boy/DMG compatibility goal first.
+  Revisit CGB, NES and GBA as later scope decisions; avoid cross-system
+  abstractions until there is a concrete second-core target.
 - Boot-ROM execution and CGB support remain outside the current DMG target.
 - Save-state, rewind and replay remain deferred; discuss the desired player
   workflow before designing the state snapshot mechanism.
@@ -118,6 +125,28 @@ These are discussion prompts, not approved implementation tasks. Discuss them on
 For each step, state what externally observable behavior changes, add a focused regression test at the narrowest useful boundary, and run the relevant unit or integration checks. Use the [DMG implementation and validation matrix](dmg-validation.md) to distinguish implemented behavior from independently validated behavior. Use GBIT as one CPU comparison source; investigate disagreements instead of copying behavior without hardware evidence.
 
 ## Validation lessons
+
+### Repeated traps to avoid
+
+- Define the observable behavior and acceptance result before changing timing
+  or rendering. Change one hypothesis at a time and rerun the cases it could
+  affect; a local pass that breaks an established boundary is not a fix.
+- Treat reference-emulator agreement as a diagnostic. Exact PPU claims need a
+  target-model hardware result or a test with a hardware-backed expected
+  result. A pixel-difference count by itself is not an acceptance condition.
+- Freeze ROM hash, model, startup path, core hashes, frame count and input
+  schedule before comparing captures. Timer-seeded games can repeat exactly
+  within one core while producing different sequences across cores. Use
+  dedicated timer tests to judge timer behavior; add boot execution only when
+  boot behavior itself is the target.
+- Match the test to the question: interface tests for one component's contract,
+  targeted ROMs for hardware edge cases, and games for integration. A mock that
+  returns the same value for every address can hide an incorrect bus address.
+- When audio differs, preserve and inspect the same PCM capture through another
+  playback path before changing the emulated APU. Keep private ROMs and generated
+  captures out of version control; record scripts, hashes and results instead.
+
+### Past issues that shaped the checklist
 
 - GBIT's isolated CPU mock returns `$AA` for every read outside the injected instruction bytes and records writes, not read addresses. It can verify instruction results while missing an incorrect read address: with `C = $30`, `LDH A,(C)` reading `$0030` instead of `$FF30` sees the same mock value. The Blargg CH3 test exposed this bug. Whole-game testing also exposed interrupt entry between the two bytes of `CB 33`; targeted tests should cover bus addresses and instruction boundaries that an isolated opcode test cannot observe.
 - **PPU object fetch stalls:** Pan Docs describes a 6–11-dot Mode 3 penalty for each selected object drawn on a scanline, with the first object in a background/window tile paying a position-dependent wait and later objects in that tile paying the flat six dots. The PPU now stalls pixel output at object positions and unit tests check those delays and Mode 3 length. Mid-mode-3 tile-fetch/register timing still needs comparison against a DMG PPU ROM suite.
