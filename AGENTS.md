@@ -28,6 +28,12 @@ From the repository root:
 
 GitHub Actions builds the pinned `jiayeli-hualien/gbit` revision, builds LotusGB, runs `make test`, and then runs the GBIT instruction tests. Keep local integration instructions consistent with `.github/workflows/ci.yml`.
 
+## ROM test policy
+
+- Tests committed to the repository or run in GitHub CI must use ROMs with clear terms that allow the intended testing and redistribution. Check the ROM binary's terms separately from its source code, tools, and assets.
+- Use clearly licensed homebrew ROMs for reproducible game-level repository and CI checks.
+- Validate commercial-game playability privately and manually. Keep commercial ROMs, saves, screenshots, audio captures, and other game-derived artifacts out of the repository and CI. Public documentation may record concise results without including those files or captures.
+
 ## Error handling
 
 - Do not silently swallow unexpected errors or report success after an operation fails. Propagate the failure, report it through the relevant interface/logging boundary, or make the test fail.
