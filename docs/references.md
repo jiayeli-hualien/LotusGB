@@ -33,6 +33,7 @@ hardware specification.
 - [Pan Docs: Rendering](https://gbdev.io/pandocs/Rendering.html) — PPU modes, pixel output, Mode 3 penalties, and CPU access being denied without stalling while the PPU owns video memory.
 - [Pan Docs: Pixel FIFO](https://gbdev.io/pandocs/pixel_fifo.html) — BG/OBJ FIFOs and sprite-fetch interaction; detailed timing still needs independent validation.
 - [Pan Docs: Scrolling](https://gbdev.io/pandocs/Scrolling.html) — SCX/SCY sampling behavior.
+- [Canyon Racer developer notes](https://github.com/bbbbbr/canyon-racer#about-the-effects) — describes the game's per-scanline, mid-scanline SCY parallax and horizontal sine-wave scrolling. The author also notes that 1–2-cycle timing variation can produce artifacts the game does not compensate for; use it as a game-effect target, not a pixel-exact hardware oracle.
 - [Nitty Gritty Gameboy Cycle Timing](http://blog.kevtris.org/blogfiles/Nitty%20Gritty%20Gameboy%20VRAM%20Timing.txt) — Kevin Horton's preliminary logic-analyzer notes on video memory access timing.
 - [The Comprehensive Game Boy PPU Documentation](https://github.com/mattcurrie/mealybug-tearoom-tests/blob/master/the-comprehensive-game-boy-ppu-documentation.md) — Matt Currie's notes based on test-ROM results and emulator implementation; useful for raster-register behavior, but not an independent hardware measurement.
 - [GBEDG PPU guide](https://github.com/Ashiepaws/GBEDG/blob/master/ppu/index.md) — secondary overview of the DMG PPU pipeline.
