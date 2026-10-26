@@ -63,7 +63,7 @@ hardware specification.
 - [GB Pong Clone](https://github.com/AlexMGiroux/gb-pong-clone) — 32 KiB ROM-only homebrew used for core input acceptance (MIT).
 - [Big2Small](https://mdsteele.itch.io/big2small) — freely available MBC5 game used for local gameplay and save-persistence checks.
 - [Tobu Tobu Girl](https://tangramgames.itch.io/tobutobugirl) — freely downloadable DMG homebrew; source is MIT and game assets are CC BY 4.0. Its [source and build settings](https://github.com/SimonLarsen/tobutobugirl) declare MBC1 + RAM + battery.
-- [Canyon Racer](https://bbbbbr.itch.io/canyon-racer) — homebrew with mid-scanline SCY changes for parallax effects.
+- [Canyon Racer](https://bbbbbr.itch.io/canyon-racer) — homebrew with mid-scanline SCY changes for parallax; the [developer's effect and timing notes](https://github.com/bbbbbr/canyon-racer#about-the-effects) describe the intended vertical parallax and X-wave distortion.
 - [Game Boy Noise Test](https://github.com/not-chciken/gb-noise-test) — interactive CH4 settings and presets with DMG-01 reference recordings (Apache-2.0).
 
 ## Potential future systems (exploratory)
@@ -83,6 +83,7 @@ hardware specification.
 - [RetroArch on Steam](https://www.libretro.com/index.php/retroarch-finally-released-on-steam/) — Steam/SteamOS core installation constraints and manual core placement.
 - [RetroArch CLI guide](https://docs.libretro.com/guides/cli-intro/) — launch RetroArch through Steam with an explicit core and ROM path.
 - [Optimal VSync Performance](https://docs.libretro.com/guides/optimal-vsync/) — RetroArch VSync, swap interval, refresh-rate and frame-pacing guidance.
+- [SameBoy libretro core documentation](https://docs.libretro.com/library/sameboy/) — documented core timing, including its 59.7275 FPS report.
 - [Steam Deck Desktop Mode](https://help.steampowered.com/en/faqs/view/69E3-14AF-9764-4C28) — Valve's guide to running desktop applications on SteamOS.
 - [Steam Deck technical specifications](https://www.steamdeck.com/en/tech) — SteamOS and device hardware reference.
 

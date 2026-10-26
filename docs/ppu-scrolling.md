@@ -559,12 +559,14 @@ this cache clock is not a claim of a full hardware fetcher/FIFO implementation.
 
 ### Gameplay target
 
-[Canyon Racer](https://bbbbbr.itch.io/canyon-racer) is a candidate for later
-interactive validation. Its [source description](https://github.com/bbbbbr/canyon-racer#about-the-effects)
-explicitly uses mid-scanline SCY writes for vertical parallax, alongside X
-wave scrolling. Use the official Game Boy MBC5 build, keep its mixed-license
-ROM/assets external, and record the selected release/hash when supplied.
-The first gameplay check is recorded in [the homebrew procedure](homebrew-check.md#canyon-racer-raster-effect-gameplay-check); exact SCY effect accuracy remains unverified.
+[Canyon Racer](https://bbbbbr.itch.io/canyon-racer) is an active game-level PPU
+target. Its [developer notes](https://github.com/bbbbbr/canyon-racer#about-the-effects)
+describe mid-scanline SCY writes for vertical parallax and X-wave scrolling,
+including the intended shift across horizontal regions. The current fixed-
+input run reaches gameplay and shows the effect; see the
+[recorded check](homebrew-check.md#author-described-raster-effect-check).
+Keep the mixed-license ROM/assets external. Use this target to find visible
+compatibility gaps without claiming exact hardware timing from the screenshot.
 
 ### Measured result after coarse SCX sampling
 
@@ -744,12 +746,14 @@ The current work targets advanced visible raster effects beyond the selected
 games already checked. Common-game smoke success does not establish broad
 compatibility, and remaining synthetic pixel differences are diagnostic
 evidence rather than a requirement to implement every obscure PPU behavior.
-Use Canyon Racer's visible SCY parallax as the next gameplay check, retaining
-Mealybug images to explain deviations. The official ROM is distributed on
-the author's itch.io page; the GitHub release currently has no ROM asset.
-The official 0.7.7 standard MBC5 ROM is now supplied and has completed a
-scripted gameplay check. See the homebrew procedure for its hash, input
-sequence and limits; no complete compatibility result is claimed.
+Use Canyon Racer's author-described SCY parallax and X-wave distortion as the
+game-level visual target. The official 0.7.7 standard MBC5 ROM has completed a
+scripted gameplay check; its current capture visibly contains the effect, but
+the runner checks callback delivery and still requires manual review. Retain
+Mealybug images to explain differences, and use a physical-DMG result only when
+making an exact hardware-timing claim. See the [homebrew procedure](homebrew-check.md#canyon-racer-raster-effect-gameplay-check)
+for the ROM hash, input sequence and limits; complete game compatibility is
+not claimed.
 
 ## First Canyon Racer gameplay observation
 

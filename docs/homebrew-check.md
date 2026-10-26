@@ -254,6 +254,26 @@ The 407-pixel difference recorded in the validation matrix was between
 separate historical captures; those records do not retain enough detail to
 attribute that difference to one cause.
 
+### Author-described raster-effect check (2026-10-26)
+
+The [developer's notes](https://github.com/bbbbbr/canyon-racer#about-the-effects)
+describe vertical parallax from per-scanline, mid-scanline SCY updates, with
+different horizontal regions using different vertical offsets; an X-axis sine
+wave also distorts the canyon. The author notes that the effect is sensitive
+to instruction timing and can show artifacts, so an exact cross-emulator frame
+is not a useful acceptance target.
+
+The current core was rerun with `make test-homebrew HOMEBREW_GAME=canyon-racer`
+using the pinned 0.7.7 ROM and fixed input profile. It delivered 3,600 of 3,600
+video frames and 2,893,139 audio frames. The final frame hash remains
+`8b2cba922ae41dcb3e9cfb107b37cbb0dc870e687acc1da0226c2735d73cd313` with core
+hash `b24d849c4a8b64d995c3ec860f2d37602d0ce04bca80190c6c43ccb9fbbc30dd`.
+Visual inspection of `build/test-roms/canyon-racer/preview.png` shows a
+playable canyon scene with the layered scrolling effect described by the
+author. This is a repeatable game-level compatibility observation, not a
+hardware-timing or pixel-accuracy result; the local runner still requires
+manual visual inspection.
+
 A temporary build of `c13d0f0` (before separate SCY bitplane sampling) was run
 with the same startup/input sequence. At frame 1800 it differed from the
 current frame by 3,463 pixels, mainly canyon texture/row positions. Both

@@ -29,16 +29,20 @@ Mode 3 has separate 16-pixel BG and OBJ FIFOs and explicit BG address/data,
 push and tile-advance phases. OBJ event timing and shared BG/OBJ bus
 arbitration remain coarse. The BG catch-up rule follows the Pan Docs wording;
 SameBoy uses a different fetcher-state boundary. Keep the public regression as
-a guard for that documented hypothesis, not as hardware verification. Before
-changing the boundary or event durations, seek an independent hardware-backed
-measurement or a ROM with a hardware-backed expected result. Keep the remaining
-Mode 3 image discrepancy as a historical investigation, not an acceptance
-item. The detailed implementation record, captures and bounded experiments
-are in the [PPU guide](ppu-scrolling.md).
+a guard for that documented hypothesis, not as hardware verification. Keep
+the remaining Mode 3 image discrepancy as a historical diagnostic, not an
+acceptance target by itself. The detailed implementation record, captures
+and bounded experiments are in the [PPU guide](ppu-scrolling.md).
 
-Keep the production baseline and pause further changes to the investigated
-SCX raster boundary until a model-matched hardware result or an independent
-hardware-backed expected result is available. See the recorded
+Continue PPU work when a game exposes a visible behavior gap and its source,
+documentation, or repeatable output gives us a concrete target. Canyon Racer's
+[author documents](https://github.com/bbbbbr/canyon-racer#about-the-effects)
+its per-scanline SCY updates and vertical parallax effect, so that game can
+guide compatibility work without a physical-DMG screenshot.
+Require target-model hardware evidence before claiming an exact hardware
+timing result; do not make that claim a prerequisite for improving a
+documented game effect. Keep the 84-pixel Mealybug difference optional unless
+it maps to an observable game issue. See the recorded
 [boundary analysis](ppu-scrolling.md#investigation-by-boundary-2026-10-26) and
 [rejected timing candidates](ppu-scrolling.md#normalized-cpuppu-event-comparison-2026-10-26).
 
@@ -61,8 +65,10 @@ hardware-backed expected result is available. See the recorded
   evidence. See the
   [canonical report](dmg-validation.md#libretro-input-phase-and-vblank-response-2026-10-26).
 - **Player-facing polish (active):** the user reports normal play in F-1 Race
-  and Pokémon Yellow on Steam Deck. Follow up on controller mapping, display
-  scaling, audio quality, and battery-save persistence there. Keep the current
+  and Pokémon Yellow on Steam Deck, with battery save read/write currently
+  reported to work normally and display scaling working as expected. The user
+  considers the reported tearing minor, so defer diagnosis unless it worsens;
+  revisit audio quality only if an issue is reported. Keep the current
   completed-frame software callback path. Apparent screen tearing has now been
   reported on Steam Deck with LotusGB; the user reports SameBoy does not tear
   there. This makes a global display-sync problem less likely, but per-core
@@ -75,9 +81,13 @@ hardware-backed expected result is available. See the recorded
   the same content and scene before changing the core. The core advances one
   emulated frame per `retro_run()` and submits one frame through the libretro
   callback. The API accepts a frame pointer, dimensions, and pitch; it does
-  not require the core to alternate buffers. Add internal buffering only if
-  diagnosis identifies a core-side buffer lifetime/synchronization issue or a
-  measured performance need. See the
+  not require the core to alternate buffers. Code review confirms the core
+  submits a stable 160×144 buffer with the matching byte pitch after each
+  completed emulated frame. Its advertised 59.7275 FPS matches SameBoy's
+  documented rate, so neither an obvious callback-buffer lifetime issue nor a
+  nominal frame-rate mismatch is currently supported by the evidence. Add
+  internal buffering only if diagnosis identifies a core-side buffer
+  lifetime/synchronization issue or a measured performance need. See the
   [RetroArch VSync guide](references.md#retroarch-and-platform-guides).
 - **Compiler-warning pass (2026-10-26):** enabled `-Wextra` for the core
   library. Left unused callback parameter names out of implementation
@@ -143,12 +153,16 @@ hardware-backed expected result is available. See the recorded
    redistributable input-acceptance ROM; see the validation matrix.
 2. **Common DMG game compatibility — active.** Verify title-to-gameplay
    progress, visible input response, stable video/audio, and battery-save
-   persistence where applicable. Use targeted ROMs and hardware evidence for
-   specific behavior; SameBoy and mGBA are comparison points, not authorities.
+   persistence where applicable. Use game-source descriptions and repeatable
+   ROM output to define compatibility targets; use hardware evidence when
+   making exact silicon-behavior claims. SameBoy and mGBA are comparison
+   points, not authorities.
 3. **Steam Deck — polish active.** Basic load and gameplay are verified by the
-   user's report of normal play in F-1 Race and Pokémon Yellow. Verify controls,
-   display scaling, audio quality, and battery-save persistence before closing
-   this platform check.
+   user's report of normal play in F-1 Race and Pokémon Yellow; battery-save
+   read/write and display scaling have not caused problems in the user's use
+   so far. The reported tearing is minor and does not block this check; defer
+   diagnosis unless it worsens. Revisit save persistence or audio quality only
+   if a failure is reported.
 4. **Raspberry Pi with Recalbox — deferred.** The ARM64 headless core check
    passes. Actual frontend controls, video, audio and saves remain unverified;
    resume this check after the current player-facing polish pass. See the
@@ -206,12 +220,17 @@ For each step, state what externally observable behavior changes, add a focused 
 
 ### Repeated traps to avoid
 
+- For a documented game effect, use the ROM and the author's description to
+  define the compatibility result. Record remaining hardware uncertainty
+  without blocking that work; require hardware evidence when claiming exact
+  silicon timing.
 - Define the observable behavior and acceptance result before changing timing
   or rendering. Change one hypothesis at a time and rerun the cases it could
   affect; a local pass that breaks an established boundary is not a fix.
-- Treat reference-emulator agreement as a diagnostic. Exact PPU claims need a
-  target-model hardware result or a test with a hardware-backed expected
-  result. A pixel-difference count by itself is not an acceptance condition.
+- Treat reference-emulator agreement as a diagnostic. Exact hardware-timing
+  claims need a target-model hardware result or a test with a hardware-backed
+  expected result. A pixel-difference count by itself is not an acceptance
+  condition.
 - Freeze ROM hash, model, startup path, core hashes, frame count and input
   schedule before comparing captures. Timer-seeded games can repeat exactly
   within one core while producing different sequences across cores. Use
