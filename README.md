@@ -62,12 +62,14 @@ runner stops on the first instruction mismatch; a successful full run reports
 
 ## What comes next
 
-The active work is improving DMG PPU visual and raster-effect accuracy through
-small, observable changes. Selected Mooneye timing cases pass, and the
-Mooneye `sprite_priority` DMG reference image matches exactly; selected
-Mealybug timing images still have known differences. These checks do not
-establish exact hardware behavior. See the
-[current PPU status](docs/ppu-scrolling.md#current-status).
+The active goal is to improve compatibility with a small set of common DMG
+games. Use the existing homebrew profiles and user-observed game behavior to
+find concrete gaps, then add a focused regression for each confirmed issue.
+The investigated SCX raster boundary is paused until there is a model-matched
+hardware result or an independently hardware-backed expectation. Selected
+Mooneye timing cases and DMG Acid2 validate specific behaviors; they do not
+establish complete hardware accuracy. See the
+[roadmap](docs/roadmap.md) and [DMG validation matrix](docs/dmg-validation.md).
 
 The platform route is Ubuntu RetroArch first, then Raspberry Pi with Recalbox,
 Steam Deck, and Windows. The roadmap defines the acceptance goals and keeps
