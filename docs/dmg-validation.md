@@ -62,7 +62,7 @@ mid-Mode 3 race. See [Pan Docs rendering](https://gbdev.io/pandocs/Rendering.htm
 | Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp` verifies TAC frequencies and confirms TIMA overflow requests Timer IF on reload; `game_boy_system_test.cpp` checks that the timer IRQ wakes HALT and reaches its handler; `cpu_instruction_test.cpp` covers CPU interrupt entry. | All 13 Mooneye `acceptance/timer` ROMs pass, including TIMA/TMA writes during reload. The PPU group includes interrupt-entry and HALT timing ROMs, and the interrupt group adds ten EI/DI, RETI, HALT and IF/IE checks. This does not cover every interrupt race. |
 | Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; 27 Mooneye standard MBC1/MBC2/MBC5 cases pass. Libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23. RetroArch `.rtc` disk write/reload was verified on 2026-10-26 using a temporary MBC3 timer-only probe: clean exit wrote the 24-byte RTC block, and a second RetroArch process restored and advanced it. These verify one cartridge/frontend path each, not every mapper or game; RTC evidence and limits are recorded under `build/test-roms/mbc3-rtc-persistence/`. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
 | Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. | `make test`: `dmg_serial_test.cpp` checks register and bit/completion boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. | No real peer, external clock input, accessories or CGB fast clock. The model-specific `boot_sclk_align-dmgABCmgb` ROM still fails; exact post-boot clock phase and SC-write edge races remain unresolved. Component/system tests do not establish full hardware serial conformance. |
-| Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. Verify controls interactively on each target platform as platform work begins. |
+| Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. The libretro input/callback phase can shift VBlank-synchronized visible response by one callback; this is demonstrated with a synthetic ROM, not hardware-validated. See the [input-phase report](#libretro-input-phase-and-vblank-response-2026-10-26). |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. BG and OBJ output use separate 16-pixel FIFOs; BG fetches have named tile-map/bitplane phases. OAM descriptors and event timing are prepared at scanline entry; the OBJ low/high tile planes are read at separate boundaries during each coarse event, and the decoded row is then overlaid into the OBJ FIFO. During timed OBJ fetch, BG catch-up stops at Push or when the BG FIFO becomes non-empty; BG rows push only into an empty FIFO. LCDC.0/LCDC.1 and palette effects are sampled at pixel output; background-map select is sampled at each tile-map fetch. Background fetch and per-line object descriptors are retained while their display bits are clear, so a later re-enable can affect upcoming pixels. OAM selection uses the first ten Y-matching entries even when their X positions are off-screen. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; focused PPU tests cover mid-line LCDC.0/LCDC.1 disable/re-enable, enabling after scanline preparation, unchanged Mode 3 duration with OBJ disabled, left-clipped OBJ output, off-screen-object selection limits, map changes, and `testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels`; `dmg-acid2` exact framebuffer regression passes. Optional `make test-gbmicrotest-ppu-latch` captures four model-scoped visual probes; see [GBMicrotest diagnostics](#gbmicrotest-ppu-latch-diagnostics). | Exact Mode 3 raster behavior at mid-scanline register-write boundaries remains outside acceptance because there is no matching DMG hardware result for those image comparisons. Canyon Racer produced identical final frames in two same-core, same-input 3,600-frame runs (0 differing pixels). An older 407-pixel difference was between historical captures whose metadata does not identify its cause; there is no expected hardware image. SameBoy and mGBA repeat under the same input script and match LotusGB's final SRAM. After shade normalization, their frames differ from LotusGB in 4,006 and 5,426 pixels, respectively; see the [three-core diagnostic](homebrew-check.md#three-core-raster-diagnostic-2026-10-25). The cross-core results are not hardware oracles. Exact FIFO push cadence, OBJ bus fetch/arbitration, and hardware output remain unverified; F-1 Race remains a later scrolling target. |
 | PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests, final-line early LY reset and delayed LYC comparison, and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. BG and OBJ pixels pass through separate 16-pixel FIFOs; the first modeled OBJ fetch overlaps one dot with the initial BG fetch phase. During timed OBJ fetch, BG catch-up stops at Push or when the BG FIFO becomes non-empty; a row pushes only when the BG FIFO is empty. | `make test`: `dmg_ppu_test.cpp` checks the VBlank IF request and selected mode boundaries, access restrictions, SCX/window/object penalties, left-clipped OBJ output, and frame behavior. `game_boy_system_test.cpp` verifies a PPU-generated VBlank request wakes HALT and reaches the CPU handler. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. The optional expanded 14-case PPU set passes 14/14. | The normal startup profile skips boot-ROM execution, so the Nintendo-logo animation is not currently a boot test; the logo's down-scroll also polls LY rather than relying on the VBlank interrupt. The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Normal-line readable LY changes at dot 452; LCD startup retains its separately verified dot-454 edge. SCX high bits are sampled per background tile on a simplified fetch clock; SCY is sampled separately at tile-map/bitplane stages. The catch-up predicate follows Pan Docs; SameBoy's fetcher-state loop uses a different boundary, and the new unit regression only protects the Pan Docs hypothesis. Neither it nor the selected ROMs establish which predicate matches hardware. Exact BG push cadence and OBJ bus-fetch/FIFO arbitration remain incomplete. The one-dot first-fetch overlap is a model supported by the passing sprite-timing ROM, not independent hardware measurement; Pan Docs describes the X=0 penalty as 11 dots. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
 | OAM DMA | FF46 schedules 160 bytes at one byte per M-cycle after startup, supports delayed restart, and arbitrates CPU OAM/source-bus access; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. | `make test`: `dmg_oam_dma_test.cpp`; six Mooneye OAM DMA cases pass: `basic`, `reg_read`, `sources-GS`, `oam_dma_start`, `oam_dma_timing`, `oam_dma_restart`. | Basic read contention is modeled; exact write-induced bus corruption, PPU/DMA rendering contention, and sub-M-cycle bus effects remain unmodeled. |
@@ -73,6 +73,80 @@ The Mooneye `manual-only/sprite_priority` DMG frame also matches its v7.0
 reference image exactly (0/23,040 pixels differ). This verifies sprite-priority
 composition for that scene, not per-dot OBJ fetch timing; see the
 [reproducible visual check](ppu-scrolling.md#mooneye-manual-sprite-priority-image-2026-10-25).
+
+## Libretro input phase and VBlank response (2026-10-26)
+
+**Conclusion:** LotusGB and SameBoy apply a scripted frontend input at different
+PPU phases. A controlled VBlank-only ROM showed that this can move the visible
+response by one video callback. This is a real adapter timing difference, not a
+measured 1 ms wait in LotusGB and not evidence that either phase matches real
+hardware. Keep the current frame stepping until a target-game or
+hardware-backed result supports a change.
+
+### Hypothesis and setup
+
+LotusGB's `retro_run()` polls input, advances `GameBoySystem::stepFrame()`, then
+renders ([adapter](../src/libretro/libretro_core.cpp#L337),
+[frame step](../src/lib/game_boy_system.cpp#L79)). The default post-boot PPU
+starts at `LY=0`, and `stepFrame()` advances 70,224 T-cycles, one nominal DMG
+frame. SameBoy 1.0.4 polls input before running to its next VBlank boundary
+([libretro adapter](https://github.com/LIJI32/SameBoy/blob/v1.0.4/libretro/libretro.c#L1351-L1428),
+[frame loop](https://github.com/LIJI32/SameBoy/blob/v1.0.4/Core/gb.c#L1164-L1185)).
+Libretro requires input polling at least once per `retro_run()` and one video
+callback per run, but does not prescribe the PPU phase for either callback
+([core development guide](https://docs.libretro.com/development/cores/developing-cores/)).
+
+The hypothesis was that these callback boundaries differ by the final ten
+VBlank scanlines: 4,560 dots, or about 1.087 ms at the nominal DMG clock. A
+game that only reads input in its VBlank handler could therefore act on the
+same frontend input in different callbacks. Real hardware exposes the
+currently selected active-low button lines through JOYP; its interrupt is
+triggered by a selected line's falling edge, not by a fixed 1 ms sampling timer
+([Pan Docs: Joypad Input](https://gbdev.io/pandocs/Joypad_Input.html),
+[Joypad interrupt](https://gbdev.io/pandocs/Interrupt_Sources.html#int-60-joypad-interrupt)).
+
+### Controlled ROM results
+
+Two temporary probes were derived from the repository's MIT-licensed GB Pong
+ROM header and logo. Both cores ran in fresh working directories through
+`build/libretro_rom_runner`; input intervals use zero-based frame indices with
+an exclusive end.
+
+1. **First JOYP read:** after 160 neutral runs, press A for input interval
+   `160 161 A`. The ROM records `LY` on its first `$FF00` read that sees A
+   pressed. LotusGB records `LY=0`; SameBoy records `LY=144`.
+2. **VBlank-only response:** after 200 neutral runs, press A for `200 201 A`.
+   The ROM reads `$FF00` only in its VBlank ISR and changes the background
+   palette when A is pressed. At `LY=144`, both cores record the ISR input.
+   SameBoy's callback after input run 200 already shows the palette change;
+   LotusGB's callback after run 200 is still unchanged and its callback after
+   run 201 shows the change. The output therefore differs by one callback.
+
+The SameBoy image retains 746 pixels from boot-logo tile data; those pixels do
+not change the timing result. The exact cores and probe ROMs are pinned by
+SHA-256 below. RGB, PNG, SRAM, input scripts and ROMs are retained locally at
+`~/gb_emu/test-results/lotus-gbemu-frame-phase-diagnostic/`; generated ROMs and
+captures are not committed.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| LotusGB core | `b24d849c4a8b64d995c3ec860f2d37602d0ce04bca80190c6c43ccb9fbbc30dd` |
+| SameBoy 1.0.4 core | `5f3cbc610d1de2c04d41319b6678bece8c5bc78b1067436e1f6d9d440b89b56e` |
+| First-read probe ROM | `e0242007d5c71b3eafd0dfc3c7f14864f673a481c9e7716a0aa68d073d8205e4` |
+| VBlank-response probe ROM | `d0275c85606ba12a21ece2c0e96f2e0c0b86d76452675388c250d92d379843ca` |
+| Base GB Pong ROM | `9c5e337db0ee1416f2c7f1de02e7e0a78a6064cf1da49209b4bc1a36a7b35415` |
+
+### What to validate with games
+
+Big2Small remains a suitable routine gameplay check for startup, ordinary
+control response, stable frame delivery and save persistence. Its successful
+run does not close the specific VBlank-boundary question. The synthetic probe
+already covers that mechanism, so do not add artificial boundary requirements
+to Big2Small or repeatedly retest the same case through unrelated games.
+Validate F-1 Race separately if that title is available: this probe does not
+show whether it samples input or updates scrolling in VBlank. Until a
+target-game or hardware-backed case points to a preferred phase, treat the
+measured difference as known and leave production timing unchanged.
 
 ## Test commands
 

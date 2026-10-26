@@ -1,5 +1,5 @@
 CC := g++
-CPPFLAGS := -Wall -fPIC --std=c++17 -O2
+CPPFLAGS := -Wall -Wextra -fPIC --std=c++17 -O2
 LDFLAGS := -shared
 lotus_gb_lib_build_path := $(build_dir)/liblotusgb.so
 mooneye_runner := $(build_dir)/mooneye_rom_runner

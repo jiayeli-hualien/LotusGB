@@ -22,7 +22,8 @@ void MemoryGBIT::write(uint16_t addr, uint8_t value) {
     rec.value = value;
 }
 
-void MemoryGBIT::resize(size_t size) {
+void MemoryGBIT::resize(size_t) {
+    // This adapter uses a fixed ROM view and a fixed-size memory-access log.
 }
 
 int MemoryGBIT::getMemoryState(LotusGBMemAccess accessRec[LOTUSGB_GBIT_MEM_ACCESS_NUM]) {

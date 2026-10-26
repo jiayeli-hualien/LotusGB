@@ -9,6 +9,9 @@
 #if INST_USE_FUNC_OBJ
 
 #define SUB_FUNC_OP operator () (SUB_FUNC_PARAMS)
+#define SUB_FUNC_OP_REG_ONLY operator () (InstState * /* pInstState */, Reg *pReg)
+#define SUB_FUNC_OP_STATE_ONLY operator () (InstState *pInstState, Reg * /* pReg */)
+#define SUB_FUNC_OP_NO_ARGS operator () (InstState * /* pInstState */, Reg * /* pReg */)
 
 #define SUB_FUNC_DECLARE(x) \
 struct subFunc##x {\
@@ -16,10 +19,19 @@ SUB_FUNC_OP_RET SUB_FUNC_OP;\
 };
 
 #define SUB_FUNC_IMPL(x) SUB_FUNC_OP_RET subFunc##x::SUB_FUNC_OP
+#define SUB_FUNC_IMPL_REG_ONLY(x) SUB_FUNC_OP_RET subFunc##x::SUB_FUNC_OP_REG_ONLY
+#define SUB_FUNC_IMPL_STATE_ONLY(x) SUB_FUNC_OP_RET subFunc##x::SUB_FUNC_OP_STATE_ONLY
+#define SUB_FUNC_IMPL_NO_ARGS(x) SUB_FUNC_OP_RET subFunc##x::SUB_FUNC_OP_NO_ARGS
 
 #else // INST_USE_FUNC_OBJ
 
 #define SUB_FUNC_IMPL(x) SUB_FUNC_OP_RET subFunc##x(SUB_FUNC_PARAMS)
+#define SUB_FUNC_IMPL_REG_ONLY(x) \
+    SUB_FUNC_OP_RET subFunc##x(InstState * /* pInstState */, Reg *pReg)
+#define SUB_FUNC_IMPL_STATE_ONLY(x) \
+    SUB_FUNC_OP_RET subFunc##x(InstState *pInstState, Reg * /* pReg */)
+#define SUB_FUNC_IMPL_NO_ARGS(x) \
+    SUB_FUNC_OP_RET subFunc##x(InstState * /* pInstState */, Reg * /* pReg */)
 #define SUB_FUNC_DECLARE(x) SUB_FUNC_OP_RET subFunc##x(SUB_FUNC_PARAMS)
 #endif // INST_USE_FUNC_OBJ
 

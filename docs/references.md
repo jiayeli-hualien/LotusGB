@@ -23,6 +23,7 @@ hardware specification.
 - [GB Interceptor bus observations](https://there.oughta.be/a/game-boy-capture-cartridge) — cartridge-bus traces show interrupt stack writes and model-specific address-bus differences.
 - [Pan Docs: Timer obscure behaviour](https://gbdev.io/pandocs/Timer_Obscure_Behaviour.html) — divider edges, overflow delay and TIMA/TMA reload writes.
 - [Pan Docs: OAM DMA Transfer](https://gbdev.io/pandocs/OAM_DMA_Transfer.html) — transfer timing and bus conflicts.
+- [Pan Docs: Joypad Input](https://gbdev.io/pandocs/Joypad_Input.html) and [Joypad interrupt](https://gbdev.io/pandocs/Interrupt_Sources.html#int-60-joypad-interrupt) — selected active-low input lines and their interrupt edge.
 - [Pan Docs: Serial Data Transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_%28Link_Cable%29.html) — SB/SC, internal/external clocks and completion interrupt.
 
 ### PPU
@@ -81,6 +82,7 @@ hardware specification.
 
 ## Emulator development and build references
 
+- [Libretro core development guide](https://docs.libretro.com/development/cores/developing-cores/) — callback contract for `retro_run()` and the per-run input/video requirements.
 - [GBIT](https://github.com/jiayeli-hualien/gbit) — CPU instruction comparison used by this project.
 - [Building a Game Boy emulator](https://wwssllabcd.github.io/2021/02/08/how-to-build-a-gameboy-emulator-1/)
 - [Game Boy emulator notes (HackMD)](https://hackmd.io/@sysprog/BJvOWzFqv)

@@ -119,7 +119,7 @@ SUB_FUNC_IMPL(MemReadIndirectBC_DE) {
     pInstState->memAddr = _getIndreictRegBC_DE(pInstState, pReg);
 }
 
-SUB_FUNC_IMPL(MemReadIndirectA16) {
+SUB_FUNC_IMPL_STATE_ONLY(MemReadIndirectA16) {
     pInstState->memMode = MEM_MODE_READ;
     pInstState->memAddr = pInstState->a16Addr;
 }
@@ -299,7 +299,7 @@ struct SubArgs {
     : rhs(iRhs), useCarry(iUseCarry), updateA(iUpdateA) {};
 };
 
-static inline void _subCommon(const SubArgs &args, SUB_FUNC_PARAMS) {
+static inline void _subCommon(const SubArgs &args, Reg *pReg) {
     GB_Flag flag = {};
     pReg->getFlag(flag);
 
@@ -315,32 +315,32 @@ static inline void _subCommon(const SubArgs &args, SUB_FUNC_PARAMS) {
 
 SUB_FUNC_IMPL(SubA_R) {
     if (uint8_t *rhs = getRegRHS(pInstState->opcode, pReg))
-        _subCommon(SubArgs(*rhs, false, true), SUB_FUNC_ARGS);
+        _subCommon(SubArgs(*rhs, false, true), pReg);
 }
 
 SUB_FUNC_IMPL(SubA_MEMVAL) {
-    _subCommon(SubArgs(pInstState->memValue, false, true), SUB_FUNC_ARGS);
+    _subCommon(SubArgs(pInstState->memValue, false, true), pReg);
 }
 
 SUB_FUNC_IMPL(SubA_R_Carry) {
     if (uint8_t *rhs = getRegRHS(pInstState->opcode, pReg))
-        _subCommon(SubArgs(*rhs, true, true), SUB_FUNC_ARGS);
+        _subCommon(SubArgs(*rhs, true, true), pReg);
 }
 
 SUB_FUNC_IMPL(SubA_MEMVAL_Carry) {
-    _subCommon(SubArgs(pInstState->memValue, true, true), SUB_FUNC_ARGS);
+    _subCommon(SubArgs(pInstState->memValue, true, true), pReg);
 }
 
 SUB_FUNC_IMPL(CmpA_R) {
     if (uint8_t *rhs = getRegRHS(pInstState->opcode, pReg))
-        _subCommon(SubArgs(*rhs, false, false), SUB_FUNC_ARGS);
+        _subCommon(SubArgs(*rhs, false, false), pReg);
 }
 
 SUB_FUNC_IMPL(CmpA_MEMVAL) {
-    _subCommon(SubArgs(pInstState->memValue, false, false), SUB_FUNC_ARGS);
+    _subCommon(SubArgs(pInstState->memValue, false, false), pReg);
 }
 
-static inline void _incUint8Common(uint8_t *lhs, SUB_FUNC_PARAMS) {
+static inline void _incUint8Common(uint8_t *lhs, Reg *pReg) {
     GB_Flag flag = {};
     pReg->getFlag(flag);
     const uint8_t tmp = (*lhs)++;
@@ -352,16 +352,16 @@ static inline void _incUint8Common(uint8_t *lhs, SUB_FUNC_PARAMS) {
 
 SUB_FUNC_IMPL(IncR) {
     if (uint8_t *lhs = getRegLHS(pInstState->opcode, pReg))
-        _incUint8Common(lhs, SUB_FUNC_ARGS);
+        _incUint8Common(lhs, pReg);
 }
 
 SUB_FUNC_IMPL(MemIncWriteIndirectHL) {
-    _incUint8Common(&pInstState->memValue, SUB_FUNC_ARGS);
+    _incUint8Common(&pInstState->memValue, pReg);
     pInstState->memMode = MEM_MODE_WRITE;
     pInstState->memAddr = pReg->getRefHL();
 }
 
-static inline void _decUint8Common(uint8_t *lhs, SUB_FUNC_PARAMS) {
+static inline void _decUint8Common(uint8_t *lhs, Reg *pReg) {
     GB_Flag flag = {};
     pReg->getFlag(flag);
     const uint8_t tmp = (*lhs)--;
@@ -373,17 +373,17 @@ static inline void _decUint8Common(uint8_t *lhs, SUB_FUNC_PARAMS) {
 
 SUB_FUNC_IMPL(DecR) {
     if (uint8_t *lhs = getRegLHS(pInstState->opcode, pReg))
-        _decUint8Common(lhs, SUB_FUNC_ARGS);
+        _decUint8Common(lhs, pReg);
 }
 
 SUB_FUNC_IMPL(MemDecWriteIndirectHL) {
-    _decUint8Common(&pInstState->memValue, SUB_FUNC_ARGS);
+    _decUint8Common(&pInstState->memValue, pReg);
     pInstState->memMode = MEM_MODE_WRITE;
     pInstState->memAddr = pReg->getRefHL();
 }
 
 
-static inline void _andUint8Common(uint8_t *rhs, SUB_FUNC_PARAMS) {
+static inline void _andUint8Common(uint8_t *rhs, Reg *pReg) {
     pReg->getRefA() = GET_LSB(pReg->getRefA() & (*rhs));
     GB_Flag flag;
     flag.Z = (!pReg->getRefA());
@@ -395,15 +395,15 @@ static inline void _andUint8Common(uint8_t *rhs, SUB_FUNC_PARAMS) {
 
 SUB_FUNC_IMPL(AndA_R) {
     if (uint8_t *rhs = getRegRHS(pInstState->opcode, pReg))
-        _andUint8Common(rhs, SUB_FUNC_ARGS);
+        _andUint8Common(rhs, pReg);
 }
 
 SUB_FUNC_IMPL(AndA_MEMVAL) {
-    _andUint8Common(&pInstState->memValue, SUB_FUNC_ARGS);
+    _andUint8Common(&pInstState->memValue, pReg);
 }
 
 
-static inline void _orUint8Common(uint8_t *rhs, SUB_FUNC_PARAMS) {
+static inline void _orUint8Common(uint8_t *rhs, Reg *pReg) {
     pReg->getRefA() = GET_LSB(pReg->getRefA() | (*rhs));
     GB_Flag flag;
     flag.Z = (!pReg->getRefA());
@@ -415,14 +415,14 @@ static inline void _orUint8Common(uint8_t *rhs, SUB_FUNC_PARAMS) {
 
 SUB_FUNC_IMPL(OrA_R) {
     if (uint8_t *rhs = getRegRHS(pInstState->opcode, pReg))
-        _orUint8Common(rhs, SUB_FUNC_ARGS);
+        _orUint8Common(rhs, pReg);
 }
 
 SUB_FUNC_IMPL(OrA_MEMVAL) {
-    _orUint8Common(&pInstState->memValue, SUB_FUNC_ARGS);
+    _orUint8Common(&pInstState->memValue, pReg);
 }
 
-static inline void _xorUint8Common(uint8_t *rhs, SUB_FUNC_PARAMS) {
+static inline void _xorUint8Common(uint8_t *rhs, Reg *pReg) {
     pReg->getRefA() = GET_LSB(pReg->getRefA() ^ (*rhs));
     GB_Flag flag;
     flag.Z = (!pReg->getRefA());
@@ -434,13 +434,13 @@ static inline void _xorUint8Common(uint8_t *rhs, SUB_FUNC_PARAMS) {
 
 SUB_FUNC_IMPL(XorA_R) {
     if (uint8_t *rhs = getRegRHS(pInstState->opcode, pReg))
-        _xorUint8Common(rhs, SUB_FUNC_ARGS);
+        _xorUint8Common(rhs, pReg);
 }
 SUB_FUNC_IMPL(XorA_MEMVAL){
-    _xorUint8Common(&pInstState->memValue, SUB_FUNC_ARGS);
+    _xorUint8Common(&pInstState->memValue, pReg);
 }
 
-SUB_FUNC_IMPL(CCF) {
+SUB_FUNC_IMPL_REG_ONLY(CCF) {
     GB_Flag flag;
     pReg->getFlag(flag);
     flag.N = false;
@@ -449,7 +449,7 @@ SUB_FUNC_IMPL(CCF) {
     pReg->setFlag(flag);
 }
 
-SUB_FUNC_IMPL(SCF) {
+SUB_FUNC_IMPL_REG_ONLY(SCF) {
     GB_Flag flag;
     pReg->getFlag(flag);
     flag.N = false;
@@ -458,7 +458,7 @@ SUB_FUNC_IMPL(SCF) {
     pReg->setFlag(flag);
 }
 
-SUB_FUNC_IMPL(DAA) {
+SUB_FUNC_IMPL_REG_ONLY(DAA) {
     GB_Flag flag;
     pReg->getFlag(flag);
 
@@ -484,7 +484,7 @@ SUB_FUNC_IMPL(DAA) {
     pReg->setFlag(flag);
 }
 
-SUB_FUNC_IMPL(CPL) {
+SUB_FUNC_IMPL_REG_ONLY(CPL) {
     GB_Flag flag;
     pReg->getFlag(flag);
     flag.N = true;
@@ -498,7 +498,7 @@ SUB_FUNC_IMPL(LD_PC_MEM16) {
     pInstState->memMode = MEM_MODE_SLEEP;
 }
 
-SUB_FUNC_IMPL(LD_PC_HL) {
+SUB_FUNC_IMPL_REG_ONLY(LD_PC_HL) {
     pReg->getRefPC() = pReg->getRefHL();
 }
 
@@ -554,7 +554,7 @@ SUB_FUNC_IMPL(CondSwapPC_MEM16) {
     }
 }
 
-SUB_FUNC_IMPL(Bubble) {
+SUB_FUNC_IMPL_STATE_ONLY(Bubble) {
     pInstState->memMode = MEM_MODE_SLEEP;
 }
 
@@ -588,22 +588,22 @@ SUB_FUNC_IMPL(RST) {
     pReg->getRefPC() = __getRstAddr(pInstState->opcode);
 }
 
-SUB_FUNC_IMPL(Halt) {
+SUB_FUNC_IMPL_STATE_ONLY(Halt) {
     pInstState->clockAction = CLOCK_ACTION_HALT;
 }
 
-SUB_FUNC_IMPL(Stop) {
+SUB_FUNC_IMPL_STATE_ONLY(Stop) {
     // The byte following STOP is consumed as part of the instruction, but its
     // value is ignored by the SM83 instruction definition.
     pInstState->clockAction = CLOCK_ACTION_STOP;
     pInstState->memMode = MEM_MODE_SLEEP;
 }
 
-SUB_FUNC_IMPL(DI) {
+SUB_FUNC_IMPL_STATE_ONLY(DI) {
     pInstState->imeAction = IME_ACTION_DISABLE;
 }
 
-SUB_FUNC_IMPL(EI) {
+SUB_FUNC_IMPL_STATE_ONLY(EI) {
     pInstState->imeAction = IME_ACTION_ENABLE_DELAYED;
 }
 
@@ -704,7 +704,7 @@ SUB_FUNC_IMPL(Add_HL_SP_R8_MSB) {
         pReg->getRefSP(), pInstState->memValue, carry);
 }
 
-SUB_FUNC_IMPL(RLCA) {
+SUB_FUNC_IMPL_REG_ONLY(RLCA) {
     auto &A = pReg->getRefA();
     int result = A;
     GB_Flag flag = {};
@@ -714,7 +714,7 @@ SUB_FUNC_IMPL(RLCA) {
     pReg->setFlag(flag);
 }
 
-SUB_FUNC_IMPL(RLA) {
+SUB_FUNC_IMPL_REG_ONLY(RLA) {
     auto &A = pReg->getRefA();
     int result = A;
     GB_Flag flag;
@@ -728,7 +728,7 @@ SUB_FUNC_IMPL(RLA) {
     pReg->setFlag(flag);
 }
 
-SUB_FUNC_IMPL(RRCA) {
+SUB_FUNC_IMPL_REG_ONLY(RRCA) {
     auto &A = pReg->getRefA();
     int result = A;
     GB_Flag flag = {};
@@ -743,7 +743,7 @@ SUB_FUNC_IMPL(RRCA) {
     pReg->setFlag(flag);
 }
 
-SUB_FUNC_IMPL(RRA) {
+SUB_FUNC_IMPL_REG_ONLY(RRA) {
     auto &A = pReg->getRefA();
     int result = A;
     GB_Flag flag;

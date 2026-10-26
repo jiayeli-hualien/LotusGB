@@ -91,10 +91,26 @@ The ROM remains outside the repository. Reports and images are in
 
 ```sh
 build/libretro_rom_runner CORE.so ROM.gb FRAMES OUTPUT.rgb OUTPUT.srm \
-  [INPUT.txt [RESTORE.srm]]
+  [INPUT.txt [RESTORE.srm]] [--repeat COUNT]
 ```
 
 Without optional arguments it preserves the neutral-input ROM-test behavior.
+`--repeat COUNT` (1–1,000) repeats dynamic core loading, initialization,
+cartridge loading, frame execution, unloading, deinitialization, and library
+closing in one process. Each run must deliver the requested video frames. The
+runner writes the final run's frame and SRAM once, then reports `repetitions`.
+Any failed run returns a nonzero exit code. This is a local lifecycle stress
+check; use a small frame count for each run. For the included GB Pong ROM:
+
+```sh
+make -C src/libretro build rom-test-runner build_dir="$PWD/build"
+mkdir -p build/test-roms/lifecycle
+build/libretro_rom_runner build/lotusgb_libretro.so \
+  tests/roms/gb-pong/gb-pong.gb 2 \
+  build/test-roms/lifecycle/frame.rgb build/test-roms/lifecycle/output.srm \
+  --repeat 32
+```
+
 Input lines contain `START END BUTTON`; blank lines and `#` comments are allowed.
 Buttons: `A B START SELECT UP DOWN LEFT RIGHT`. Overlapping intervals permit
 combinations. Intervals must fit within the requested run. Restored SRAM must
@@ -154,6 +170,29 @@ missing audio, wrong dimensions and truncated/oversized artifacts. A mocked
 runner also verifies that a zero exit without fresh artifacts cannot pass
 using stale files. These checks establish output delivery, not audible audio
 quality, correct scene contents or disk-save persistence.
+
+### Big2Small scripted-input control (2026-10-26)
+
+The standard Big2Small profile was compared with two clean, neutral-input runs
+using the same pinned ROM and LotusGB core. Both neutral runs produced
+identical framebuffers and SRAM. The scripted run differed from the neutral
+frame in 18,546 of 23,040 pixels and in 122 SRAM bytes. It completed 3,600
+video callbacks, 2,893,139 stereo audio frames, and returned the expected 8 KiB
+SRAM block.
+
+| Run | Final RGB SHA-256 | Result |
+| --- | --- | --- |
+| Neutral A | `d30f1a0b708700255e5edcedb359b4a7cd6a8ab23b7be731eec5a405ab2c24c3` | Identical to Neutral B |
+| Neutral B | `d30f1a0b708700255e5edcedb359b4a7cd6a8ab23b7be731eec5a405ab2c24c3` | Identical to Neutral A |
+| Scripted input | `be194b9401da6493cd8a631d5f59cb437726b9ff9c291fe2bf9b59c36a3ef11e` | Differs from neutral in 18,546 pixels |
+
+This shows that the pinned scripted profile changes visible and saved game
+state for this ROM/core pair. It does not establish each button's individual
+mapping, level completion, save-file persistence, or VBlank-boundary behavior.
+The regular `make test-homebrew` command still checks callback/output
+contracts; this neutral comparison was a separate local diagnostic. The
+side-by-side image and comparison JSON are under
+`build/test-roms/big2small-input-control/`.
 
 ### Three-profile regression after CPU error reporting (2026-10-26)
 

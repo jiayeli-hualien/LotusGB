@@ -9,6 +9,7 @@
 #include <sstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -116,6 +117,16 @@ Function loadFunction(void *library, const char *name) {
 }
 
 struct CoreApi {
+    struct LibraryCloser {
+        void operator()(void *handle) const noexcept {
+            if (dlclose(handle) != 0) {
+                const char *error = dlerror();
+                std::cerr << "ROM runner error closing core: "
+                          << (error ? error : "unknown error") << '\n';
+            }
+        }
+    };
+
     using SetEnvironment = void (*)(retro_environment_t);
     using SetVideoRefresh = void (*)(retro_video_refresh_t);
     using SetAudioSample = void (*)(retro_audio_sample_t);
@@ -131,33 +142,74 @@ struct CoreApi {
     using GetMemorySize = size_t (*)(unsigned);
 
     explicit CoreApi(const char *path) {
-        library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        library.reset(dlopen(path, RTLD_NOW | RTLD_LOCAL));
         if (!library)
             throw std::runtime_error(std::string("cannot load core: ") +
                                      dlerror());
 
-        setEnvironment = loadFunction<SetEnvironment>(library, "retro_set_environment");
-        setVideoRefresh = loadFunction<SetVideoRefresh>(library, "retro_set_video_refresh");
-        setAudioSample = loadFunction<SetAudioSample>(library, "retro_set_audio_sample");
+        setEnvironment = loadFunction<SetEnvironment>(library.get(), "retro_set_environment");
+        setVideoRefresh = loadFunction<SetVideoRefresh>(library.get(), "retro_set_video_refresh");
+        setAudioSample = loadFunction<SetAudioSample>(library.get(), "retro_set_audio_sample");
         setAudioSampleBatch =
-            loadFunction<SetAudioSampleBatch>(library, "retro_set_audio_sample_batch");
-        setInputPoll = loadFunction<SetInputPoll>(library, "retro_set_input_poll");
-        setInputState = loadFunction<SetInputState>(library, "retro_set_input_state");
-        init = loadFunction<Init>(library, "retro_init");
-        deinit = loadFunction<Deinit>(library, "retro_deinit");
-        loadGame = loadFunction<LoadGame>(library, "retro_load_game");
-        run = loadFunction<Run>(library, "retro_run");
-        unloadGame = loadFunction<UnloadGame>(library, "retro_unload_game");
-        getMemoryData = loadFunction<GetMemoryData>(library, "retro_get_memory_data");
-        getMemorySize = loadFunction<GetMemorySize>(library, "retro_get_memory_size");
+            loadFunction<SetAudioSampleBatch>(library.get(), "retro_set_audio_sample_batch");
+        setInputPoll = loadFunction<SetInputPoll>(library.get(), "retro_set_input_poll");
+        setInputState = loadFunction<SetInputState>(library.get(), "retro_set_input_state");
+        init = loadFunction<Init>(library.get(), "retro_init");
+        deinit = loadFunction<Deinit>(library.get(), "retro_deinit");
+        loadGame = loadFunction<LoadGame>(library.get(), "retro_load_game");
+        run = loadFunction<Run>(library.get(), "retro_run");
+        unloadGame = loadFunction<UnloadGame>(library.get(), "retro_unload_game");
+        getMemoryData = loadFunction<GetMemoryData>(library.get(), "retro_get_memory_data");
+        getMemorySize = loadFunction<GetMemorySize>(library.get(), "retro_get_memory_size");
     }
 
     ~CoreApi() {
-        if (library)
-            dlclose(library);
+        if (gameLoaded)
+            unloadGame();
+        if (initialized)
+            deinit();
     }
 
-    void *library = nullptr;
+    void initialize() {
+        init();
+        initialized = true;
+    }
+
+    bool load(const retro_game_info *game) {
+        if (!loadGame(game))
+            return false;
+        gameLoaded = true;
+        return true;
+    }
+
+    void unload() {
+        if (!gameLoaded)
+            return;
+        unloadGame();
+        gameLoaded = false;
+    }
+
+    void shutdown() {
+        if (!initialized)
+            return;
+        deinit();
+        initialized = false;
+    }
+
+    void close() {
+        unload();
+        shutdown();
+        void *handle = library.release();
+        if (dlclose(handle) != 0) {
+            const char *error = dlerror();
+            throw std::runtime_error(std::string("cannot close core: ") +
+                                     (error ? error : "unknown error"));
+        }
+    }
+
+    std::unique_ptr<void, LibraryCloser> library;
+    bool initialized = false;
+    bool gameLoaded = false;
     SetEnvironment setEnvironment = nullptr;
     SetVideoRefresh setVideoRefresh = nullptr;
     SetAudioSample setAudioSample = nullptr;
@@ -216,72 +268,105 @@ unsigned parseFrames(const char *value) {
     return static_cast<unsigned>(frames);
 }
 
+unsigned parseRepetitions(const char *value) {
+    size_t consumed = 0;
+    const unsigned long repetitions = std::stoul(value, &consumed);
+    if (value[consumed] != '\0' || repetitions == 0 || repetitions > 1000)
+        throw std::runtime_error("repeat count must be between 1 and 1000");
+    return static_cast<unsigned>(repetitions);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
-    if (argc < 6 || argc > 8) {
+    unsigned repetitions = 1;
+    int contentArgc = argc;
+    try {
+        if (argc >= 8 && std::strcmp(argv[argc - 2], "--repeat") == 0) {
+            repetitions = parseRepetitions(argv[argc - 1]);
+            contentArgc -= 2;
+        }
+    } catch (const std::exception &error) {
+        std::cerr << "ROM runner error: " << error.what() << '\n';
+        return 2;
+    }
+    if (contentArgc < 6 || contentArgc > 8) {
         std::cerr << "Usage: " << argv[0]
-                  << " CORE.so ROM.gb FRAMES OUTPUT.rgb OUTPUT.srm [INPUT.txt [RESTORE.srm]]\n";
+                  << " CORE.so ROM.gb FRAMES OUTPUT.rgb OUTPUT.srm"
+                  << " [INPUT.txt [RESTORE.srm]] [--repeat COUNT]\n";
         return 2;
     }
 
     try {
         const unsigned frames = parseFrames(argv[3]);
-        if (argc >= 7) readInputScript(argv[6], frames);
-        if (argc == 8) {
+        if (contentArgc >= 7) readInputScript(argv[6], frames);
+        if (contentArgc == 8) {
             for (int output : {4, 5})
                 if (std::filesystem::exists(argv[output]) &&
                     std::filesystem::equivalent(argv[7], argv[output]))
                     throw std::runtime_error("output must not overwrite restored save");
         }
         const std::vector<uint8_t> rom = readBinary(argv[2]);
-        CoreApi core(argv[1]);
-
-        core.setEnvironment(environmentCallback);
-        core.setVideoRefresh(videoRefreshCallback);
-        core.setAudioSample(nullptr);
-        core.setAudioSampleBatch(audioSampleBatchCallback);
-        core.setInputPoll(inputPollCallback);
-        core.setInputState(inputStateCallback);
-        core.init();
+        const std::vector<uint8_t> saved =
+            contentArgc == 8 ? readBinary(argv[7]) : std::vector<uint8_t>{};
 
         retro_game_info game{};
         game.data = rom.data();
         game.size = rom.size();
         game.path = argv[2];
-        if (!core.loadGame(&game))
-            throw std::runtime_error("core rejected ROM: " + std::string(argv[2]));
+        size_t finalSaveRamSize = 0;
+        for (unsigned repetition = 0; repetition < repetitions; ++repetition) {
+            videoFrameCount = 0;
+            audioFrameCount = 0;
+            hasVideoFrame = false;
+            callbackError.clear();
+            CoreApi core(argv[1]);
+            core.setEnvironment(environmentCallback);
+            core.setVideoRefresh(videoRefreshCallback);
+            core.setAudioSample(nullptr);
+            core.setAudioSampleBatch(audioSampleBatchCallback);
+            core.setInputPoll(inputPollCallback);
+            core.setInputState(inputStateCallback);
+            core.initialize();
+            if (!core.load(&game))
+                throw std::runtime_error("core rejected ROM: " + std::string(argv[2]));
 
-        if (argc == 8) {
-            const auto saved = readBinary(argv[7]);
-            void *ram = core.getMemoryData(RETRO_MEMORY_SAVE_RAM);
-            if (!ram || saved.size() != core.getMemorySize(RETRO_MEMORY_SAVE_RAM))
-                throw std::runtime_error("restored save size does not match cartridge RAM");
-            std::memcpy(ram, saved.data(), saved.size());
+            if (contentArgc == 8) {
+                void *ram = core.getMemoryData(RETRO_MEMORY_SAVE_RAM);
+                if (!ram || saved.size() != core.getMemorySize(RETRO_MEMORY_SAVE_RAM))
+                    throw std::runtime_error("restored save size does not match cartridge RAM");
+                std::memcpy(ram, saved.data(), saved.size());
+            }
+            for (currentFrame = 0; currentFrame < frames; ++currentFrame)
+                core.run();
+
+            if (!callbackError.empty())
+                throw std::runtime_error(callbackError);
+            if (!hasVideoFrame || videoFrameCount != frames)
+                throw std::runtime_error("core did not publish one video frame per run");
+
+            if (repetition + 1 == repetitions) {
+                writeRgb(argv[4]);
+                const size_t saveRamSize = core.getMemorySize(RETRO_MEMORY_SAVE_RAM);
+                const auto *saveRam = static_cast<const uint8_t *>(
+                    core.getMemoryData(RETRO_MEMORY_SAVE_RAM));
+                if (saveRamSize > 0 && !saveRam)
+                    throw std::runtime_error("core reported save RAM size without a buffer");
+                writeSaveRam(argv[5], saveRam, saveRamSize);
+                finalSaveRamSize = saveRamSize;
+            }
+            core.close();
+            if (repetition + 1 == repetitions) {
+                std::cout << "frames_requested=" << frames
+                          << " video_frames=" << videoFrameCount
+                          << " audio_frames=" << audioFrameCount
+                          << " save_ram_bytes=" << finalSaveRamSize
+                          << " width=" << WIDTH << " height=" << HEIGHT;
+                if (repetitions > 1)
+                    std::cout << " repetitions=" << repetitions;
+                std::cout << '\n';
+            }
         }
-        for (currentFrame = 0; currentFrame < frames; ++currentFrame)
-            core.run();
-
-        if (!callbackError.empty())
-            throw std::runtime_error(callbackError);
-        if (!hasVideoFrame || videoFrameCount != frames)
-            throw std::runtime_error("core did not publish one video frame per run");
-
-        writeRgb(argv[4]);
-        const size_t saveRamSize = core.getMemorySize(RETRO_MEMORY_SAVE_RAM);
-        const auto *saveRam = static_cast<const uint8_t *>(
-            core.getMemoryData(RETRO_MEMORY_SAVE_RAM));
-        if (saveRamSize > 0 && !saveRam)
-            throw std::runtime_error("core reported save RAM size without a buffer");
-        writeSaveRam(argv[5], saveRam, saveRamSize);
-        std::cout << "frames_requested=" << frames
-                  << " video_frames=" << videoFrameCount
-                  << " audio_frames=" << audioFrameCount
-                  << " save_ram_bytes=" << saveRamSize
-                  << " width=" << WIDTH << " height=" << HEIGHT << '\n';
-
-        core.unloadGame();
-        core.deinit();
     } catch (const std::exception &error) {
         std::cerr << "ROM runner error: " << error.what() << '\n';
         return 1;

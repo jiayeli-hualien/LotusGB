@@ -8,7 +8,7 @@
 
 namespace LOTUSGB {
 
-SUB_FUNC_IMPL(NOP){
+SUB_FUNC_IMPL_NO_ARGS(NOP){
     return;
 }
 

@@ -49,9 +49,43 @@ hardware-backed expected result is available. See the recorded
   The local Super Mario Land script reached World 0-1 and matched SameBoy's
   sampled frame; this is comparison evidence, not hardware validation. See the
   [recorded run](homebrew-check.md#super-mario-land-scripted-run-2026-10-26).
+- **Big2Small input-response baseline (2026-10-26):** two neutral 3,600-frame
+  runs match exactly; the pinned scripted profile changes 18,546 pixels and
+  122 SRAM bytes. This confirms the profile changes visible and saved game
+  state, not individual button timing or level completion. See the
+  [paired control](homebrew-check.md#big2small-scripted-input-control-2026-10-26).
+- **Libretro input phase diagnostic (2026-10-26):** controlled probes found a
+  `LY=0`/`LY=144` input-phase difference and a one-callback response shift for
+  VBlank-only handling. This is not a hardware accuracy verdict or an F-1 Race
+  result; leave frame stepping unchanged pending target-game or hardware-backed
+  evidence. See the
+  [canonical report](dmg-validation.md#libretro-input-phase-and-vblank-response-2026-10-26).
+- **Compiler-warning pass (2026-10-26):** enabled `-Wextra` for the core
+  library. Left unused callback parameter names out of implementation
+  signatures, narrowed arithmetic helper parameters, and documented the fixed
+  storage behavior of the GBIT memory adapter. Both `make -B build` and
+  `make test` completed without C++ warning diagnostics. Leak checking, repeated
+  frontend lifecycle, and target-architecture checks remain.
+- **Sanitizer and lifecycle baseline (2026-10-26):** the full `make test`
+  workflow passed with AddressSanitizer, UndefinedBehaviorSanitizer, and
+  LeakSanitizer enabled outside the `ptrace`-restricted sandbox. The dynamic
+  libretro runner also passed 32 repetitions of opening the core, loading the
+  included GB Pong ROM, running two frames, and closing the core, with no
+  sanitizer findings. The runner now cleans up after load errors. These checks
+  cover the exercised paths, not every cartridge or frontend state. Inside the
+  sandbox LeakSanitizer still exits before analysis because of `ptrace`.
+- **Initial Linux API scan (2026-10-26):** the emulator and libretro adapter
+  have no direct POSIX/Linux API calls. The standalone ROM runner uses
+  `dlopen`/`dlsym`, isolated from the core. Ubuntu `make -B build` passes;
+  Raspberry Pi/Recalbox architecture compatibility remains unverified.
 
 ### Deferred goals
 
+- **Remaining platform quality pass:** before Raspberry Pi/Recalbox support,
+  document OS and architecture assumptions and verify them on that target.
+  Check content switching and audio/video behavior in the actual frontend when
+  the platform is available. Keep this evidence-driven; it does not require
+  finishing every rare DMG hardware edge case or doing a broad style refactor.
 - **Long-term direction:** explore emulation of Nintendo systems beyond Game Boy.
   Keep LotusGB focused on its current Game Boy/DMG compatibility goal first.
   Revisit CGB, NES and GBA as later scope decisions; avoid cross-system
