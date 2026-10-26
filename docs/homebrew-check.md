@@ -113,6 +113,27 @@ runner also verifies that a zero exit without fresh artifacts cannot pass
 using stale files. These checks establish output delivery, not audible audio
 quality, correct scene contents or disk-save persistence.
 
+### Three-profile regression after CPU error reporting (2026-10-26)
+
+After unsupported base opcodes were changed to fail explicitly, all three
+pinned profiles completed 3,600 frames with 3,600 video callbacks, 2,893,139
+stereo audio frames, 8 KiB of generated SRAM, and no runner validation error.
+The inspected final captures were nonblank. Core SHA-256:
+`b24d849c4a8b64d995c3ec860f2d37602d0ce04bca80190c6c43ccb9fbbc30dd`.
+
+| Profile | Final RGB SHA-256 |
+| --- | --- |
+| Big2Small | `be194b9401da6493cd8a631d5f59cb437726b9ff9c291fe2bf9b59c36a3ef11e` |
+| Tobu Tobu Girl | `260f1d3926acb5a2db9b2ec757b6a493158dc4f9de3b98b7e939df484e35c8f4` |
+| Canyon Racer | `8b2cba922ae41dcb3e9cfb107b37cbb0dc870e687acc1da0226c2735d73cd313` |
+
+Tobu Tobu Girl and Canyon Racer match their previously recorded final-frame
+hashes. The Big2Small run used no restored player save; its generated SRAM is
+not evidence of RetroArch disk persistence. This regression checks that these
+scripts still reach stable output after the CPU error-path change, not full
+gameplay or hardware accuracy. Reports and captures are under
+`build/test-roms/{big2small,tobutobugirl,canyon-racer}/`.
+
 ## Canyon Racer raster-effect gameplay check
 
 ```sh
