@@ -76,16 +76,23 @@ hardware-backed expected result is available. See the recorded
   sandbox LeakSanitizer still exits before analysis because of `ptrace`.
 - **Initial Linux API scan (2026-10-26):** the emulator and libretro adapter
   have no direct POSIX/Linux API calls. The standalone ROM runner uses
-  `dlopen`/`dlsym`, isolated from the core. Ubuntu `make -B build` passes;
-  Raspberry Pi/Recalbox architecture compatibility remains unverified.
+  `dlopen`/`dlsym`, isolated from the core. Ubuntu `make -B build` passes.
+- **Recalbox ARM64 headless check (2026-10-26):** the core cross-builds for
+  AArch64 and runs on Recalbox 10.1.1. The included GB Pong ROM completed
+  repeated core load/run/unload cycles; neutral and scripted Up final frames
+  match Ubuntu x86-64 hashes. Actual RetroArch video, audio, controls, and
+  saves on this device remain to be checked. Recalbox's generator uses the
+  fixed `/usr/lib/libretro/` core path; the test copy in writable share is not
+  registered in EmulationStation. A parallel SSH-launched RetroArch fails at
+  KMS while EmulationStation owns the display. See the
+  [Recalbox procedure and evidence](recalbox.md).
 
 ### Deferred goals
 
-- **Remaining platform quality pass:** before Raspberry Pi/Recalbox support,
-  document OS and architecture assumptions and verify them on that target.
-  Check content switching and audio/video behavior in the actual frontend when
-  the platform is available. Keep this evidence-driven; it does not require
-  finishing every rare DMG hardware edge case or doing a broad style refactor.
+- **Remaining platform quality pass:** verify content switching, controls,
+  video, audio, and saves in the actual Recalbox frontend. Keep this
+  evidence-driven; it does not require finishing every rare DMG hardware edge
+  case or doing a broad style refactor.
 - **Long-term direction:** explore emulation of Nintendo systems beyond Game Boy.
   Keep LotusGB focused on its current Game Boy/DMG compatibility goal first.
   Revisit CGB, NES and GBA as later scope decisions; avoid cross-system
@@ -105,8 +112,9 @@ hardware-backed expected result is available. See the recorded
    progress, visible input response, stable video/audio, and battery-save
    persistence where applicable. Use targeted ROMs and hardware evidence for
    specific behavior; SameBoy and mGBA are comparison points, not authorities.
-3. **Raspberry Pi with Recalbox.** Verify the libretro core, controls, video
-   and audio on the supported Pi/Recalbox combination.
+3. **Raspberry Pi with Recalbox — active.** The ARM64 headless core check
+   passes. Verify controls, video, audio and saves in the actual RetroArch
+   frontend; see the [platform check](recalbox.md).
 4. **Steam Deck.** Verify RetroArch loading, controls, display scaling and
    audio on SteamOS.
 5. **Windows.** Add a Windows build and CI job, then verify Windows RetroArch.

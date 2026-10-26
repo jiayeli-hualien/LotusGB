@@ -83,6 +83,7 @@ platform work behind core behavior.
 - [Interrupt behavior and validation](docs/interrupts.md)
 - [Homebrew smoke checks](docs/homebrew-check.md)
 - [RetroArch troubleshooting](docs/runtime-troubleshooting.md)
+- [Raspberry Pi / Recalbox validation](docs/recalbox.md)
 - [Development roadmap](docs/roadmap.md)
 - [Documentation writing guide](docs/documentation-guide.md)
 - [Reference catalog](docs/references.md)
