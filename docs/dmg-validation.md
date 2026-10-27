@@ -6,7 +6,7 @@ The latest expanded PPU timing result (2026-10-25): all 14 cases pass, including
 `hblank_ly_scx_timing-GS` and the sprite Mode 0 timing ROM. Earlier result
 counts below are historical checkpoints.
 
-The current system starts from a DMG post-boot profile and skips boot-ROM execution. CGB behavior and unsupported cartridge hardware are outside this matrix.
+The current system can either execute an optional external DMG boot ROM or start from a fast synthetic post-boot profile. CGB behavior and unsupported cartridge hardware are outside this matrix.
 
 ## Target model and PPU acceptance
 
@@ -60,19 +60,113 @@ mid-Mode 3 race. See [Pan Docs rendering](https://gbdev.io/pandocs/Rendering.htm
 | --- | --- | --- | --- |
 | CPU instructions and timing | CPU advances in M-cycles and reports T-cycles. Focused behavior includes DAA, CCF/SCF/CPL and accumulator rotates; one-cycle register-to-register `LD r,r`; per-M-cycle phases for `INC rr`, `DEC rr`, `ADD HL,rr`, `ADD SP,e8`, `LD HL,SP+e8`, `LD SP,HL`, `LD rr,d16` and `LD (a16),SP`; `JP HL` target-fetch timing; `LD r,n`, `LD r,(HL)` and `LD (HL),r/n` phases; absolute `LD A,(a16)` / `LD (a16),A` and high-page `LDH` A loads/stores; `LD A,(BC/DE)` and `LD A,(HL+/-)` read/update timing; `LD (BC/DE),A` and `LD (HL+/-),A` write/update timing; register and `(HL)` increment/decrement; CB register and `(HL)` rotate/shift/bit/reset/set operations; `BIT b,(HL)` read-only timing; 8-bit ALU instructions using registers, `(HL)` and immediate operands; stack/jump bus sequences; conditional JP taken/untaken timing for NZ/Z/NC/C, taken and untaken JR paths, and signed relative offsets; per-M-cycle SP updates for PUSH/CALL/RST and interrupt entry; POP/conditional-RET stack reads and branch timing; POP AF flag-byte masking and commit phase; EI delay; STOP/HALT distinction, HALT wake-up and HALT bug. Encountering one of the 11 base opcodes marked unsupported fails execution and reports the opcode/address through the libretro error log; this is an emulator diagnostic policy, not a claim about the hardware's lock-up behavior. | `make test`: `cpu_instruction_test.cpp`, `cpu_cycle_test.cpp`; tests cover unsupported base opcodes and the frontend error path. The `ADD SP,e8` test exhausts all SP low-byte/offset pairs; tests check ordered bus accesses, flag-update phases and target opcode fetches; all 49 register-to-register `LD r,r` pairs verify one-cycle transfer, destination-only update and unchanged flags; register `INC`/`DEC` tests cover all seven byte registers and check one-cycle Z/N/H updates with preserved C at zero/nibble boundaries; single-cycle `CCF`/`SCF`/`CPL`/accumulator-rotate tests check A/C results, flag preservation/clearing and the next fetch; CB register tests cover rotate/shift/`BIT`/`RES`/`SET` results, the second-opcode fetch phase, flag behavior and next fetch; `(HL)` RMW tests check nibble/byte boundaries and writes; CB `BIT` tests all bit positions with set/clear data and no memory write; all eight 8-bit ALU operations using `(HL)` and all eight using immediate operands check that reads precede A/flag updates and validate the next opcode fetch; register-form tests cover all eight operations and verify result/flag commit with the one-cycle following opcode fetch; indirect A loads and stores check the original bus address, HL wrap/update phase, later A commit for loads, A value for stores, unchanged flags, and next opcode fetch; `LD r,n` and `LD r,(HL)` cover all seven byte-register destinations, `LD (HL),r` all seven byte-register sources, and `LD (HL),n` checks immediate-read, write and following-fetch phases; absolute and high-page A loads/stores check operand/data bus order, address formation, A commit, unchanged flags and next fetch; PUSH AF checks high-byte A then low-byte F stack writes and per-M-cycle SP changes; conditional JP checks all four predicates on both paths; JR checks taken/untaken timing, signed-offset PC updates and target fetch; taken CALL cc checks every stack phase; POP AF checks that old AF survives both stack reads and a popped flag byte with nonzero lower bits is masked at commit; GBIT instruction integration runs separately and in CI. | These CPU phase checks follow GB-CTR and unit-test observable state; they are not physical-DMG timing measurements. The 11 listed opcodes are explicitly unsupported; their exact DMG behavior remains unverified. DMG OAM corruption from IDU accesses is not implemented, and other instruction-internal timing is not fully validated on hardware. Add a focused ROM only when a real disagreement or game exposes a gap. |
 | Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp` verifies TAC frequencies and confirms TIMA overflow requests Timer IF on reload; `game_boy_system_test.cpp` checks that the timer IRQ wakes HALT and reaches its handler; `cpu_instruction_test.cpp` covers CPU interrupt entry. | All 13 Mooneye `acceptance/timer` ROMs pass, including TIMA/TMA writes during reload. The PPU group includes interrupt-entry and HALT timing ROMs, and the interrupt group adds ten EI/DI, RETI, HALT and IF/IE checks. This does not cover every interrupt race. |
-| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; 27 Mooneye standard MBC1/MBC2/MBC5 cases pass. Libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23. RetroArch `.rtc` disk write/reload was verified on 2026-10-26 using a temporary MBC3 timer-only probe: clean exit wrote the 24-byte RTC block, and a second RetroArch process restored and advanced it. These verify one cartridge/frontend path each, not every mapper or game; RTC evidence and limits are recorded under `build/test-roms/mbc3-rtc-persistence/`. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
-| Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. | `make test`: `dmg_serial_test.cpp` checks register and bit/completion boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. | No real peer, external clock input, accessories or CGB fast clock. The model-specific `boot_sclk_align-dmgABCmgb` ROM still fails; exact post-boot clock phase and SC-write edge races remain unresolved. Component/system tests do not establish full hardware serial conformance. |
-| Joypad | Active-low button lines, direction/button selection, and falling-edge interrupt requests. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; libretro input regression uses GB Pong. | STOP is not currently woken by joypad input. The libretro input/callback phase can shift VBlank-synchronized visible response by one callback; this is demonstrated with a synthetic ROM, not hardware-validated. See the [input-phase report](#libretro-input-phase-and-vblank-response-2026-10-26). |
+| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; 27 Mooneye standard MBC1/MBC2/MBC5 cases pass. Libretro integration runs CPU code from MBC1 bank 2, writes battery RAM, unloads the game, restores the SRAM block, and verifies banked code reads and updates it. Other libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23. RetroArch `.rtc` disk write/reload was verified on 2026-10-26 using a temporary MBC3 timer-only probe: clean exit wrote the 24-byte RTC block, and a second RetroArch process restored and advanced it. These verify one cartridge/frontend path each, not every mapper or game; RTC evidence and limits are recorded under `build/test-roms/mbc3-rtc-persistence/`. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
+| Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. Startup profiles restore model-specific clock phase. | `make test`: `dmg_serial_test.cpp` checks register, bit/completion, and boot/post-boot divider-phase boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. Mooneye `boot_sclk_align-dmgABCmgb` passes with both fast startup and the local standard DMG BIOS. | The Mooneye result is for its documented DMG ABC/MGB target, not all DMG revisions or physical hardware. No real peer, external clock input, accessories or CGB fast clock are implemented. Component/system tests do not establish full hardware serial conformance. |
+| Joypad | Active-low button lines, direction/button selection, falling-edge interrupt requests, and DMG STOP wake on a selected P10–P13 line falling low. STOP wake is separate from IE/IME interrupt acceptance. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; `testSelectedJoypadLineWakesStopWithoutInterruptAcceptance` checks unselected input keeps STOP active, selected A input wakes it, IF is requested, execution resumes and no interrupt vector is entered with IME=0 / IE=0. Libretro input regression uses GB Pong. | STOP signal behavior follows [Pan Docs](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction); no physical-DMG result is available. Exact wake phase, already-low-at-entry behavior and unusual STOP-entry races remain unverified. The libretro input/callback phase can shift VBlank-synchronized visible response by one callback; this is demonstrated with a synthetic ROM, not hardware-validated. See the [input-phase report](#libretro-input-phase-and-vblank-response-2026-10-26). |
 | PPU rendering | 160×144 DMG shade framebuffer; background, window, and 8×8/8×16 objects; tile addressing, palettes, transparency, and DMG object priority. BG and OBJ output use separate 16-pixel FIFOs; BG fetches have named tile-map/bitplane phases. OAM descriptors and event timing are prepared at scanline entry; the OBJ low/high tile planes are read at separate boundaries during each coarse event, and the decoded row is then overlaid into the OBJ FIFO. During timed OBJ fetch, BG catch-up stops at Push or when the BG FIFO becomes non-empty; BG rows push only into an empty FIFO. LCDC.0/LCDC.1 and palette effects are sampled at pixel output; background-map select is sampled at each tile-map fetch. Background fetch and per-line object descriptors are retained while their display bits are clear, so a later re-enable can affect upcoming pixels. OAM selection uses the first ten Y-matching entries even when their X positions are off-screen. | `make test`: `dmg_ppu_test.cpp`, `game_boy_system_test.cpp`; focused PPU tests cover mid-line LCDC.0/LCDC.1 disable/re-enable, enabling after scanline preparation, unchanged Mode 3 duration with OBJ disabled, left-clipped OBJ output, off-screen-object selection limits, map changes, and `testObjectFetchStopsBackgroundCatchUpWhenBgFifoHasPixels`; `dmg-acid2` exact framebuffer regression passes. Optional `make test-gbmicrotest-ppu-latch` captures four model-scoped visual probes; see [GBMicrotest diagnostics](#gbmicrotest-ppu-latch-diagnostics). | Exact Mode 3 hardware timing at mid-scanline register-write boundaries remains unverified because there is no matching DMG hardware result for those image comparisons. Game-level behavior remains an acceptance target; see the [Canyon Racer effect check](homebrew-check.md#author-described-raster-effect-check). Canyon Racer produced identical final frames in two same-core, same-input 3,600-frame runs (0 differing pixels). An older 407-pixel difference was between historical captures whose metadata does not identify its cause; there is no expected hardware image. SameBoy and mGBA repeat under the same input script and match LotusGB's final SRAM. After shade normalization, their frames differ from LotusGB in 4,006 and 5,426 pixels, respectively; see the [three-core diagnostic](homebrew-check.md#three-core-raster-diagnostic-2026-10-25). The cross-core results are not hardware oracles. Exact FIFO push cadence, OBJ bus fetch/arbitration, and hardware output remain unverified; F-1 Race remains a later scrolling target. |
-| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests, final-line early LY reset and delayed LYC comparison, and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. BG and OBJ pixels pass through separate 16-pixel FIFOs; the first modeled OBJ fetch overlaps one dot with the initial BG fetch phase. During timed OBJ fetch, BG catch-up stops at Push or when the BG FIFO becomes non-empty; a row pushes only when the BG FIFO is empty. | `make test`: `dmg_ppu_test.cpp` checks the VBlank IF request and selected mode boundaries, access restrictions, SCX/window/object penalties, left-clipped OBJ output, and frame behavior. `game_boy_system_test.cpp` checks that CPU writes rejected in Mode 3 neither stall the CPU nor reappear in Mode 0, that polling until Mode 0 permits subsequent VRAM/OAM writes, and verifies the old and new values through CPU reads; it also verifies a PPU-generated VBlank request wakes HALT and reaches the CPU handler. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. The optional expanded 14-case PPU set passes 14/14. | The normal startup profile skips boot-ROM execution, so the Nintendo-logo animation is not currently a boot test; the logo's down-scroll also polls LY rather than relying on the VBlank interrupt. The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Normal-line readable LY changes at dot 452; LCD startup retains its separately verified dot-454 edge. SCX high bits are sampled per background tile on a simplified fetch clock; SCY is sampled separately at tile-map/bitplane stages. The catch-up predicate follows Pan Docs; SameBoy's fetcher-state loop uses a different boundary, and the new unit regression only protects the Pan Docs hypothesis. Neither it nor the selected ROMs establish which predicate matches hardware. Exact BG push cadence and OBJ bus-fetch/FIFO arbitration remain incomplete. The one-dot first-fetch overlap is a model supported by the passing sprite-timing ROM, not independent hardware measurement; Pan Docs describes the X=0 penalty as 11 dots. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
+| PPU modes and Mode 3 timing | 456-dot scanlines and mode transitions; VBlank/STAT requests, final-line early LY reset and delayed LYC comparison, and mode-based VRAM/OAM access restrictions. Mode 3 uses a 172-dot baseline, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. BG and OBJ pixels pass through separate 16-pixel FIFOs; the first modeled OBJ fetch overlaps one dot with the initial BG fetch phase. During timed OBJ fetch, BG catch-up stops at Push or when the BG FIFO becomes non-empty; a row pushes only when the BG FIFO is empty. | `make test`: `dmg_ppu_test.cpp` checks the VBlank IF request and selected mode boundaries, access restrictions, SCX/window/object penalties, left-clipped OBJ output, and frame behavior. `game_boy_system_test.cpp` checks that CPU writes rejected in Mode 3 neither stall the CPU nor reappear in Mode 0, that polling until Mode 0 permits subsequent VRAM/OAM writes, and verifies the old and new values through CPU reads; it also verifies a PPU-generated VBlank request wakes HALT and reaches the CPU handler. `make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1` runs eleven external timing ROMs and writes logs/report under `build/test-roms/mooneye/`; all eleven pass with CPU bus transactions at the M-cycle end. The optional expanded 14-case PPU set passes 14/14. | The fast startup profile skips boot-ROM execution; the optional BIOS path and logo animation are covered by the local cross-core comparison below. The logo down-scroll polls LY rather than relying on the VBlank interrupt. The timing ROMs cover selected STAT/mode/OAM-access edges, not every PPU transition. Normal-line readable LY changes at dot 452; LCD startup retains its separately verified dot-454 edge. SCX high bits are sampled per background tile on a simplified fetch clock; SCY is sampled separately at tile-map/bitplane stages. The catch-up predicate follows Pan Docs; SameBoy's fetcher-state loop uses a different boundary, and the new unit regression only protects the Pan Docs hypothesis. Neither it nor the selected ROMs establish which predicate matches hardware. Exact BG push cadence and OBJ bus-fetch/FIFO arbitration remain incomplete. The one-dot first-fetch overlap is a model supported by the passing sprite-timing ROM, not independent hardware measurement; Pan Docs describes the X=0 penalty as 11 dots. Keep adding focused ROMs when visual or gameplay issues expose a specific gap. |
 | OAM DMA | FF46 schedules 160 bytes at one byte per M-cycle after startup, supports delayed restart, and arbitrates CPU OAM/source-bus access; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. | `make test`: `dmg_oam_dma_test.cpp`; six Mooneye OAM DMA cases pass: `basic`, `reg_read`, `sources-GS`, `oam_dma_start`, `oam_dma_timing`, `oam_dma_restart`. | Basic read contention is modeled; exact write-induced bus corruption, PPU/DMA rendering contention, and sub-M-cycle bus effects remain unmodeled. |
 | APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the 2026-10-26 run against the current core. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
-| Startup, frame stepping, and libretro | Default startup skips the boot ROM and begins at the DMG post-boot state at `$0100` with IME disabled. `stepFrame()` advances a nominal 70,224 T-cycles. The libretro core provides video, audio, input, save RAM, and MBC3 RTC memory interfaces; runtime callback exceptions are logged and fault execution until reset or reload. | `make test`: system and libretro tests include content-error diagnostics, STOP warnings, and callback-exception-boundary coverage; `dmg-acid2` and GB Pong regressions; the core has been loaded in Ubuntu RetroArch and common-game play has been checked manually. | Reserved-opcode diagnostics remain `stderr`-only, and placeholder handling continues execution. Boot-ROM execution and model-specific power-on behavior are not implemented. Continue testing selected games end to end; do not treat core loading alone as full compatibility. |
+| Startup, frame stepping, and libretro | The default fast path starts at `$0100` with a synthetic DMG post-boot state calibrated to the BIOS handoff. When `dmg_boot.bin` (or the compatible fallback name `gb_bios.bin`) is present in RetroArch's system directory, the core maps its 256 bytes at `$0000-$00FF`, starts the CPU at `$0000`, and unmaps it when the boot program writes nonzero to `$FF50`. Reset repeats the selected startup path. `stepFrame()` advances a nominal 70,224 T-cycles. | `make test`: system and libretro tests cover the synthetic BIOS overlay, `$FF50` handoff, optional system-directory loading, malformed-image diagnostics, content errors, STOP warnings, and callback-exception boundaries. With the local standard DMG BIOS, Mooneye `boot_regs-dmgABC`, `boot_hwio-dmgABCmgb`, and `boot_div-dmgABCmgb` all pass. The no-BIOS fast profile also passes all three after matching the handoff CPU/I/O values and divider phase. The core .so remains a local build artifact. | The fast profile skips the logo animation and initializes tested handoff state; it is not a byte-for-byte snapshot of all CPU-visible and internal memory (including logo-derived VRAM and OAM contents). Logo rendering/header checks and model-specific power-on behavior are not independently verified. Reserved-opcode diagnostics remain `stderr`-only, and placeholder handling continues execution. See [startup profile and boot-ROM scope](#startup-profile-and-boot-rom-scope). |
 
 The Mooneye `manual-only/sprite_priority` DMG frame also matches its v7.0
 reference image exactly (0/23,040 pixels differ). This verifies sprite-priority
 composition for that scene, not per-dot OBJ fetch timing; see the
 [reproducible visual check](ppu-scrolling.md#mooneye-manual-sprite-priority-image-2026-10-25).
+
+## Startup profile and boot-ROM scope
+
+LotusGB supports two startup paths. With no external image, the default system
+bypasses the boot ROM and starts a supported DMG cartridge at `$0100` with a
+synthesized post-boot state. With an optional 256-byte DMG image in RetroArch's
+system directory, the core executes it from `$0000`; writing nonzero to
+`$FF50` permanently exposes the cartridge ROM again. The preferred filename
+is `dmg_boot.bin`, matching the core's firmware metadata. `gb_bios.bin` is
+also accepted. Missing firmware falls back to the fast profile. A present but
+unreadable or wrong-sized image reports a load error instead of silently
+falling back.
+
+The implementation was exercised with the user's local standard DMG image
+(`~/roms/gb/gb_bios.bin`, 256 bytes); the BIOS itself remains outside the
+repository. With BIOS execution, Mooneye `acceptance/boot_regs-dmgABC`,
+`acceptance/boot_hwio-dmgABCmgb`, and `acceptance/boot_div-dmgABCmgb` all
+pass. The no-BIOS fast path also passes all three after its post-boot timer
+counter was set to `$ABC8`, matching the actual handoff counter captured at
+PC `$0100` from each of these three ROMs. Startup initialization sets P1 to
+`$CF`; NR13 and NR23 return `$FF`, as expected for write-only registers.
+Pan Docs lists the DMG/MGB handoff values at PC `$0100`, including P1 `$CF`
+and DIV `$AB`, and identifies the Mooneye acceptance tests as evidence
+([Power-Up Sequence](https://gbdev.io/pandocs/Power_Up_Sequence.html)).
+
+This validates the BIOS handoff CPU registers, tested hardware-register
+values, and divider phase. The no-BIOS profile skips the logo animation and
+does not draw the Nintendo logo. It synthesizes this tested handoff state;
+it does not restore every internal memory byte produced by the animation,
+such as logo-derived VRAM and OAM contents. Those differences remain outside
+the fast-profile acceptance boundary unless a game exposes an observable
+problem.
+
+Captured at PC `$0100` with the three Mooneye ROMs:
+
+```text
+A=$01 F=$B0 B=$00 C=$13 D=$00 E=$D8 H=$01 L=$4D SP=$FFFE
+Internal divider counter=$ABC8 (DIV reads $AB)
+```
+
+`F` follows the cartridge header checksum. The fast profile initializes these
+CPU values and the tested I/O/divider state; it begins directly at the game
+entry point, without the boot animation.
+
+The focused local Mooneye run is reproducible with
+`build/mooneye_rom_runner <rom.gb> --boot-rom ~/roms/gb/gb_bios.bin`.
+
+Earlier, before the fast-profile divider phase was corrected, a local Mooneye
+diagnostic run with the synthetic profile passed `acceptance/boot_regs-dmgABC`
+but failed `acceptance/boot_hwio-dmgABCmgb` and `acceptance/boot_div-dmgABCmgb`.
+The first hardware-I/O mismatch was at `$FF04` (DIV): expected `$AD`, got
+`$AC`. The updated fast profile and optional boot-ROM path later passed all
+three tests, as described above. No commercial ROM or derived capture was used
+in this diagnostic. Test sources: [boot_hwio-dmgABCmgb](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/boot_hwio-dmgABCmgb.s)
+and [boot_div-dmgABCmgb](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/boot_div-dmgABCmgb.s).
+
+## DMG logo animation cross-core comparison (2026-10-27)
+
+The user reported that the upper and lower parts of the Nintendo logo moved at
+different times in macOS RetroArch; the effect was not observed with SameBoy.
+The cause identified in LotusGB was submission of a partially updated PPU
+framebuffer. `stepFrame()` advances 70,224 T-cycles per callback, but the BIOS
+enables the LCD partway through a callback. A diagnostic trace with this BIOS
+found subsequent callbacks approximately 14,428 PPU cycles after frame start,
+about 31.6 scanlines into the visible frame. The working framebuffer is drawn
+incrementally, so it could contain lines from two PPU frames at submission.
+
+LotusGB now copies the working framebuffer at VBlank and submits that completed
+snapshot through libretro. The PPU regression in `dmg_ppu_test.cpp` verifies
+that the snapshot stays stable while the next frame is drawn and updates at
+VBlank. CPU frame stepping and audio timing are unchanged. `make test` and
+`make build` passed after the change.
+
+For a direct comparison, LotusGB and SameBoy's installed macOS ARM64 libretro
+core ran the same `boot_regs-dmgABC` homebrew ROM with the same locally supplied
+DMG BIOS for 340 callbacks. Before the fix, 291 of 340 callback images matched
+exactly; with the completed-frame snapshot, 339 of 340 matched. The remaining
+difference at zero-based callback 334 matched SameBoy's callback 335 and was a
+whole logo transition one callback earlier. The earlier claim that all 340
+callbacks matched before the fix was incorrect and is withdrawn. These
+captures used a libretro runner, not the RetroArch window or physical hardware.
+
+After the revised core was installed, the user reported that visible tearing
+had improved on Mac. At the time of the initial retest, the core in RetroArch's
+core directory was still the older build; the actual file selected for that
+retest was not established. macOS builds now produce an up-to-date `.dylib`, and
+`make install-retroarch-core-macos` explicitly updates the installed core; see
+[macOS development setup](macos-development.md#graphical-testing).
+
+Both LotusGB and SameBoy report about 59.7275 FPS to RetroArch. Display pacing
+and any speed adjustment or repeated frames depend on the frontend and monitor;
+this change addresses incomplete framebuffer submission. Neither the cross-core
+comparison nor the user's visual report establishes exact physical-DMG timing
+or rules out all other display artifacts.
 
 ## Libretro input phase and VBlank response (2026-10-26)
 
@@ -520,13 +614,28 @@ starting partway through the free-running clock period. CPU-driven system
 tests check handler dispatch at `$0058`, HALT wake, RETI stack restoration,
 and completion despite repeatedly resetting DIV.
 
-This adds disconnected-port behavior, not multiplayer support. The initial
-phase is a deterministic synthetic profile, not a claim about physical
-DMG/MGB boot timing. In particular, the model-specific Mooneye
-`boot_sclk_align-dmgABCmgb` ROM targets that boot-phase detail and is separate
-from the existing default regression set. It still fails with the current
-profile (183,809 M-cycles at the actual result marker); do not claim independent
-hardware ROM acceptance for serial timing from the component/system tests.
+This adds disconnected-port behavior, not multiplayer support. The clock
+phase follows startup: the BIOS path begins four T-cycles into reset timing;
+the synthesized post-boot profile uses phase `$1C8`, matching the low nine
+bits of its `$ABC8` divider handoff value. This preserves a free-running serial
+phase that is not restarted by SC writes or DIV resets.
+
+On 2026-10-27, Mooneye's model-specific
+`boot_sclk_align-dmgABCmgb` passed with both startup paths: fast startup at
+183,421 M-cycles and the supplied DMG BIOS at 6,043,515 M-cycles. Before the
+phase initialization, the ROM reached its assertion with mismatched counters
+in both modes. The focused component tests now check both startup phases. This
+is test-ROM evidence for the ROM's documented DMG ABC/MGB target, not an
+independent physical-hardware measurement or a claim about other DMG revisions.
+
+Reproduce from the repository root with the external Mooneye suite:
+
+```sh
+make -C src/lib mooneye-runner build_dir="$PWD/build"
+build/mooneye_rom_runner ../test-roms/mooneye/acceptance/serial/boot_sclk_align-dmgABCmgb.gb
+build/mooneye_rom_runner ../test-roms/mooneye/acceptance/serial/boot_sclk_align-dmgABCmgb.gb \
+  --boot-rom "$HOME/Documents/RetroArch/system/dmg_boot.bin"
+```
 
 References: [Pan Docs serial transfer](https://gbdev.io/pandocs/Serial_Data_Transfer_(Link_Cable).html),
 [AntonioND's cycle-accurate hardware notes, section 5.1](https://github.com/AntonioND/giibiiadvance/blob/master/docs/TCAGBD.pdf),

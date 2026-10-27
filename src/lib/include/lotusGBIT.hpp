@@ -22,10 +22,10 @@ public:
     LotusGBIT(unique_ptr<ICPU> &&upCPU, shared_ptr<IMemoryGBIT> spMMU,
               shared_ptr<IDecoder> spDecoder, shared_ptr<IDecoder> spDecoderCB);
     ~LotusGBIT() override = default;
-    void init(size_t instruction_mem_size, uint8_t *instruction_mem);
-    void getState(LotusGBState *pState);
-    void setState(LotusGBState *pState);
-    int step(); // step one CPU instruction
+    void init(size_t instruction_mem_size, uint8_t *instruction_mem) override;
+    void getState(LotusGBState *pState) override;
+    void setState(LotusGBState *pState) override;
+    int step() override; // step one CPU instruction
 private:
     // Keep borrowed CPU dependencies alive; members are destroyed after upCPU.
     shared_ptr<IMemoryGBIT> spMMU;

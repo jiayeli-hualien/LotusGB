@@ -32,6 +32,32 @@ void testDividerAndTimerClockSelection() {
     expect(timer.read(0xFF07) == 0xFD, "unused TAC bits read as one");
 }
 
+void testDmgBootRomDividerPhase() {
+    InterruptRegisters interrupts;
+    Timer timer(interrupts);
+    timer.initializeDmgBootRomState();
+    timer.advanceTCycles(251);
+    expect(timer.read(0xFF04) == 0,
+           "DMG boot divider starts four cycles into the first increment period");
+    timer.advanceTCycles(1);
+    expect(timer.read(0xFF04) == 1,
+           "DMG boot divider reaches its first increment at 256 total cycles");
+}
+
+void testDmgFastStartupUsesCapturedDividerPhase() {
+    InterruptRegisters interrupts;
+    Timer timer(interrupts);
+    timer.initializeDmgPostBootState();
+    expect(timer.read(0xFF04) == 0xAB,
+           "fast startup preserves the captured DIV high byte");
+    timer.advanceTCycles(55);
+    expect(timer.read(0xFF04) == 0xAB,
+           "captured handoff phase delays DIV until the next full period");
+    timer.advanceTCycles(1);
+    expect(timer.read(0xFF04) == 0xAC,
+           "captured handoff phase reaches the next DIV value at the expected cycle");
+}
+
 void testAllTacFrequencies() {
     constexpr unsigned tCyclesPerIncrement[4] = {1024, 16, 64, 256};
 
@@ -187,6 +213,8 @@ void testInterruptRegistersMaskAndExposeRequests() {
 
 int main() {
     testDividerAndTimerClockSelection();
+    testDmgBootRomDividerPhase();
+    testDmgFastStartupUsesCapturedDividerPhase();
     testAllTacFrequencies();
     testDividerWriteCanCauseTimerEdge();
     testDividerApuClockUsesFallingEdgesAndDividerWrites();

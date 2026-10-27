@@ -61,6 +61,26 @@ and [HALT](https://gbdev.io/pandocs/halt.html).
 A CPU M-cycle is four T-cycles. The five-cycle entry duration is not by itself
 proof of the exact HALT wake phase or intra-cycle IF acknowledgement timing.
 
+## STOP wake signal
+
+On DMG, STOP wake is modeled from a selected JOYP input line (P10–P13)
+transitioning low. [Pan Docs' STOP description](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction)
+states that a low P10–P13 line terminates STOP and recommends selecting the
+direction and/or button group through P1/JOYP before entering STOP. LotusGB
+uses the existing selected, active-low JOYP line transition for this signal.
+That line transition also requests the joypad IF bit, but STOP wake does not
+consult IE or IME; those govern interrupt acceptance/service, not the wake
+signal. Consequently the CPU resumes the next opcode even with IME=0 and IE=0,
+while an unselected button group does not pull a modeled input line low.
+
+The distinction is covered by
+`testSelectedJoypadLineWakesStopWithoutInterruptAcceptance`: it selects the
+button group, enters STOP, verifies an unselected direction press leaves the
+clock stopped, then presses A and checks IF, continued instruction execution,
+and no interrupt-vector entry. The result is documentation-backed, not a
+physical-DMG measurement. The precise wake edge phase, a line already low as
+STOP begins, and exceptional STOP-entry races remain unverified.
+
 ## Current implementation and evidence
 
 | Area | Current model | Evidence / limitation |
@@ -72,7 +92,7 @@ proof of the exact HALT wake phase or intra-cycle IF acknowledgement timing.
 | Prefetch / CB | CPU compensates for its prefetched opcode when saving the return address. It does not accept an interrupt between CB bytes. | `testInterruptWaitsUntilCbInstructionCompletes`. Prefetch compensation is internal bookkeeping; software must see the correct return PC. |
 | RETI | The instruction restores PC and enables IME. | `testRetiImmediatelyServicesAnotherPendingInterrupt` checks immediate service before executing the resumed opcode, stack address/order and IF acknowledgement. External `reti_intr_timing` and `reti_timing` pass. |
 | HALT | CPU idles while the shared clock advances peripherals. Pending IF/IE wakes it; IME decides whether to enter a handler. | `testHaltWakeAndHaltBug`, `testStopDecodeAndHaltIdle`, and `testTimerInterruptWakesHaltAndRunsHandler`. Exact wake/entry phase is still under investigation. |
-| STOP | CPU exposes a separate stopped state with zero elapsed CPU T-cycles; explicit wake resumes fetching. | CPU STOP tests and system frame-step exit coverage. Automatic joypad wake and full hardware STOP behavior are not implemented. |
+| STOP | CPU exposes a separate stopped state with zero elapsed CPU T-cycles; a selected JOYP input-line falling edge wakes it independently of IE/IME, and fetching resumes. | CPU STOP tests plus `testSelectedJoypadLineWakesStopWithoutInterruptAcceptance`, which checks unselected input, selected wake, IF, continued execution and no handler entry. Based on Pan Docs; wake phase, already-low-at-entry and exceptional STOP races have no physical-DMG validation. |
 | Peripheral timing | Timer, PPU and joypad own request generation; CPU owns selection/service. | Component tests plus system integration. Unconnected serial internal-clock completion now requests IF bit 3, with component and CPU/HALT system tests. Actual link peers and external clock input are unsupported. |
 | Bus phase | `SystemClock` advances components to the end of an M-cycle before a CPU bus access. | Existing CPU bus-access tests and external timing ROMs. This is a model with limited validation, not a guarantee for every register conflict. |
 

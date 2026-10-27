@@ -11,9 +11,23 @@ constexpr uint8_t TRANSFER_ENABLE = 0x80;
 constexpr uint8_t INTERNAL_CLOCK = 0x01;
 constexpr uint8_t UNUSED_SC_BITS = 0x7E;
 constexpr unsigned BIT_PERIOD_T_CYCLES = 512; // 4,194,304 / 8,192 Hz
+constexpr unsigned DMG_POST_BOOT_SERIAL_PHASE_T_CYCLES = 0x1C8;
+constexpr unsigned DMG_BOOT_ROM_SERIAL_PHASE_T_CYCLES = 4;
 }
 
 DmgSerial::DmgSerial(IInterruptController &interrupts) : interrupts(interrupts) {}
+
+void DmgSerial::initializeDmgPostBootState() {
+    // The synthesized DIV handoff value is $ABC8; the serial divider's
+    // corresponding phase is the low nine bits, $1C8.
+    clockPhaseTCycles = DMG_POST_BOOT_SERIAL_PHASE_T_CYCLES;
+}
+
+void DmgSerial::initializeDmgBootRomState() {
+    // CPU execution begins four T-cycles after reset, so the free-running
+    // serial divider has already advanced by four cycles at the first fetch.
+    clockPhaseTCycles = DMG_BOOT_ROM_SERIAL_PHASE_T_CYCLES;
+}
 
 uint8_t DmgSerial::read(uint16_t address) {
     if (address == SB_ADDRESS)

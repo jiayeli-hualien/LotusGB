@@ -1,6 +1,6 @@
 # Let three sub folders build, pass arguments
 
-executables := application gbit_test libretro
+executables := gbit_test libretro
 sub_folders := lib $(executables)
 
 .PHONY: $(sub_folders) unit_test libretro_test test

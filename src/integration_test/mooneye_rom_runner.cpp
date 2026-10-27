@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -36,8 +37,10 @@ void printRegisters(LOTUSGB::Reg &registers) {
 } // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        std::cerr << "Usage: mooneye_rom_runner <test-rom.gb>\n";
+    if (argc != 2 &&
+        (argc != 4 || std::string(argv[2]) != "--boot-rom")) {
+        std::cerr << "Usage: mooneye_rom_runner <test-rom.gb> "
+                     "[--boot-rom <dmg-boot-rom.bin>]\n";
         return 2;
     }
 
@@ -53,9 +56,24 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    std::vector<uint8_t> bootRom;
+    if (argc == 4) {
+        std::ifstream bootRomFile(argv[3], std::ios::binary);
+        if (!bootRomFile) {
+            std::cerr << "Could not open DMG boot ROM: " << argv[3] << '\n';
+            return 2;
+        }
+        bootRom.assign(std::istreambuf_iterator<char>(bootRomFile), {});
+        if (bootRom.size() != 0x100) {
+            std::cerr << "DMG boot ROM must be exactly 256 bytes: " << argv[3]
+                      << '\n';
+            return 2;
+        }
+    }
+
     // Keep the ROM image to recognize the protocol breakpoint. The curated
     // tests report from fixed ROM code, not bank-switched RAM/HRAM code.
-    LOTUSGB::GameBoySystem system(rom);
+    LOTUSGB::GameBoySystem system(rom, nullptr, nullptr, std::move(bootRom));
     constexpr uint64_t MAX_M_CYCLES = 10'000'000;
     for (uint64_t cycle = 0; cycle < MAX_M_CYCLES; ++cycle) {
         const auto result = system.stepOneCycle();

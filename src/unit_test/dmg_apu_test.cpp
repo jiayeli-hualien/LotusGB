@@ -16,6 +16,16 @@ void expect(bool condition, const char *message) {
     }
 }
 
+void testPulseFrequencyLowRegistersAreWriteOnly() {
+    DmgApu apu;
+    apu.write(0xFF13, 0x34);
+    apu.write(0xFF18, 0x56);
+    expect(apu.read(0xFF13) == 0xFF,
+           "NR13 reads as all ones despite retaining its written frequency");
+    expect(apu.read(0xFF18) == 0xFF,
+           "NR23 reads as all ones despite retaining its written frequency");
+}
+
 void testChannelOneProducesStereoSamplesAtConfiguredRate() {
     DmgApu apu;
     apu.write(0xFF26, 0x80);
@@ -444,6 +454,7 @@ void testAllChannelDacsOffMuteOutputImmediately() {
 }
 
 int main() {
+    testPulseFrequencyLowRegistersAreWriteOnly();
     testChannelOneProducesStereoSamplesAtConfiguredRate();
     testChannelTwoProducesAudioOnItsIndependentStereoRoute();
     testWaveChannelReadsWaveRamAndRoutesStereoOutput();

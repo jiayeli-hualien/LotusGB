@@ -72,6 +72,7 @@ void DmgPpu::initializeDmgPostBootState() {
     dot = 0;
     mode3.reset();
     frameBuffer.fill(0);
+    completedFrameBuffer.fill(0);
     lycCoincidence = true;
     statInterruptLine = false;
 }
@@ -153,8 +154,10 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 windowLineCounter = 0;
                 windowYTriggered = lcdEnabled() && windowY == 0;
                 mode3.reset();
-                if (!lcdEnabled())
+                if (!lcdEnabled()) {
                     frameBuffer.fill(0);
+                    completedFrameBuffer.fill(0);
+                }
                 updateStatInterruptLine();
             }
             break;
@@ -211,6 +214,10 @@ void DmgPpu::writeOamFromDma(size_t offset, uint8_t value) {
 
 const DmgPpu::FrameBuffer &DmgPpu::getFrameBuffer() const {
     return frameBuffer;
+}
+
+const DmgPpu::FrameBuffer &DmgPpu::getCompletedFrameBuffer() const {
+    return completedFrameBuffer;
 }
 
 uint8_t DmgPpu::getMode() const {
@@ -300,6 +307,7 @@ void DmgPpu::advanceDot() {
         startupScanline = false;
         dot = 0;
         if (ly == VISIBLE_SCANLINES) {
+            completedFrameBuffer = frameBuffer;
             windowYTriggered = false;
             // DMG also clocks the Mode 2 STAT source at VBlank entry,
             // although STAT's mode field becomes 1. Respect the combined

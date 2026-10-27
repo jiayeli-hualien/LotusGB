@@ -79,11 +79,42 @@ void testStartDoesNotResetSerialClockPhase() {
     expect(serial.read(0xFF02) == 0x7F && (interrupts.read(0xFF0F) & 8),
            "completion follows eight shared-clock edges rather than a new 4096-cycle countdown");
 }
+
+void testStartupProfilesRestoreSerialClockPhase() {
+    {
+        InterruptRegisters interrupts;
+        DmgSerial serial(interrupts);
+        serial.initializeDmgBootRomState();
+        serial.write(0xFF01, 0x80);
+        serial.write(0xFF02, 0x81);
+        serial.advanceTCycles(507);
+        expect(serial.read(0xFF01) == 0x80,
+               "boot-ROM startup phase has not reached its first serial edge at 507 cycles");
+        serial.advanceTCycles(1);
+        expect(serial.read(0xFF01) == 1,
+               "boot-ROM serial phase starts four T-cycles after reset");
+    }
+
+    {
+        InterruptRegisters interrupts;
+        DmgSerial serial(interrupts);
+        serial.initializeDmgPostBootState();
+        serial.write(0xFF01, 0x80);
+        serial.write(0xFF02, 0x81);
+        serial.advanceTCycles(55);
+        expect(serial.read(0xFF01) == 0x80,
+               "post-boot startup phase has not reached its first serial edge at 55 cycles");
+        serial.advanceTCycles(1);
+        expect(serial.read(0xFF01) == 1,
+               "post-boot serial phase matches the synthesized $ABC8 divider phase");
+    }
+}
 }
 
 int main() {
     testRegistersAndDisconnectedTransfer();
     testExternalClockWaitsAndAbortRetainsPartialData();
     testStartDoesNotResetSerialClockPhase();
+    testStartupProfilesRestoreSerialClockPhase();
     std::cout << "DMG serial tests passed\n";
 }

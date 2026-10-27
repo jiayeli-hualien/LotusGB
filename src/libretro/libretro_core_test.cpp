@@ -3,12 +3,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -50,6 +52,7 @@ std::vector<uint8_t> readBinary(const std::string &path) {
 
 std::vector<std::string> logMessages;
 std::vector<retro_log_level> logLevels;
+std::string systemDirectory;
 
 void frontendLog(retro_log_level level, const char *format, ...) {
     char buffer[512];
@@ -74,6 +77,12 @@ bool environmentCallback(unsigned command, void *data) {
     }
     if (command == RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS)
         return true;
+    if (command == RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY) {
+        if (systemDirectory.empty())
+            return false;
+        *static_cast<const char **>(data) = systemDirectory.c_str();
+        return true;
+    }
     return false;
 }
 
@@ -179,6 +188,23 @@ std::array<uint32_t, WIDTH * HEIGHT> runPongWithUpButton(
     return result;
 }
 
+size_t countDarkPixels(const std::array<uint32_t, WIDTH * HEIGHT> &frame,
+                       unsigned xBegin, unsigned xEnd,
+                       unsigned yBegin, unsigned yEnd) {
+    size_t count = 0;
+    for (unsigned y = yBegin; y < yEnd; ++y) {
+        for (unsigned x = xBegin; x < xEnd; ++x) {
+            const uint32_t pixel = frame[y * WIDTH + x];
+            const uint8_t red = static_cast<uint8_t>((pixel >> 16) & 0xFF);
+            const uint8_t green = static_cast<uint8_t>((pixel >> 8) & 0xFF);
+            const uint8_t blue = static_cast<uint8_t>(pixel & 0xFF);
+            if (red < 250 || green < 250 || blue < 250)
+                ++count;
+        }
+    }
+    return count;
+}
+
 void testLibretroInputChangesPongGameplayFrame() {
     const std::string assetDir = LOTUSGB_LIBRETRO_TEST_ASSET_DIR;
     const std::vector<uint8_t> rom = readBinary(assetDir + "/gb-pong/gb-pong.gb");
@@ -189,7 +215,13 @@ void testLibretroInputChangesPongGameplayFrame() {
     for (size_t i = 0; i < neutralFrame.size(); ++i)
         differingPixels += neutralFrame[i] != upFrame[i];
     expect(differingPixels > 0,
-           "holding D-Pad Up visibly moves the player's paddle in Pong");
+           "holding D-Pad Up changes the Pong gameplay frame");
+    expect(countDarkPixels(neutralFrame, 4, 12, 50, 100) > 100 &&
+               countDarkPixels(neutralFrame, 4, 12, 10, 40) < 16,
+           "neutral Pong leaves the player's paddle in the middle of the screen");
+    expect(countDarkPixels(upFrame, 4, 12, 10, 40) > 100 &&
+               countDarkPixels(upFrame, 4, 12, 50, 100) < 16,
+           "holding Up moves the player's paddle from the middle to the top");
 }
 
 void testLibretroPublishesPulseChannelAudio() {
@@ -284,6 +316,80 @@ void testLibretroExposesMbc1BatteryRam() {
     expect(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM) == nullptr &&
                retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM) == 0,
            "core does not report an unsupported memory type");
+    retro_unload_game();
+}
+
+void testLibretroExecutesMbc1BankAndRestoresBatteryRam() {
+    auto makeRom = [](bool incrementSavedValue) {
+        std::vector<uint8_t> rom(0x20000, 0x00); // Eight 16 KiB banks.
+        const uint8_t bankZeroProgram[] = {
+            0x3E, 0x0A,             // LD A, $0A
+            0xEA, 0x00, 0x00,       // LD ($0000), A (enable cartridge RAM)
+            0x3E, 0x02,             // LD A, bank 2
+            0xEA, 0x00, 0x20,       // LD ($2000), A (select ROM bank 2)
+            0xCD, 0x00, 0x40,       // CALL $4000 (execute bank 2)
+            0x18, 0xFE,             // Loop forever after returning.
+        };
+        std::copy(std::begin(bankZeroProgram), std::end(bankZeroProgram),
+                  rom.begin() + 0x0100);
+
+        if (incrementSavedValue) {
+            const uint8_t bankTwoProgram[] = {
+                0xFA, 0x00, 0xA0,   // LD A, ($A000)
+                0x3C,               // INC A
+                0xEA, 0x00, 0xA0,   // LD ($A000), A
+                0xC9,               // RET
+            };
+            std::copy(std::begin(bankTwoProgram), std::end(bankTwoProgram),
+                      rom.begin() + 0x8000);
+        } else {
+            const uint8_t bankTwoProgram[] = {
+                0x3E, 0xA5,         // LD A, $A5
+                0xEA, 0x00, 0xA0,   // LD ($A000), A
+                0xC9,               // RET
+            };
+            std::copy(std::begin(bankTwoProgram), std::end(bankTwoProgram),
+                      rom.begin() + 0x8000);
+        }
+
+        rom[0x0147] = 0x03; // MBC1 + RAM + battery
+        rom[0x0148] = 0x02; // 128 KiB ROM
+        rom[0x0149] = 0x02; // 8 KiB external RAM
+        return rom;
+    };
+
+    std::vector<uint8_t> rom = makeRom(false);
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game),
+           "core loads an MBC1 game with multiple ROM banks");
+    for (unsigned frame = 0; frame < 2; ++frame)
+        retro_run();
+
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x2000,
+           "MBC1 game exposes its declared battery RAM");
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr && saveRam[0] == 0xA5,
+           "CPU executes bank 2 and writes its result to MBC1 battery RAM");
+    const std::vector<uint8_t> restoredSave(saveRam, saveRam + 0x2000);
+
+    retro_unload_game();
+    rom = makeRom(true);
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game),
+           "core reloads a second MBC1 game instance");
+    saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr,
+           "reloaded MBC1 game exposes a writable save block");
+    std::copy(restoredSave.begin(), restoredSave.end(), saveRam);
+    for (unsigned frame = 0; frame < 2; ++frame)
+        retro_run();
+    expect(saveRam[0] == 0xA6,
+           "banked MBC1 code reads restored SRAM, updates it, and writes it back");
     retro_unload_game();
 }
 
@@ -628,6 +734,55 @@ void testLibretroReportsApiAndVideoTiming() {
            "core reports the DMG audio output sample rate");
 }
 
+void testLibretroLoadsOptionalBootRomFromSystemDirectory() {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto directory = std::filesystem::temp_directory_path() /
+                           ("lotusgb-bootrom-" + std::to_string(nonce));
+    std::filesystem::create_directories(directory);
+    systemDirectory = directory.string();
+
+    const auto bootRomPath = directory / "dmg_boot.bin";
+    {
+        std::ofstream file(bootRomPath, std::ios::binary);
+        std::array<uint8_t, 0x100> bootRom{};
+        file.write(reinterpret_cast<const char *>(bootRom.data()),
+                   static_cast<std::streamsize>(bootRom.size()));
+        expect(static_cast<bool>(file), "synthetic boot ROM fixture is written");
+    }
+
+    const std::vector<uint8_t> rom = readBinary(
+        std::string(LOTUSGB_LIBRETRO_TEST_ASSET_DIR) + "/gb-pong/gb-pong.gb");
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    logMessages.clear();
+    expect(retro_load_game(&game),
+           "core loads content when a valid optional DMG boot ROM is present");
+    expect(!logMessages.empty() &&
+               logMessages.back().find("Using DMG boot ROM") != std::string::npos,
+           "core reports the boot ROM selected from the system directory");
+    retro_unload_game();
+
+    {
+        std::ofstream file(bootRomPath, std::ios::binary | std::ios::trunc);
+        std::array<uint8_t, 0xFF> invalidBootRom{};
+        file.write(reinterpret_cast<const char *>(invalidBootRom.data()),
+                   static_cast<std::streamsize>(invalidBootRom.size()));
+        expect(static_cast<bool>(file), "invalid boot ROM fixture is written");
+    }
+
+    logMessages.clear();
+    expect(!retro_load_game(&game),
+           "core rejects an invalid-size DMG boot ROM instead of hiding the error");
+    expect(!logMessages.empty() && logLevels.back() == RETRO_LOG_ERROR &&
+               logMessages.back().find("exactly 256 bytes") != std::string::npos,
+           "core explains why an invalid boot ROM cannot load");
+    retro_unload_game();
+
+    systemDirectory.clear();
+    std::filesystem::remove_all(directory);
+}
+
 }
 
 int main() {
@@ -639,11 +794,13 @@ int main() {
     retro_init();
 
     testLibretroReportsApiAndVideoTiming();
+    testLibretroLoadsOptionalBootRomFromSystemDirectory();
     testLibretroLoadsAcid2AndPublishesReferenceFrame();
     testLibretroLoadsMaximumMbc5RomSize();
     testLibretroInputChangesPongGameplayFrame();
     testLibretroPublishesPulseChannelAudio();
     testLibretroExposesMbc1BatteryRam();
+    testLibretroExecutesMbc1BankAndRestoresBatteryRam();
     testLibretroExposesMbc2BatteryRam();
     testLibretroPersistsMbc5BatteryRamAcrossFrontendReload();
     testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();

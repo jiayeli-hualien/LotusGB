@@ -5,7 +5,7 @@ build_dir := $(CURDIR)/build
 
 # PHONY: non file targets
 .PHONY: build test test-roms test-mooneye test-mooneye-visual test-homebrew \
-	test-gbmicrotest-ppu-latch clean
+	test-gbmicrotest-ppu-latch install-retroarch-core-macos clean
 
 TEST_ROM_DIR ?= ../test-roms/dmg_sound
 TEST_ROM_FRAMES ?= 1200
@@ -21,6 +21,7 @@ MOONEYE_SUITE_DIR ?= ../test-roms/mooneye
 MOONEYE_VISUAL_SUITE_DIR ?= ../test-roms/game-boy-test-roms-v7.0/mooneye-test-suite
 VISUAL_TEST_PYTHON ?= $(build_dir)/visual-venv/bin/python
 GBMICROTEST_SUITE_DIR ?= ../test-roms/gbmicrotest
+RETROARCH_CORE_DIR ?= $(HOME)/Library/Application Support/RetroArch/cores
 
 all: build
 
@@ -29,6 +30,18 @@ $(build_dir):
 
 build: $(build_dir)
 	$(MAKE) -C $(src_dir) build_dir=$(build_dir)
+
+install-retroarch-core-macos: $(build_dir)
+	@test "$$(uname -s)" = Darwin || { printf '%s\n' 'This target requires macOS.' >&2; exit 1; }
+	$(MAKE) -C $(src_dir)/libretro build build_dir=$(build_dir)
+	@test -d "$(RETROARCH_CORE_DIR)" || { printf '%s\n' 'RetroArch core directory not found; set RETROARCH_CORE_DIR.' >&2; exit 1; }
+	@set -eu; \
+		tmp="$$(mktemp "$(RETROARCH_CORE_DIR)/.lotusgb_libretro.XXXXXXXX")"; \
+		trap 'rm -f "$$tmp"' EXIT; \
+		cp "$(build_dir)/lotusgb_libretro.dylib" "$$tmp"; \
+		chmod 755 "$$tmp"; \
+		mv -f "$$tmp" "$(RETROARCH_CORE_DIR)/lotusgb_libretro.dylib"
+	@printf '%s\n' 'Installed LotusGB core. Restart RetroArch to load it.'
 
 test: $(build_dir)
 	$(MAKE) -C $(src_dir) test build_dir=$(build_dir)

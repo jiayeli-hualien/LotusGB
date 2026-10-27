@@ -12,11 +12,15 @@ core_sources := $(filter-out ../lib/GBITCPU.cpp ../lib/lotusGBIT.cpp \
 	../lib/lotus_gbit_c_wrapper.cpp ../lib/memoryGBIT.cpp,$(wildcard ../lib/*.cpp))
 asset_dir := ../../tests/roms
 
+ifeq ($(shell uname -s),Darwin)
+macos_core := $(build_dir)/lotusgb_libretro.dylib
+endif
+
 .PHONY: all build test rom-test-runner
 
 all: build
 
-build: $(build_dir)/lotusgb_libretro.so $(build_dir)/lotusgb_libretro.info
+build: $(build_dir)/lotusgb_libretro.so $(build_dir)/lotusgb_libretro.info $(macos_core)
 
 test: $(build_dir)/libretro_core_test
 	$(build_dir)/libretro_core_test
@@ -29,6 +33,9 @@ $(generated_tables): $(csv_sources) ../../tools/generate_decode_tables.py
 $(build_dir)/lotusgb_libretro.so: libretro_core.cpp $(core_sources) \
 		$(core_headers) $(libretro_header) $(libretro_headers) $(generated_tables) | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ libretro_core.cpp $(core_sources) -shared
+
+$(build_dir)/lotusgb_libretro.dylib: $(build_dir)/lotusgb_libretro.so
+	cp $< $@
 
 $(build_dir)/lotusgb_libretro.info: $(core_info) | $(build_dir)
 	cp $< $@

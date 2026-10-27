@@ -1,6 +1,7 @@
 #include "libretro.h"
 
 #include <array>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
@@ -21,39 +22,111 @@ constexpr unsigned HEIGHT = 144;
 constexpr size_t PIXEL_COUNT = WIDTH * HEIGHT;
 
 std::array<uint32_t, PIXEL_COUNT> lastFrame{};
+std::string systemDirectory;
+unsigned activePixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
 unsigned videoFrameCount = 0;
 size_t audioFrameCount = 0;
 bool hasVideoFrame = false;
 std::string callbackError;
 unsigned currentFrame = 0;
+std::ofstream frameSequence;
+unsigned captureStartFrame = 0;
+unsigned captureEndFrame = 0;
 struct InputEvent { unsigned start, end, button; };
 std::vector<InputEvent> inputEvents;
 
 bool environmentCallback(unsigned command, void *data) {
+    if (command == RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY) {
+        if (!data)
+            return false;
+        *static_cast<const char **>(data) =
+            systemDirectory.empty() ? nullptr : systemDirectory.c_str();
+        return true;
+    }
     if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT) {
-        return data && *static_cast<unsigned *>(data) ==
-                           RETRO_PIXEL_FORMAT_XRGB8888;
+        if (!data)
+            return false;
+        const unsigned requested = *static_cast<unsigned *>(data);
+        if (requested != RETRO_PIXEL_FORMAT_0RGB1555 &&
+            requested != RETRO_PIXEL_FORMAT_XRGB8888 &&
+            requested != RETRO_PIXEL_FORMAT_RGB565)
+            return false;
+        activePixelFormat = requested;
+        return true;
     }
     if (command == RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS)
         return true;
+    if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
+        if (!data)
+            return false;
+        auto *variable = static_cast<retro_variable *>(data);
+        if (!variable->key)
+            return false;
+        const std::string environmentName =
+            std::string("LOTUSGB_CORE_OPTION_") + variable->key;
+        variable->value = std::getenv(environmentName.c_str());
+        return variable->value != nullptr;
+    }
     return false;
 }
 
 void videoRefreshCallback(const void *data, unsigned width, unsigned height,
                           size_t pitch) {
     ++videoFrameCount;
+    const size_t bytesPerPixel =
+        activePixelFormat == RETRO_PIXEL_FORMAT_XRGB8888 ? 4 : 2;
     if (!data || width != WIDTH || height != HEIGHT ||
-        pitch < WIDTH * sizeof(uint32_t)) {
+        pitch < WIDTH * bytesPerPixel) {
         callbackError = "core returned an invalid video frame";
         return;
     }
 
     const auto *bytes = static_cast<const uint8_t *>(data);
     for (unsigned row = 0; row < HEIGHT; ++row) {
-        std::memcpy(lastFrame.data() + row * WIDTH, bytes + row * pitch,
-                    WIDTH * sizeof(uint32_t));
+        const uint8_t *sourceRow = bytes + row * pitch;
+        for (unsigned column = 0; column < WIDTH; ++column) {
+            uint32_t pixel = 0;
+            if (activePixelFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
+                std::memcpy(&pixel, sourceRow + column * sizeof(uint32_t),
+                            sizeof(pixel));
+            } else {
+                uint16_t packed = 0;
+                std::memcpy(&packed, sourceRow + column * sizeof(packed),
+                            sizeof(packed));
+                if (activePixelFormat == RETRO_PIXEL_FORMAT_0RGB1555) {
+                    const uint8_t red = (packed >> 10) & 0x1F;
+                    const uint8_t green = (packed >> 5) & 0x1F;
+                    const uint8_t blue = packed & 0x1F;
+                    pixel = static_cast<uint32_t>(((red << 3) | (red >> 2)) << 16) |
+                            static_cast<uint32_t>(((green << 3) | (green >> 2)) << 8) |
+                            static_cast<uint32_t>((blue << 3) | (blue >> 2));
+                } else {
+                    const uint8_t red = (packed >> 11) & 0x1F;
+                    const uint8_t green = (packed >> 5) & 0x3F;
+                    const uint8_t blue = packed & 0x1F;
+                    pixel = static_cast<uint32_t>(((red << 3) | (red >> 2)) << 16) |
+                            static_cast<uint32_t>(((green << 2) | (green >> 4)) << 8) |
+                            static_cast<uint32_t>((blue << 3) | (blue >> 2));
+                }
+            }
+            lastFrame[row * WIDTH + column] = pixel;
+        }
     }
     hasVideoFrame = true;
+    const unsigned frameIndex = videoFrameCount - 1;
+    if (frameSequence.is_open() && frameIndex >= captureStartFrame &&
+        frameIndex < captureEndFrame) {
+        for (uint32_t pixel : lastFrame) {
+            const uint8_t rgb[] = {
+                static_cast<uint8_t>((pixel >> 16) & 0xff),
+                static_cast<uint8_t>((pixel >> 8) & 0xff),
+                static_cast<uint8_t>(pixel & 0xff),
+            };
+            frameSequence.write(reinterpret_cast<const char *>(rgb), sizeof(rgb));
+        }
+        if (!frameSequence)
+            callbackError = "failed writing captured frame sequence";
+    }
 }
 
 size_t audioSampleBatchCallback(const int16_t *, size_t frames) {
@@ -135,6 +208,7 @@ struct CoreApi {
     using SetInputState = void (*)(retro_input_state_t);
     using Init = void (*)(void);
     using Deinit = void (*)(void);
+    using GetSystemInfo = void (*)(retro_system_info *);
     using LoadGame = bool (*)(const retro_game_info *);
     using Run = void (*)(void);
     using UnloadGame = void (*)(void);
@@ -156,6 +230,7 @@ struct CoreApi {
         setInputState = loadFunction<SetInputState>(library.get(), "retro_set_input_state");
         init = loadFunction<Init>(library.get(), "retro_init");
         deinit = loadFunction<Deinit>(library.get(), "retro_deinit");
+        getSystemInfo = loadFunction<GetSystemInfo>(library.get(), "retro_get_system_info");
         loadGame = loadFunction<LoadGame>(library.get(), "retro_load_game");
         run = loadFunction<Run>(library.get(), "retro_run");
         unloadGame = loadFunction<UnloadGame>(library.get(), "retro_unload_game");
@@ -171,6 +246,8 @@ struct CoreApi {
     }
 
     void initialize() {
+        retro_system_info systemInfo{};
+        getSystemInfo(&systemInfo);
         init();
         initialized = true;
     }
@@ -218,6 +295,7 @@ struct CoreApi {
     SetInputState setInputState = nullptr;
     Init init = nullptr;
     Deinit deinit = nullptr;
+    GetSystemInfo getSystemInfo = nullptr;
     LoadGame loadGame = nullptr;
     Run run = nullptr;
     UnloadGame unloadGame = nullptr;
@@ -268,6 +346,14 @@ unsigned parseFrames(const char *value) {
     return static_cast<unsigned>(frames);
 }
 
+unsigned parseFrameIndex(const char *value) {
+    size_t consumed = 0;
+    const unsigned long frame = std::stoul(value, &consumed);
+    if (value[consumed] != '\0' || frame > 1000000)
+        throw std::runtime_error("frame index must be between 0 and 1000000");
+    return static_cast<unsigned>(frame);
+}
+
 unsigned parseRepetitions(const char *value) {
     size_t consumed = 0;
     const unsigned long repetitions = std::stoul(value, &consumed);
@@ -279,6 +365,41 @@ unsigned parseRepetitions(const char *value) {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (const char *configuredSystemDirectory =
+            std::getenv("LOTUSGB_SYSTEM_DIRECTORY")) {
+        systemDirectory = configuredSystemDirectory;
+        if (!systemDirectory.empty() &&
+            !std::filesystem::is_directory(systemDirectory)) {
+            std::cerr << "ROM runner error: system directory does not exist: "
+                      << systemDirectory << '\n';
+            return 2;
+        }
+    }
+
+    try {
+        const char *sequencePath = std::getenv("LOTUSGB_CAPTURE_SEQUENCE");
+        const char *captureStart = std::getenv("LOTUSGB_CAPTURE_START");
+        const char *captureEnd = std::getenv("LOTUSGB_CAPTURE_END");
+        if (sequencePath || captureStart || captureEnd) {
+            if (!sequencePath || !captureStart || !captureEnd)
+                throw std::runtime_error(
+                    "frame capture requires LOTUSGB_CAPTURE_SEQUENCE, "
+                    "LOTUSGB_CAPTURE_START, and LOTUSGB_CAPTURE_END");
+            captureStartFrame = parseFrameIndex(captureStart);
+            captureEndFrame = parseFrameIndex(captureEnd);
+            if (captureEndFrame <= captureStartFrame)
+                throw std::runtime_error(
+                    "capture end must be greater than capture start");
+            frameSequence.open(sequencePath, std::ios::binary | std::ios::trunc);
+            if (!frameSequence)
+                throw std::runtime_error(std::string("cannot create frame sequence: ") +
+                                         sequencePath);
+        }
+    } catch (const std::exception &error) {
+        std::cerr << "ROM runner error: " << error.what() << '\n';
+        return 2;
+    }
+
     unsigned repetitions = 1;
     int contentArgc = argc;
     try {
@@ -319,6 +440,7 @@ int main(int argc, char **argv) {
             videoFrameCount = 0;
             audioFrameCount = 0;
             hasVideoFrame = false;
+            activePixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
             callbackError.clear();
             CoreApi core(argv[1]);
             core.setEnvironment(environmentCallback);

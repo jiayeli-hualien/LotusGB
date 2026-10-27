@@ -45,6 +45,32 @@ void testCpuFetchesAndExecutesFromCartridgeThroughSystemBus() {
            "system clock accumulates all CPU M-cycles");
 }
 
+void testDmgBootRomOverlaysAndUnmapsBeforeCartridgeExecution() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    rom[0x0000] = 0x3E; // Cartridge opcode, hidden by the boot ROM.
+    rom[0x0001] = 0x24;
+    rom[0x0004] = 0x3E; // Visible after the boot ROM writes to FF50.
+    rom[0x0005] = 0x99;
+
+    std::vector<uint8_t> bootRom(0x100, 0x00);
+    bootRom[0x0000] = 0x3E; // LD A, $01
+    bootRom[0x0001] = 0x01;
+    bootRom[0x0002] = 0xE0; // LDH [$FF50], A
+    bootRom[0x0003] = 0x50;
+
+    GameBoySystem system(std::move(rom), nullptr, nullptr,
+                         std::move(bootRom));
+    expect(system.getCpuRegisters().getRefPC() == 0,
+           "boot ROM startup begins at the reset vector");
+
+    for (unsigned cycle = 0; cycle < 10; ++cycle)
+        expect(system.stepOneCycle().success,
+               "boot ROM and cartridge handoff execute successfully");
+
+    expect(system.getCpuRegisters().getRefA() == 0x99,
+           "FF50 unmaps the boot ROM and exposes cartridge code");
+}
+
 void testEchoRamReadsAndWritesWorkRam() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -360,6 +386,57 @@ void testFrameSteppingReturnsWhenCpuStops() {
            "frame stepping returns instead of looping forever during STOP");
 }
 
+void testSelectedJoypadLineWakesStopWithoutInterruptAcceptance() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x10,       // Select action buttons only.
+        0xE0, 0x00,       // LDH [JOYP], A
+        0x10, 0x00,       // STOP
+        0x06, 0x42,       // LD B, $42 after wake
+        0xF0, 0x0F,       // LDH A, [IF]
+        0x18, 0xFE,       // Loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+
+    GameBoySystem system(std::move(rom));
+    bool stopped = false;
+    for (unsigned cycle = 0; cycle < 20; ++cycle) {
+        const auto step = system.stepOneCycle();
+        expect(step.success, "STOP setup executes successfully");
+        if (step.tCyclesElapsed == 0) {
+            stopped = true;
+            break;
+        }
+    }
+    expect(stopped, "system enters STOP after configuring JOYP");
+    const uint64_t stoppedAt = system.getElapsedTCycles();
+
+    system.setButtonState(JoypadButton::Right, true);
+    expect(system.stepOneCycle().tCyclesElapsed == 0,
+           "an unselected direction line does not wake STOP");
+    expect(system.getElapsedTCycles() == stoppedAt,
+           "system time remains frozen without a selected low input line");
+
+    system.setButtonState(JoypadButton::A, true);
+    const auto wakeFetch = system.stepOneCycle();
+    expect(wakeFetch.success && wakeFetch.fetchedNewInst &&
+               wakeFetch.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+           "a selected action-line falling edge wakes STOP and resumes fetching");
+    for (unsigned cycle = 0;
+         cycle < 12 && system.getCpuRegisters().getRefA() != 0xF0; ++cycle)
+        expect(system.stepOneCycle().success,
+               "CPU continues executing after joypad wakes STOP");
+
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefB() == 0x42,
+           "the instruction after STOP executes after joypad wake");
+    expect((registers.getRefA() & INTERRUPT_JOYPAD) != 0,
+           "the same selected line transition requests the joypad IF bit");
+    expect(registers.getRefPC() >= 0x0100 && system.getElapsedTCycles() > stoppedAt,
+           "wake resumes cartridge execution without interrupt-vector service");
+}
+
 void testPostBootInterruptsWaitForEi() {
     std::vector<uint8_t> rom(0x8000, 0);
     const uint8_t program[] = {
@@ -573,6 +650,7 @@ int main() {
     testCpuRunsHramDmaRoutineAndReturnsToRom();
     testPostBootInterruptsWaitForEi();
     testCpuFetchesAndExecutesFromCartridgeThroughSystemBus();
+    testDmgBootRomOverlaysAndUnmapsBeforeCartridgeExecution();
     testEchoRamReadsAndWritesWorkRam();
     testTimerInterruptWakesHaltAndRunsHandler();
     testSystemTimerClocksApuFrameSequencer();
@@ -582,5 +660,6 @@ int main() {
     testGameBoySystemExposesRenderedFrameBuffer();
     testDmgPostBootStartupAndFrameStepping();
     testFrameSteppingReturnsWhenCpuStops();
+    testSelectedJoypadLineWakesStopWithoutInterruptAcceptance();
     std::cout << "Headless system tests passed\n";
 }

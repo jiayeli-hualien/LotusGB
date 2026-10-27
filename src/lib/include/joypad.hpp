@@ -2,6 +2,7 @@
 #define LOTUSGB_JOYPAD_HPP
 
 #include <cstdint>
+#include <functional>
 
 #include "IInterruptController.hpp"
 #include "address_bus.hpp"
@@ -26,6 +27,8 @@ public:
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
     void setButtonState(JoypadButton button, bool pressed);
+    void initializeDmgBootRomState();
+    void setStopWakeCallback(std::function<void()> callback);
 
 private:
     uint8_t getSelectedInputLines() const;
@@ -34,6 +37,7 @@ private:
     IInterruptController &interrupts;
     uint8_t selectionBits = 0x30;
     uint8_t pressedButtons = 0;
+    std::function<void()> stopWakeCallback;
 };
 
 }

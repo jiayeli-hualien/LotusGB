@@ -9,52 +9,108 @@ This roadmap keeps the next work in dependency order. Prefer small changes with 
 - Once behavior is tested and stable, measure performance before optimizing. Implementation and storage choices must not define emulation behavior or rely on operating-system-specific semantics in the core.
 - Keep platform-specific file access behind a narrow boundary so the emulator core can use portable ROM storage and support alternate backends when profiling justifies them.
 
-## Current route (2026-10-26)
+## Current route (2026-10-27)
 
-### Active: common DMG compatibility and model-scoped PPU validation
+### Active: DMG functional coverage and startup contract
 
-The current renderer passes the expanded 14-case Mooneye PPU timing group and
-matches the Mooneye `manual-only/sprite_priority` DMG reference image exactly.
-Use model-labelled Mooneye tests, DMG Acid2 for basic PPU composition, and
-common-game checks for current acceptance. The DMG Acid2 framebuffer regression
-passes. Canyon Racer cross-core output also
-differs between LotusGB, SameBoy and mGBA; no physical-DMG reference image is
-available for that run (see the
-[three-core diagnostic](homebrew-check.md#three-core-raster-diagnostic-2026-10-25)).
-This route targets stable DMG behavior; revision-specific Mode 3 raster output
-is not a cross-model pixel standard. See the
-[target-model acceptance policy](dmg-validation.md#target-model-and-ppu-acceptance).
+Prioritize missing or inaccurate behavior that can affect supported DMG games.
+Use clearly licensed homebrew ROMs and focused Mooneye tests to find gaps;
+record an observable pass condition before changing the core. Do not continue
+standalone Mode 3 timing sweeps without a documented game effect or
+model-matched hardware-backed result. The existing renderer passes the
+expanded 14-case Mooneye PPU timing group, DMG Acid2, and the selected sprite-
+priority image; these remain bounded checks, not a reason to treat all DMG
+features as complete.
 
-Mode 3 has separate 16-pixel BG and OBJ FIFOs and explicit BG address/data,
-push and tile-advance phases. OBJ event timing and shared BG/OBJ bus
-arbitration remain coarse. The BG catch-up rule follows the Pan Docs wording;
-SameBoy uses a different fetcher-state boundary. Keep the public regression as
-a guard for that documented hypothesis, not as hardware verification. Keep
-the remaining Mode 3 image discrepancy as a historical diagnostic, not an
-acceptance target by itself. The detailed implementation record, captures
-and bounded experiments are in the [PPU guide](ppu-scrolling.md).
+Development currently takes place on macOS because the WSL2 GUI can become
+unresponsive. macOS support is a convenience for development; the active goal
+remains portable DMG emulation and game compatibility.
 
-Continue PPU work when a game exposes a visible behavior gap and its source,
-documentation, or repeatable output gives us a concrete target. Canyon Racer's
-[author documents](https://github.com/bbbbbr/canyon-racer#about-the-effects)
-its per-scanline SCY updates and vertical parallax effect, so that game can
-guide compatibility work without a physical-DMG screenshot.
-Require target-model hardware evidence before claiming an exact hardware
-timing result; do not make that claim a prerequisite for improving a
-documented game effect. Classify Mealybug's `m3_scx_high_5_bits` as a disputed,
-optional diagnostic only: it is not a LotusGB acceptance test, regression gate,
-or active task. Focus current PPU work on playable games and their documented
-visual effects. See the recorded
-[boundary analysis](ppu-scrolling.md#investigation-by-boundary-2026-10-26) and
-[rejected timing candidates](ppu-scrolling.md#normalized-cpuppu-event-comparison-2026-10-26).
+Optional DMG boot-ROM execution is implemented: the RetroArch core reads a
+256-byte `dmg_boot.bin` from its system directory (`gb_bios.bin` is also
+accepted), and the Mooneye runner accepts `--boot-rom` for local validation.
+With the locally supplied standard DMG BIOS, `boot_regs-dmgABC`,
+`boot_hwio-dmgABCmgb`, and `boot_div-dmgABCmgb` pass. The no-BIOS fast path
+also passes these three tests using a synthesized CPU/I/O handoff profile;
+it skips the Nintendo logo animation. This is not a byte-for-byte snapshot of
+the logo-generated VRAM/OAM state. Keep both startup paths available. Do not
+add a proprietary Nintendo BIOS to the repository. See the
+[DMG startup evidence](dmg-validation.md#startup-profile-and-boot-rom-scope).
+
+### Current priority ranking (2026-10-27)
+
+| Priority | Work item | Current decision |
+| --- | --- | --- |
+| 1 — game blockers | Fix reproducible problems that prevent ordinary startup, controls, game progress, sound, or save persistence in supported DMG games. | No current blocking issue is established. The user reports normal play on Steam Deck, and the selected homebrew checks run; take the next concrete gameplay failure first. Define its visible pass condition before changing the core. |
+| 2 — mainline coverage | Continue focused, licensed homebrew gameplay checks for startup, input, scene transitions, audio callbacks, and save behavior. | Use these checks to find integration gaps. Do not turn cross-core pixel equality into an acceptance requirement. |
+| 3 — visual/input phase | Change frontend input or frame timing only if a playable game demonstrates a missed press or other user-visible control problem. | The synthetic VBlank-marker ROM shows SameBoy's visible response one callback before LotusGB for a one-callback pulse; neither misses the press. This is not hardware evidence, and Big2Small does not show a globally fixed offset. Keep current stepping and completed-frame output. |
+| 4 — detailed PPU accuracy | Resume BG/OBJ fetch arbitration or exact Mode 3 timing only for a concrete game effect or hardware-backed observation. | The selected PPU timing group and DMG Acid2 pass; remaining fetch details are not a current gameplay blocker. Do not resume standalone timing sweeps. |
+| 5 — player-facing/platform follow-ups | Revisit Steam Deck tearing/audio only if it is still observable; resume Recalbox or Windows frontend checks when they become the target. | Steam Deck gameplay, battery saves, and scaling are reported to work. macOS is a development convenience, not a support milestone. Recalbox and Windows remain deferred. |
+| 6 — general cleanup and future scope | Makefile parallelism, GBIT adapter relocation, endian cleanup, save states, CGB, and other Nintendo systems. | These do not currently improve supported DMG gameplay; leave deferred until a concrete need promotes one. |
+
+A previously confirmed narrow test gap, serial boot-clock alignment, was
+closed on 2026-10-27: `boot_sclk_align-dmgABCmgb` now passes in both startup
+profiles. See the [serial validation record](dmg-validation.md#unconnected-serial-baseline-2026-10-24).
+
+Fast startup remains available alongside optional BIOS execution. The
+synthesized handoff is not a complete boot-produced VRAM/OAM snapshot; revisit
+that difference only if a licensed test or game demonstrates an observable
+compatibility problem. Do not commit BIOS or commercial-game data.
+
+### Completed: reproducible GB Pong gameplay regression (2026-10-27)
+
+The `make test` libretro regression uses the included MIT-licensed GB Pong ROM
+with fixed 60-frame neutral and Up-held runs. It checks one input poll and one
+video frame per callback, then verifies the visible game result: the player's
+paddle sits in the middle with neutral input and moves into the top region
+while Up is held. This defines a repeatable startup, continued-execution, and
+control acceptance condition without relying on callback success alone. It
+does not claim full game compatibility or hardware accuracy; an interactive
+RetroArch check remains a separate player-facing validation. Details are in
+the [homebrew check guide](homebrew-check.md#gb-pong-in-process-gameplay-regression).
+
+### Completed: DMG joypad wake from STOP (2026-10-27)
+
+The system now connects a selected JOYP P10–P13 input-line falling edge to the
+CPU's STOP wake operation, independently of IME and IE. The joypad interrupt
+request remains a separate IF effect of that selected line edge; HALT wake and
+interrupt service logic are unchanged. A system-level regression confirms an
+unselected direction press leaves STOP active, a selected A press wakes it,
+the joypad IF bit is set, and post-STOP instructions execute with the normal
+post-boot IME=0 / IE=0 state without vectoring. Pan Docs documents the selected
+P10–P13 low-line wake condition and recommends selecting input groups before
+STOP. This implementation is documentation-backed; no physical DMG run was
+available to validate edge phase, already-low-at-entry cases, or unusual STOP
+entry races. See the [joypad status](dmg-validation.md#target-model-and-ppu-acceptance)
+and [interrupt guide](interrupts.md#stop-wake-signal).
+
+A controlled synthetic input probe now reproduces a one-callback
+input-to-visible-output difference: with the same DMG BIOS and one-callback A
+pulse, SameBoy updates its fixed VBlank marker one output callback before
+LotusGB; moving the pulse by one callback moves both responses by one. Neither
+core misses the press. This is not a hardware-accuracy verdict or evidence of
+a general fixed offset. Defer further timing changes unless a concrete
+playability problem or hardware-backed evidence warrants them; keep the
+completed-frame snapshot and do not bypass JOYP to predict or advance player
+input. Detailed standalone Mode 3 investigations remain paused under the same
+evidence policy. See the [probe record](homebrew-check.md#controlled-input-to-display-probe-2026-10-27).
+
+### PPU baseline
+
+Keep the current renderer as the stable DMG baseline. Mode 3 has separate 16-
+pixel BG and OBJ FIFOs and explicit BG address/data, push, and tile-advance
+phases, while OBJ event timing and shared BG/OBJ bus arbitration remain coarse.
+The BG catch-up regression protects the documented Pan Docs hypothesis; it is
+not hardware verification. Keep Mealybug's `m3_scx_high_5_bits` as a disputed,
+optional diagnostic, not a LotusGB acceptance test or active task. Resume PPU
+work when a playable game exposes a concrete visual gap or evidence supports a
+specific behavior change. The implementation record and experiments remain in
+the [PPU guide](ppu-scrolling.md).
 
 ### Product follow-ups
 
 - Continue validating common DMG games and PPU effects with the available
   homebrew profiles; keep commercial ROMs and saves outside the repository.
-  The local Super Mario Land script reached World 0-1 and matched SameBoy's
-  sampled frame; this is comparison evidence, not hardware validation. See the
-  [recorded run](homebrew-check.md#super-mario-land-scripted-run-2026-10-26).
 - **Big2Small input-response baseline (2026-10-26):** two neutral 3,600-frame
   runs match exactly; the pinned scripted profile changes 18,546 pixels and
   122 SRAM bytes. This confirms the profile changes visible and saved game
@@ -69,28 +125,14 @@ visual effects. See the recorded
 - **Player-facing polish (active):** the user reports normal play in F-1 Race
   and Pokémon Yellow on Steam Deck, with battery save read/write currently
   reported to work normally and display scaling working as expected. The user
-  considers the reported tearing minor, so defer diagnosis unless it worsens;
-  revisit audio quality only if an issue is reported. Keep the current
-  completed-frame software callback path. Apparent screen tearing has now been
-  reported on Steam Deck with LotusGB; the user reports SameBoy does not tear
-  there. This makes a global display-sync problem less likely, but per-core
-  overrides and core/frontend pacing remain open. The local Ubuntu RetroArch
-  configs request VSync on, swap interval 1, threaded video off, and the GL
-  driver; this does not prove that the display driver applied VSync. An earlier
-  user-provided WSL log reported `glXSwapInterval(1) failed`. The user also
-  reports that direct frame output looks normal, which is consistent with a
-  presentation-stage tear and does not verify scanout synchronization. Compare
-  the same content and scene before changing the core. The core advances one
-  emulated frame per `retro_run()` and submits one frame through the libretro
-  callback. The API accepts a frame pointer, dimensions, and pitch; it does
-  not require the core to alternate buffers. Code review confirms the core
-  submits a stable 160×144 buffer with the matching byte pitch after each
-  completed emulated frame. Its advertised 59.7275 FPS matches SameBoy's
-  documented rate, so neither an obvious callback-buffer lifetime issue nor a
-  nominal frame-rate mismatch is currently supported by the evidence. Add
-  internal buffering only if diagnosis identifies a core-side buffer
-  lifetime/synchronization issue or a measured performance need. See the
-  [RetroArch VSync guide](references.md#retroarch-and-platform-guides).
+  previously reported minor tearing on Steam Deck; that device has not been
+  retested with the completed-frame fix. On Mac, the user reported that logo
+  tearing improved after the updated core was installed. LotusGB now submits a
+  VBlank-completed snapshot because a fixed-duration `retro_run()` can end
+  during visible rendering. The diagnosis, comparison results, and limits are
+  in the [DMG logo animation record](dmg-validation.md#dmg-logo-animation-cross-core-comparison-2026-10-27).
+  Frontend display pacing and other devices remain separate observations;
+  revisit audio quality when a specific issue is reported.
 - **Compiler-warning pass (2026-10-26):** enabled `-Wextra` for the core
   library. Left unused callback parameter names out of implementation
   signatures, narrowed arithmetic helper parameters, and documented the fixed
@@ -147,7 +189,8 @@ visual effects. See the recorded
   Keep LotusGB focused on its current Game Boy/DMG compatibility goal first.
   Revisit CGB, NES and GBA as later scope decisions; avoid cross-system
   abstractions until there is a concrete second-core target.
-- Boot-ROM execution and CGB support remain outside the current DMG target.
+- CGB support remains outside the current DMG target. Optional DMG boot-ROM
+  execution is already implemented; see the startup evidence above.
 - Save-state, rewind and replay remain deferred; discuss the desired player
   workflow before designing the state snapshot mechanism.
 - Steam Deck is the current player-facing platform for the polish pass.
@@ -210,8 +253,7 @@ visual effects. See the recorded
 
 These are discussion prompts, not approved implementation tasks. Discuss them one at a time; promote an item into the roadmap only if it is worth addressing.
 
-1. **Joypad and STOP wake-up.** Should button input wake STOP in the current system, and what exact joypad signal should trigger it? The current input API updates JOYP and requests its interrupt but does not wake the CPU from STOP. Gather a hardware-backed case before changing behavior.
-2. **GBIT adapter boundary.** GBIT-only sources remain in `src/lib`, but the libretro core excludes them from its build. Consider moving them into test support during later source cleanup; the main shared library still includes every `.cpp` in `src/lib`.
+1. **GBIT adapter boundary.** GBIT-only sources remain in `src/lib`, but the libretro core excludes them from its build. Consider moving them into test support during later source cleanup; the main shared library still includes every `.cpp` in `src/lib`.
 
 ## Resolved design questions
 
@@ -331,7 +373,7 @@ Use Linux as the primary development and CI platform for now. The Steam Deck is 
 
 - **Window Y condition (2026-10-24):** replace the per-line `LY >= WY` shortcut with a retained line-start equality condition, cleared during VBlank. Protect WY changes, hidden window rows, frame/LCD reset and DMG window-enable independence through public PPU tests. Keep rendering and object penalties consistent. Exact mid-scanline window glitches remain deferred; see [validation notes](dmg-validation.md#window-y-condition-and-hidden-rows-2026-10-24).
 
-- **Second homebrew gameplay smoke target (2026-10-24):** add `make test-homebrew HOMEBREW_GAME=tobutobugirl`, preserving Big2Small as the default and battery-save acceptance target. Pin the external original Tobu Tobu Girl ROM hash and use a separate input profile/output directory. A 3,600-frame run reaches a visually inspected action scene with the character, enemies and HUD; neutral input stays in the opening scene. This expands MBC1/action-game execution evidence without changing runtime code. It does not prove level completion, exact graphics/audio or high-score persistence. See [the local procedure](homebrew-check.md#tobu-tobu-girl-gameplay-smoke-check).
+- **Second homebrew gameplay smoke target (2026-10-24; rerun 2026-10-27):** add `make test-homebrew HOMEBREW_GAME=tobutobugirl`, preserving Big2Small as the default and battery-save acceptance target. Pin the external original Tobu Tobu Girl ROM hash and use a separate input profile/output directory. A 3,600-frame run reaches a visually inspected action scene with the character, enemies and HUD; neutral input stays in the opening scene. The 2026-10-27 macOS rerun also reached gameplay with the current core and produced the expected callback/audio/SRAM outputs. This expands MBC1/action-game execution evidence without changing runtime code. It does not prove level completion, exact graphics/audio or high-score persistence. See [the local procedure and dated results](homebrew-check.md#tobu-tobu-girl-gameplay-smoke-check).
 
 - **Homebrew output checks (2026-10-24):** require matching video counts, nonzero audio, correct RGB dimensions and matching 8 KiB SRAM artifacts for both pinned profiles. Remove stale outputs before execution and retain validation errors in the report. Four ROM-free test methods, including zero-exit/stale-artifact rejection, join `make test` and CI. Both real 3,600-frame profiles pass with unchanged final frame hashes; Big2Small's original player save remains unchanged. This strengthens the local harness without changing emulator behavior or claiming scene recognition.
 

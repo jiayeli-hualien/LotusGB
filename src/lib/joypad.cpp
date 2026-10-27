@@ -1,5 +1,7 @@
 #include "include/joypad.hpp"
 
+#include <utility>
+
 namespace LOTUSGB {
 
 namespace {
@@ -36,6 +38,15 @@ void Joypad::setButtonState(JoypadButton button, bool pressed) {
     requestFallingEdge(previousLines);
 }
 
+void Joypad::initializeDmgBootRomState() {
+    selectionBits = 0x00;
+    pressedButtons = 0;
+}
+
+void Joypad::setStopWakeCallback(std::function<void()> callback) {
+    stopWakeCallback = std::move(callback);
+}
+
 uint8_t Joypad::getSelectedInputLines() const {
     uint8_t inputLines = JOYPAD_INPUT_MASK;
 
@@ -49,8 +60,11 @@ uint8_t Joypad::getSelectedInputLines() const {
 
 void Joypad::requestFallingEdge(uint8_t previousLines) {
     const uint8_t currentLines = getSelectedInputLines();
-    if ((previousLines & static_cast<uint8_t>(~currentLines) & JOYPAD_INPUT_MASK) != 0)
+    if ((previousLines & static_cast<uint8_t>(~currentLines) & JOYPAD_INPUT_MASK) != 0) {
         interrupts.requestInterrupt(INTERRUPT_JOYPAD);
+        if (stopWakeCallback)
+            stopWakeCallback();
+    }
 }
 
 }

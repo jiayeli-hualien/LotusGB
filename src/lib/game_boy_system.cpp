@@ -6,31 +6,42 @@ namespace LOTUSGB {
 
 GameBoySystem::GameBoySystem(std::vector<uint8_t> rom)
     : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot, nullptr,
-                    nullptr) {}
+                    nullptr, {}) {}
 
 GameBoySystem::GameBoySystem(
     std::vector<uint8_t> rom,
     std::shared_ptr<std::vector<uint8_t>> saveRam)
     : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot,
-                    std::move(saveRam), nullptr) {}
+                    std::move(saveRam), nullptr, {}) {}
 
 GameBoySystem::GameBoySystem(
     std::vector<uint8_t> rom,
     std::shared_ptr<std::vector<uint8_t>> saveRam,
     std::shared_ptr<std::vector<uint8_t>> saveRtc)
     : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot,
-                    std::move(saveRam), std::move(saveRtc)) {}
+                    std::move(saveRam), std::move(saveRtc), {}) {}
+
+GameBoySystem::GameBoySystem(
+    std::vector<uint8_t> rom,
+    std::shared_ptr<std::vector<uint8_t>> saveRam,
+    std::shared_ptr<std::vector<uint8_t>> saveRtc,
+    std::vector<uint8_t> dmgBootRom)
+    : GameBoySystem(std::move(rom), StartupProfile::DmgPostBoot,
+                    std::move(saveRam), std::move(saveRtc),
+                    std::move(dmgBootRom)) {}
 
 GameBoySystem GameBoySystem::createForTest(std::vector<uint8_t> rom) {
     return GameBoySystem(std::move(rom), StartupProfile::TestReset, nullptr,
-                         nullptr);
+                         nullptr, {});
 }
 
 GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
                              StartupProfile startupProfile,
                              std::shared_ptr<std::vector<uint8_t>> saveRam,
-                             std::shared_ptr<std::vector<uint8_t>> saveRtc)
+                             std::shared_ptr<std::vector<uint8_t>> saveRtc,
+                             std::vector<uint8_t> dmgBootRomImage)
     : cartridge(std::move(rom), std::move(saveRam), std::move(saveRtc)),
+      dmgBootRom(cartridge, std::move(dmgBootRomImage)),
       workRam(0xC000, 0x2000),
       highRam(0xFF80, 0x007F),
       joypad(interruptRegisters),
@@ -40,12 +51,13 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
       oamDma(bus, ppu),
       cpu(bus, decoder, decoderCB, &interruptRegisters),
       systemClock(cpu) {
+    joypad.setStopWakeCallback([this] { cpu.wakeFromStop(); });
     bus.setCpuBusAccessCallback(
         [this] { systemClock.advanceToCpuBusAccess(); });
     bus.setCpuBusArbiter(oamDma);
     timer.setDividerApuClockCallback([this] { apu.onDividerApuFallingEdge(); });
 
-    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0x0000, 0x7FFF, dmgBootRom);
     bus.map(0xA000, 0xBFFF, cartridge);
     bus.map(0x8000, 0x9FFF, ppu);
     bus.map(0xC000, 0xDFFF, workRam);
@@ -60,6 +72,7 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     bus.map(0xFF40, 0xFF45, ppu);
     bus.map(0xFF47, 0xFF4B, ppu);
     bus.map(0xFF46, 0xFF46, oamDma);
+    bus.map(0xFF50, 0xFF50, dmgBootRom);
     bus.map(0xFF0F, 0xFF0F, interruptRegisters);
     bus.map(0xFFFF, 0xFFFF, interruptRegisters);
     systemClock.addClockedComponent(timer);
@@ -68,8 +81,14 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
     systemClock.addClockedComponent(ppu);
     systemClock.addClockedComponent(oamDma);
     cpu.reset();
-    if (startupProfile == StartupProfile::DmgPostBoot)
+    if (dmgBootRom.isMapped()) {
+        cpu.setIME(false);
+        timer.initializeDmgBootRomState();
+        serial.initializeDmgBootRomState();
+        joypad.initializeDmgBootRomState();
+    } else if (startupProfile == StartupProfile::DmgPostBoot) {
         initializeDmgPostBootState();
+    }
 }
 
 RetStepOneCycle GameBoySystem::stepOneCycle() {
@@ -106,6 +125,10 @@ Reg GameBoySystem::getCpuRegisters() {
 
 const DmgPpu::FrameBuffer &GameBoySystem::getFrameBuffer() const {
     return ppu.getFrameBuffer();
+}
+
+const DmgPpu::FrameBuffer &GameBoySystem::getCompletedFrameBuffer() const {
+    return ppu.getCompletedFrameBuffer();
 }
 
 std::vector<int16_t> GameBoySystem::takeAudioSamples() {
@@ -163,6 +186,7 @@ void GameBoySystem::initializeDmgPostBootState() {
     cpu.setIME(false);
 
     timer.initializeDmgPostBootState();
+    serial.initializeDmgPostBootState();
     apu.initializeDmgPostBootState();
     ppu.initializeDmgPostBootState();
     joypad.write(0xFF00, 0x00);

@@ -45,47 +45,174 @@ scene. Callback counts do not prove audible sound quality, responsive gameplay,
 puzzle completion, or save persistence. The user's separate RetroArch
 save/reload check remains the evidence for actual disk persistence.
 
+## GB Pong in-process gameplay regression
+
+`make test` loads the repository's MIT-licensed, ROM-only GB Pong release
+(`9c5e337db0ee1416f2c7f1de02e7e0a78a6064cf1da49209b4bc1a36a7b35415`)
+through the libretro API and runs 60 frames with neutral input and 60 with Up
+held. Each run must poll input and publish one frame per call. The visible
+acceptance condition is that the left player paddle is in the middle region
+with neutral input, then moves into the top region while Up is held. This
+checks startup, continued execution, and a game-visible control effect; it
+does not establish exact paddle timing, full match behavior, audio quality, or
+hardware accuracy. The ROM's source and MIT license are recorded under
+`tests/roms/gb-pong/`.
+
 ## Local cross-core comparison
 
-To replay one fixed input sequence through LotusGB and another libretro core,
-use `tools/compare_libretro_cores.py`. The Super Mario Land input profile is
-tracked, but the game ROM and comparison core stay local:
+To replay a ROM through LotusGB and another libretro core, use
+`tools/compare_libretro_cores.py`. For example, the repository includes the
+MIT-licensed GB Pong homebrew ROM:
 
 ```sh
 python3 tools/compare_libretro_cores.py \
-  --rom "/absolute/path/to/Super Mario Land.gb" \
+  --rom tests/roms/gb-pong/gb-pong.gb \
   --core-a build/lotusgb_libretro.so \
   --core-b /absolute/path/to/sameboy_libretro.so \
   --frames 1200 \
-  --inputs tests/input_scripts/super-mario-land-smoke.txt \
-  --output-dir build/test-roms/core-comparison/super-mario-land \
-  --require-identical
+  --system-directory /absolute/path/to/retroarch/system \
+  --output-dir build/test-roms/core-comparison/gb-pong
 ```
 
 The script records ROM, core, runner and input hashes, both final frame hashes,
-runner logs and a comparison image. `--require-identical` makes a pixel
-mismatch return failure; omit it when collecting a diagnostic comparison.
+runner logs and a comparison image. `--inputs` supplies an optional controller
+script; `--require-identical` makes a final-frame pixel mismatch return failure.
 Each core runs in a fresh empty temporary working directory and receives no
-firmware files, preventing an incidental `./dmg_boot.bin` from changing the
-startup path. The report records this policy. This is a local cross-core check,
-not a hardware-accuracy assertion or CI gate.
+firmware files. The runner normalizes libretro's 0RGB1555, XRGB8888, and RGB565
+video formats to RGB24 before comparing. This is a local cross-core check, not
+a hardware-accuracy assertion or CI gate.
 
-### Super Mario Land scripted run (2026-10-26)
+### SameBoy system-directory correction (2026-10-27)
 
-The local user-supplied ROM (`470d6c45c9bcf7f0397d00c1ae6de727c63dd471049c8eedbefdc540ceea80b4`)
-ran for 1,200 frames with the tracked input profile. LotusGB and the installed
-SameBoy core produced the same final RGB frame (`cc05c13583db4a9fb313e862237c0d5ef215cd740934db681fd0a9814626bff7`,
-0 of 23,040 pixels different). A neutral-input LotusGB run at the same frame
-count differed at 1,999 pixels; inspection showed World 0-1 with the scripted
-run's timer at 386 versus 400 without input. This confirms a repeatable
-startup/input path and one matching sampled frame across these two cores. It
-does not prove complete game compatibility, hardware accuracy, or audio
-equivalence. No boot ROM was supplied: LotusGB starts from its DMG post-boot
-profile, while SameBoy logged that `./dmg_boot.bin` could not be opened. The
-matching frame applies to this no-boot startup pairing; it does not validate
-boot-ROM execution or prove the two cores begin from identical internal state.
-The ROM remains outside the repository. Reports and images are in
-`build/test-roms/core-comparison/super-mario-land/`.
+The initial 3,600-frame SameBoy Tobu run produced a white final image. The
+headless runner returned no system directory, while standalone RetroArch is
+configured to use `~/Documents/RetroArch/system`, which contains
+`dmg_boot.bin`. The runner now accepts `--system-directory` and returns it for
+`RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY`; the comparison uses the standalone
+RetroArch SameBoy core at
+`~/Library/Application Support/RetroArch/cores/sameboy_libretro.dylib`
+(`1.0.4 c87d256`, SHA-256
+`10b15b7acddd18414d066a4a90f7cf0ea0999ac1ffa66deec7d6ef609060977a`). Its log
+confirms it loaded the configured DMG boot ROM. The standalone core completed
+3,600 video callbacks and the scripted run ended in an active gameplay scene;
+LotusGB completed the same run and both produced identical 8 KiB SRAM hashes.
+The final images differ in 13,830 of 23,040 pixels, so this establishes a
+working headless SameBoy startup/gameplay path, not pixel accuracy or a
+hardware comparison. The earlier no-system-directory capture is invalid and
+should not be used as evidence against SameBoy. Logs and images are under
+`build/test-roms/core-comparison/tobu-tobu-girl-standalone-system-dir/`.
+
+### Static-to-gameplay comparison (2026-10-27)
+
+Before interpreting the Tobu gameplay mismatch, the MIT-licensed `dmg-acid2`
+PPU test ROM was run through the same standalone SameBoy core and LotusGB core,
+with the same configured DMG boot ROM and no inputs. At 600 frames both
+produced the same visible acid2 test image and identical final RGB bytes
+(SHA-256 `2ba8286c29ae381838c71a88614302ce05f2b26102d1ed8dc51e25f83fcccc67`).
+The 10- and 60-frame captures were both white, so those were rejected as
+premature captures; equality alone was not accepted without checking the
+image. The 600-frame artifacts are under
+`build/test-roms/core-comparison/dmg-acid2-600f/`.
+
+The previously recorded 3,600-frame Tobu run uses the same LotusGB core hash,
+SameBoy core hash, runner, and system directory. It reaches active gameplay,
+but its final images differ at 13,830 of 23,040 pixels. This narrows the
+observed discrepancy to longer/gameplay execution rather than this settled PPU
+test image. It does not by itself identify whether the cause is game state,
+timing, or rendering, and neither core is treated as a hardware oracle.
+
+To retain consecutive frames from the runner, set
+`LOTUSGB_CAPTURE_SEQUENCE` to an output file and set
+`LOTUSGB_CAPTURE_START` / `LOTUSGB_CAPTURE_END` to a zero-based, half-open
+frame interval. The file contains tightly packed RGB24 frames in order. For
+example, setting the interval to `1600` and `3600` captures frames 1600 through
+3599 from a 3,600-frame run. This is intended for local diagnostics; generated
+sequences remain under ignored `build/` output.
+
+For the 3,600-frame Tobu profile, consecutive frames 1600–3599 were captured
+from both cores with the same ROM, input script and boot ROM. The comparison
+shows a sharp SameBoy-only white-screen burst at frames 3342–3346, with the
+image returning afterward; the number of white SameBoy pixels rises from
+9,229 at frame 3341 to 22,549 at frame 3343. Other bursts occur later in the
+run. This is consistent with the suspected hit/invulnerability flash, but
+does not prove both cores reached the same collision state. The first burst
+contact sheet is `build/test-roms/core-comparison/tobu-frames-3339-3346.png`;
+raw frame sequences are in the same directory.
+
+### Big2Small model-aligned comparison (2026-10-27)
+
+After moving development machines, the free ROM was redownloaded from the
+[author's page](https://mdsteele.itch.io/big2small) into the external
+`../test-roms/homebrew/big2small.gb` directory. Its SHA-256 matches the pinned
+release hash. `make test-homebrew HOMEBREW_GAME=big2small` completed 3,600
+video callbacks and passed the fixed profile's output checks.
+
+The first SameBoy comparison used its default Auto model, which selected CGB
+for this CGB-capable cartridge while LotusGB ran its DMG profile. That run's
+color difference is not a valid DMG-to-DMG comparison. The runner now answers
+libretro `GET_VARIABLE` from environment variables named
+`LOTUSGB_CORE_OPTION_<key>`. Setting
+`LOTUSGB_CORE_OPTION_sameboy_model='Game Boy'` forced SameBoy to DMG; both logs
+then confirmed the same external `dmg_boot.bin`. With the same 3,600-frame
+input script, both cores produced identical final RGB output (0 / 23,040
+different pixels) and identical SRAM hashes. This confirms the sampled final
+state for this profile only; it does not establish frame-by-frame equivalence.
+Artifacts are under
+`build/test-roms/core-comparison/big2small-sameboy-dmg/`.
+
+### Controlled input-to-display probe (2026-10-27)
+
+To separate input sampling from moving game objects, a local 32 KiB probe ROM
+clears the tile map, samples A once per loop, waits for VBlank, and changes a
+fixed 8×8 marker. Its generator and ROM are outside the repository under
+`../test-roms/homebrew/input-timing-probe/`; the ROM uses the same configured
+`dmg_boot.bin` and SameBoy's model is forced to `Game Boy`. Both cores show the
+same boot animation before the scripted input.
+
+With a one-callback A pulse at input frame 520, SameBoy's marker turns black
+in output frame 521, while LotusGB's turns black in frame 522. Both return to
+white on the following output frame. Exactly the two transition frames differ,
+by 64 pixels each. Repeating the pulse at frames 519 and 521 moves each core's
+response by the same one frame; SameBoy remains one output callback earlier in
+all three runs. Neither core misses the one-frame press. This is direct
+support for a one-callback difference from input to visible output in this
+controlled ROM. It does not show that all games have a fixed latency offset:
+the Big2Small sequence has exact frames between transient mismatches, and its
+adjacent-frame offset changes direction at different events. Captures are in
+`build/test-roms/core-comparison/input-timing-probe/`.
+
+Both cores were then captured continuously for all 3,600 frames under the same
+DMG model, BIOS and input script. 3,182 frames were pixel-identical; 418 had
+at least one differing pixel. The first difference was frame 334, the last
+was frame 3485, and the largest was 13,745 pixels at frame 1201. SRAM and the
+final frame still matched exactly. The frame-1198–1217 contact sheet shows a
+short palette/brightness change around the A press at frame 1200, then a
+return to the matching scene. This is evidence of transient divergence during
+the scripted interaction, not a persistent color mapping error or a proven
+cause. In a controlled replay, moving only that A press one frame later moved
+the largest divergence to frame 1202; moving it one frame earlier moved the
+largest divergence to frame 1200. The transient is therefore tied to the
+input event, though its mechanism remains unknown. The contact sheet is
+`build/test-roms/core-comparison/big2small-frames-1198-1217.png`; complete
+sequences and the ±1-frame replays are under `build/test-roms/core-comparison/`.
+
+A frame-neighbor check also found short periods where a mismatching output
+frame is an exact match for the other core's adjacent callback: LotusGB frame
+334 equals SameBoy frame 335, and LotusGB frame 339 equals SameBoy frame 340.
+The 334→335 transition changes 746 pixels in both cores at the same screen
+region (x=32–135, y=64–79), but on adjacent callback indices. Later, LotusGB
+frames 3468–3485 equal SameBoy's preceding frames; the corresponding 3467→3468
+change is confined to x=34–50, y=64–79, consistent with a moving object. These
+are whole-frame matches, not just a sprite-sized region, so the observed
+transient includes one-callback differences in game-visible
+animation/scene progression.
+The direction is not consistent across the run, which argues against a single
+fixed output-frame offset. In LotusGB, `retro_run` polls input, advances exactly
+one DMG frame, then submits the completed PPU buffer. This confirms the
+frontend-facing order on our side; it does not establish whether the remaining
+phase shifts come from input sampling, internal frame boundaries, or game
+execution timing in either core. The sample count is limited to this scripted
+ROM run and is not evidence of an overall one-frame latency.
 
 ## General ROM runner interface
 
@@ -95,6 +222,9 @@ build/libretro_rom_runner CORE.so ROM.gb FRAMES OUTPUT.rgb OUTPUT.srm \
 ```
 
 Without optional arguments it preserves the neutral-input ROM-test behavior.
+For cores that request legacy libretro `GET_VARIABLE` core options, define
+`LOTUSGB_CORE_OPTION_<option-key>` in the runner's environment. For example,
+SameBoy's `sameboy_model` can be set to `Game Boy` for a DMG comparison.
 `--repeat COUNT` (1–1,000) repeats dynamic core loading, initialization,
 cartridge loading, frame execution, unloading, deinitialization, and library
 closing in one process. Each run must deliver the requested video frames. The
@@ -153,6 +283,18 @@ and the input script SHA-256 was
 `2c205fb0ed775c6d8138cef8cb5821ee29e864bb402b88a45a61afd7c44a724c`.
 This remains a scripted execution check, not a level-completion or save-
 persistence acceptance test.
+
+The same external ROM and input profile were rerun on macOS on 2026-10-27
+after the MBC1 bank-switch integration regression was added. The run returned
+exit code 0 with 3,600/3,600 video callbacks, 2,893,139 stereo audio frames,
+and 8 KiB of SRAM. Manual inspection of `frame.ppm` showed the character,
+enemies, and HUD in gameplay. The final frame SHA-256 was
+`0d99c5dcd3c31e459e99919fd5d8754e6eaa274f748e0386621be52c54676bb7`; the
+core SHA-256 was
+`22a4f4b4bffb2863b3f4450d1803e436cd238dff55f490571494417af9c5a3f8`. The ROM
+and generated outputs remain outside source control. This confirms the
+scripted startup/input path and visible gameplay for this release, not level
+completion, audio quality, or save-file persistence.
 
 ## Automated output checks
 

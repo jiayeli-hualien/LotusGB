@@ -4,7 +4,7 @@ namespace LOTUSGB {
 
 Memory::Memory() {}
 
-Memory::Memory(size_t ramSize = 8*1024) :mem(ramSize, 0) {
+Memory::Memory(size_t ramSize) :mem(ramSize, 0) {
 }
 
 uint8_t Memory::read(uint16_t addr) {

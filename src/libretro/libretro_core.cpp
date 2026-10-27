@@ -6,7 +6,9 @@
 #include <cstdio>
 #include <exception>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -37,6 +39,55 @@ void logMessage(retro_log_level level, const char *message) {
     else
         std::fprintf(stderr, "[LotusGB] %s\n", message);
 }
+
+std::vector<uint8_t> loadOptionalDmgBootRom() {
+    if (!environmentCallback)
+        return {};
+
+    const char *systemDirectory = nullptr;
+    if (!environmentCallback(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY,
+                             &systemDirectory) ||
+        !systemDirectory || systemDirectory[0] == '\0') {
+        logMessage(RETRO_LOG_INFO,
+                   "No RetroArch system directory; using fast post-boot startup");
+        return {};
+    }
+
+    const std::filesystem::path directory(systemDirectory);
+    const char *const candidates[] = {"dmg_boot.bin", "gb_bios.bin"};
+    for (const char *filename : candidates) {
+        const auto path = directory / filename;
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            std::error_code error;
+            const bool exists = std::filesystem::exists(path, error);
+            if (error)
+                throw std::runtime_error("Could not inspect DMG boot ROM path: " +
+                                         path.string() + ": " + error.message());
+            if (exists)
+                throw std::runtime_error("Could not read DMG boot ROM: " +
+                                         path.string());
+            continue;
+        }
+
+        std::vector<uint8_t> bootRom(std::istreambuf_iterator<char>(file), {});
+        if (file.bad())
+            throw std::runtime_error("Error while reading DMG boot ROM: " +
+                                     path.string());
+        if (bootRom.size() != 0x100)
+            throw std::runtime_error("DMG boot ROM must be exactly 256 bytes: " +
+                                     path.string());
+
+        const std::string message = "Using DMG boot ROM: " + path.string();
+        logMessage(RETRO_LOG_INFO, message.c_str());
+        return bootRom;
+    }
+
+    logMessage(RETRO_LOG_INFO,
+               "No DMG boot ROM found in the system directory; using fast post-boot startup");
+    return {};
+}
+
 retro_video_refresh_t videoRefreshCallback = nullptr;
 retro_audio_sample_t audioSampleCallback = nullptr;
 retro_audio_sample_batch_t audioSampleBatchCallback = nullptr;
@@ -44,6 +95,7 @@ retro_input_poll_t inputPollCallback = nullptr;
 retro_input_state_t inputStateCallback = nullptr;
 
 std::vector<uint8_t> loadedRom;
+std::vector<uint8_t> loadedDmgBootRom;
 std::unique_ptr<GameBoySystem> emulatorSystem;
 bool useXrgb8888 = false;
 std::array<uint32_t, VIDEO_PIXEL_COUNT> xrgb8888Frame{};
@@ -185,7 +237,7 @@ void renderFrame() {
     if (!emulatorSystem || !videoRefreshCallback)
         return;
 
-    const auto &shades = emulatorSystem->getFrameBuffer();
+    const auto &shades = emulatorSystem->getCompletedFrameBuffer();
     for (size_t i = 0; i < shades.size(); ++i) {
         const uint8_t shade = std::min<uint8_t>(shades[i], 3);
         const uint8_t gray = static_cast<uint8_t>(255 - shade * 85);
@@ -282,6 +334,7 @@ void retro_deinit(void) {
     audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
+    loadedDmgBootRom.clear();
     frameProblemReported = false;
     emulationFaulted = false;
 }
@@ -321,7 +374,8 @@ void retro_reset(void) {
                                  ? emulatorSystem->getRtcStorage()
                                  : nullptr;
         auto newSystem =
-            std::make_unique<GameBoySystem>(loadedRom, saveRam, saveRtc);
+            std::make_unique<GameBoySystem>(loadedRom, saveRam, saveRtc,
+                                            loadedDmgBootRom);
         emulatorSystem = std::move(newSystem);
         frameProblemReported = false;
         emulationFaulted = false;
@@ -410,9 +464,11 @@ bool retro_load_game(const retro_game_info *game) {
             logMessage(RETRO_LOG_ERROR, message);
             return false;
         }
+        std::vector<uint8_t> bootRom = loadOptionalDmgBootRom();
         std::unique_ptr<GameBoySystem> newSystem =
-            std::make_unique<GameBoySystem>(rom);
+            std::make_unique<GameBoySystem>(rom, nullptr, nullptr, bootRom);
         loadedRom = std::move(rom);
+        loadedDmgBootRom = std::move(bootRom);
         emulatorSystem = std::move(newSystem);
         frameProblemReported = false;
         emulationFaulted = false;
@@ -434,6 +490,7 @@ void retro_unload_game(void) {
     audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
+    loadedDmgBootRom.clear();
     frameProblemReported = false;
     emulationFaulted = false;
 }

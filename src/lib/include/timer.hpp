@@ -20,6 +20,7 @@ public:
     void write(uint16_t address, uint8_t value) override;
     void advanceTCycles(uint64_t tCycles) override;
     void initializeDmgPostBootState();
+    void initializeDmgBootRomState();
     // Called on a falling edge of internal divider bit 12 (DIV bit 4 on DMG).
     void setDividerApuClockCallback(std::function<void()> callback);
 

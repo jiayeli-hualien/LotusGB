@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import struct
@@ -47,7 +48,8 @@ def write_png(path: Path, width: int, height: int, rgb: bytes) -> None:
 
 
 def run_core(label: str, core: Path, rom: Path, runner: Path, frames: int,
-             input_script: Path | None, output: Path) -> dict:
+             input_script: Path | None, system_directory: Path | None,
+             output: Path) -> dict:
     rgb_path = output / f"{label}.rgb"
     sram_path = output / f"{label}.srm"
     log_path = output / f"{label}.log"
@@ -58,9 +60,13 @@ def run_core(label: str, core: Path, rom: Path, runner: Path, frames: int,
                str(rgb_path), str(sram_path)]
     if input_script:
         command.append(str(input_script))
+    child_env = os.environ.copy()
+    child_env.pop("LOTUSGB_SYSTEM_DIRECTORY", None)
+    if system_directory:
+        child_env["LOTUSGB_SYSTEM_DIRECTORY"] = str(system_directory)
     with tempfile.TemporaryDirectory(prefix=f"{label}-cwd-", dir=output) as cwd:
         result = subprocess.run(command, capture_output=True, text=True,
-                                check=False, cwd=cwd)
+                                check=False, cwd=cwd, env=child_env)
     log_path.write_text(result.stdout + result.stderr)
     if result.returncode:
         raise RuntimeError(f"{label} runner failed ({result.returncode}); see {log_path}")
@@ -102,6 +108,8 @@ def main() -> int:
     parser.add_argument("--frames", required=True, type=int)
     parser.add_argument("--inputs", type=Path,
                         help="Optional zero-based input script accepted by libretro_rom_runner")
+    parser.add_argument("--system-directory", type=Path,
+                        help="Optional libretro system directory, for example one containing dmg_boot.bin")
     parser.add_argument("--output-dir", type=Path,
                         default=Path("build/test-roms/core-comparison"))
     parser.add_argument("--require-identical", action="store_true",
@@ -115,10 +123,13 @@ def main() -> int:
     core_b = args.core_b.resolve()
     runner = args.runner.resolve()
     inputs = args.inputs.resolve() if args.inputs else None
+    system_directory = args.system_directory.resolve() if args.system_directory else None
     output = args.output_dir.resolve()
     for path in (rom, core_a, core_b, runner, inputs):
         if path is not None and not path.is_file():
             parser.error(f"file does not exist: {path}")
+    if system_directory is not None and not system_directory.is_dir():
+        parser.error(f"system directory does not exist: {system_directory}")
     for source in (rom, core_a, core_b, runner, inputs):
         if source and (output == source or output in source.parents):
             parser.error("output directory must not contain ROM, core, runner, or input files")
@@ -138,6 +149,7 @@ def main() -> int:
         "runner_sha256": sha256(runner.read_bytes()),
         "input_path": str(inputs) if inputs else None,
         "input_sha256": sha256(inputs.read_bytes()) if inputs else None,
+        "system_directory": str(system_directory) if system_directory else None,
         "frames": args.frames,
         "firmware_supplied": [],
         "working_directory_policy": (
@@ -148,9 +160,11 @@ def main() -> int:
     }
     try:
         result_a, rgb_a = run_core("core-a", core_a, rom, runner,
-                                   args.frames, inputs, output)
+                                   args.frames, inputs, system_directory,
+                                   output)
         result_b, rgb_b = run_core("core-b", core_b, rom, runner,
-                                   args.frames, inputs, output)
+                                   args.frames, inputs, system_directory,
+                                   output)
         differing = sum(rgb_a[offset:offset + 3] != rgb_b[offset:offset + 3]
                         for offset in range(0, FRAME_BYTES, 3))
         diff = bytearray(FRAME_BYTES)

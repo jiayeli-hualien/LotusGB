@@ -74,11 +74,20 @@ void testSelectionWritesAndUnselectedButtons() {
            "the shared line rises only after all buttons on it are released");
 }
 
+void testDmgBootRomPowerOnValue() {
+    InterruptRegisters interrupts;
+    Joypad joypad(interrupts);
+    joypad.initializeDmgBootRomState();
+    expect(joypad.read(0xFF00) == 0xCF,
+           "DMG boot startup exposes the measured P1 value with both groups selected");
+}
+
 }
 
 int main() {
     testSelectionAndActiveLowInputs();
     testSelectionWritesAndUnselectedButtons();
+    testDmgBootRomPowerOnValue();
     std::cout << "Joypad tests passed\n";
     return EXIT_SUCCESS;
 }

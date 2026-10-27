@@ -407,6 +407,39 @@ void testVblankInterruptAndFrameRollover() {
     expect((ppu.read(STAT) & 0x03) == 2, "the next frame begins in mode 2");
 }
 
+void testCompletedFrameBufferUpdatesOnlyAtVblank() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    writeTileRow(ppu, 0, 0, 0xFF, 0x00); // Color 1 on the first tile row.
+    ppu.write(BGP, 0xE4);
+    ppu.write(LCDC, 0x91);
+
+    ppu.advanceTCycles(456);
+    expect(ppu.getFrameBuffer()[0] == 1,
+           "the working framebuffer updates as the first scanline renders");
+    expect(ppu.getCompletedFrameBuffer()[0] == 0,
+           "the completed framebuffer does not expose a partial visible frame");
+
+    ppu.advanceTCycles(456U * 144U - 2U - 456U);
+    expect(ppu.getCompletedFrameBuffer() == ppu.getFrameBuffer(),
+           "VBlank publishes the complete visible framebuffer");
+    expect(ppu.getCompletedFrameBuffer()[0] == 1,
+           "the published frame contains the rendered first scanline");
+
+    writeTileRow(ppu, 0, 0, 0x00, 0xFF); // Next frame's first row is color 2.
+    ppu.advanceTCycles(456U * 10U + 456U);
+    expect(ppu.getFrameBuffer()[0] == 2,
+           "the next visible frame can update the working framebuffer");
+    expect(ppu.getCompletedFrameBuffer()[0] == 1,
+           "the previous completed frame stays stable during rendering");
+
+    ppu.advanceTCycles(456U * 143U);
+    expect(ppu.getCompletedFrameBuffer() == ppu.getFrameBuffer(),
+           "the next VBlank publishes the next complete framebuffer");
+    expect(ppu.getCompletedFrameBuffer()[0] == 2,
+           "the new completed frame contains the changed scanline");
+}
+
 void advanceToReadableLine153(DmgPpu &ppu) {
     // LY changes ahead of the mode timeline; anchor observations to the
     // publicly visible counter, not the PPU's private line/dot fields.
@@ -1165,6 +1198,7 @@ int main() {
     testObjectsAtSameXRunSeparateFetchEvents();
     testTenObjectsAtXTenMatchMode0TimingBoundary();
     testVblankInterruptAndFrameRollover();
+    testCompletedFrameBufferUpdatesOnlyAtVblank();
     testLastVblankLineResetsLyBeforeModeEnds();
     testLastVblankLineLycComparisonAndInterruptEdges();
     testModeOneStatBlocksLastLineLycZeroEdge();

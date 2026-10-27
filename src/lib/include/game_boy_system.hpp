@@ -11,6 +11,7 @@
 #include "cartridge.hpp"
 #include "decoder.hpp"
 #include "dmg_apu.hpp"
+#include "dmg_boot_rom.hpp"
 #include "dmg_ppu.hpp"
 #include "dmg_serial.hpp"
 #include "dmg_oam_dma.hpp"
@@ -40,6 +41,10 @@ public:
     GameBoySystem(std::vector<uint8_t> rom,
                   std::shared_ptr<std::vector<uint8_t>> saveRam,
                   std::shared_ptr<std::vector<uint8_t>> saveRtc);
+    GameBoySystem(std::vector<uint8_t> rom,
+                  std::shared_ptr<std::vector<uint8_t>> saveRam,
+                  std::shared_ptr<std::vector<uint8_t>> saveRtc,
+                  std::vector<uint8_t> dmgBootRom);
     // Build a system from the synthetic CPU-reset state for unit tests.
     static GameBoySystem createForTest(std::vector<uint8_t> rom);
 
@@ -48,6 +53,7 @@ public:
     uint64_t getElapsedTCycles() const;
     Reg getCpuRegisters();
     const DmgPpu::FrameBuffer &getFrameBuffer() const;
+    const DmgPpu::FrameBuffer &getCompletedFrameBuffer() const;
     std::vector<int16_t> takeAudioSamples();
     void setButtonState(JoypadButton button, bool pressed);
     uint8_t *getSaveRamData();
@@ -65,10 +71,12 @@ private:
 
     GameBoySystem(std::vector<uint8_t> rom, StartupProfile startupProfile,
                   std::shared_ptr<std::vector<uint8_t>> saveRam,
-                  std::shared_ptr<std::vector<uint8_t>> saveRtc);
+                  std::shared_ptr<std::vector<uint8_t>> saveRtc,
+                  std::vector<uint8_t> dmgBootRom);
     void initializeDmgPostBootState();
 
     Cartridge cartridge;
+    DmgBootRom dmgBootRom;
     RamRegion workRam;
     RamRegion highRam;
     InterruptRegisters interruptRegisters;

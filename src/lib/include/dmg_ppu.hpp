@@ -32,6 +32,8 @@ public:
     // Each pixel is a DMG shade index (0 is lightest, 3 is darkest), after
     // applying BGP/OBP0/OBP1. The frontend chooses the actual output colors.
     const FrameBuffer &getFrameBuffer() const;
+    // Stable video snapshot copied after all visible scanlines finish.
+    const FrameBuffer &getCompletedFrameBuffer() const;
 
 private:
     static constexpr uint16_t MODE3_BASE_DOTS = 172;
@@ -284,6 +286,7 @@ private:
     std::array<uint8_t, 0x2000> videoRam{};
     std::array<uint8_t, OAM_SIZE> objectRam{};
     FrameBuffer frameBuffer{};
+    FrameBuffer completedFrameBuffer{};
     Mode3State mode3{};
 
     uint8_t lcdControl = 0;

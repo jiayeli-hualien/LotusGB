@@ -22,7 +22,19 @@ void Timer::setDividerApuClockCallback(std::function<void()> callback) {
 }
 
 void Timer::initializeDmgPostBootState() {
-    systemCounter = 0xAB00;
+    // Captured at PC=$0100 after the standard DMG boot ROM completes.
+    systemCounter = 0xABC8;
+    tima = 0;
+    tma = 0;
+    tac = 0;
+    overflowReloadTCycles = 0;
+    reloadWindowTCycles = 0;
+}
+
+void Timer::initializeDmgBootRomState() {
+    // The DMG divider is already four T-cycles into its first M-cycle when
+    // the reset-vector boot ROM begins executing.
+    systemCounter = 4;
     tima = 0;
     tma = 0;
     tac = 0;

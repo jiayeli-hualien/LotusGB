@@ -49,11 +49,11 @@ uint8_t DmgApu::read(uint16_t address) {
         case NR10: return static_cast<uint8_t>(0x80 | nr10);
         case NR11: return static_cast<uint8_t>(0x3F | (nr11 & 0xC0));
         case NR12: return nr12;
-        case NR13: return nr13;
+        case NR13: return 0xFF;
         case NR14: return static_cast<uint8_t>(0xBF | (nr14 & 0x40));
         case NR21: return static_cast<uint8_t>(0x3F | (nr21 & 0xC0));
         case NR22: return nr22;
-        case NR23: return nr23;
+        case NR23: return 0xFF;
         case NR24: return static_cast<uint8_t>(0xBF | (nr24 & 0x40));
         case NR30: return static_cast<uint8_t>(0x7F | (nr30 & 0x80));
         case NR31: return 0xFF;

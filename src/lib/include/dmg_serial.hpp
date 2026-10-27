@@ -14,6 +14,8 @@ namespace LOTUSGB {
 class DmgSerial final : public IAddressRegion, public IClockedComponent {
 public:
     explicit DmgSerial(IInterruptController &interrupts);
+    void initializeDmgPostBootState();
+    void initializeDmgBootRomState();
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
     void advanceTCycles(uint64_t tCycles) override;
