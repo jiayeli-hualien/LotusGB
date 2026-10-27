@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from unittest.mock import patch
 
-from run_homebrew_check import main, validate_run
+from run_homebrew_check import differing_pixel_count, main, validate_run
 
 
 class HomebrewOutputTests(unittest.TestCase):
@@ -40,6 +40,15 @@ class HomebrewOutputTests(unittest.TestCase):
                          (self.rgb, self.ram + b'\0')):
             with self.subTest(rgb=len(rgb), ram=len(ram)), self.assertRaises(ValueError):
                 validate_run(self.summary, rgb, ram)
+
+    def test_differing_pixel_count_compares_rgb_pixels(self):
+        first = bytes(160 * 144 * 3)
+        second = bytearray(first)
+        second[0:3] = b'\xff\xff\xff'
+        second[7 * 3:8 * 3] = b'\x01\x02\x03'
+        self.assertEqual(differing_pixel_count(first, bytes(second)), 2)
+        with self.assertRaises(ValueError):
+            differing_pixel_count(first, first[:-1])
 
 
     def test_success_exit_without_fresh_artifacts_is_failure(self):

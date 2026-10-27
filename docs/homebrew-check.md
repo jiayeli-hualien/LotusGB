@@ -3,10 +3,11 @@
 These optional local profiles run freely available homebrew through the built
 libretro core. Big2Small is the repeatable gameplay target and the manual
 save-persistence acceptance game. Tobu Tobu Girl and Canyon Racer provide
-additional MBC1 and raster-effect smoke coverage. The automated profiles check
-that the selected ROM reaches a visible state and callbacks continue; they do
-not prove full game compatibility or exact hardware output. ROMs and player
-saves stay outside the repository.
+additional MBC1 and raster-effect smoke coverage. Adjustris checks a puzzle
+board's visible response to movement and rotation input. The automated profiles
+check that the selected ROM reaches a visible state and callbacks continue;
+they do not prove full game compatibility or exact hardware output. ROMs and
+player saves stay outside the repository.
 
 Run from the repository root:
 
@@ -14,6 +15,8 @@ Run from the repository root:
 make test-homebrew
 # Optionally restore a copy of an existing SRAM image into the core:
 make test-homebrew HOMEBREW_SAVE=/absolute/path/to/big2small.srm
+# Run the Adjustris movement/rotation smoke check:
+make test-homebrew HOMEBREW_GAME=adjustris
 ```
 
 `HOMEBREW_ROM` defaults to `../test-roms/homebrew/big2small.gb`.
@@ -295,6 +298,42 @@ core SHA-256 was
 and generated outputs remain outside source control. This confirms the
 scripted startup/input path and visible gameplay for this release, not level
 completion, audio quality, or save-file persistence.
+
+## Adjustris movement and rotation check
+
+```sh
+make test-homebrew HOMEBREW_GAME=adjustris
+```
+
+Adjustris is a DMG block-dropping game. The upstream repository dedicates the
+software to the public domain under CC0; the source and license stay outside
+the LotusGB repository at `../test-roms/homebrew/Adjustris-source/`. Its source
+revision is `d899e2f539c07ac49fd42c055605bf778a2df09d`. Build the ROM with
+RGBDS v0.3.10 (`0759c98d913e3d4d21207a8886a319c85add2041`) because later RGBDS
+versions reject the source's legacy assembler syntax. The resulting 32 KiB ROM
+has SHA-256
+`9b7bfcd8cec7d85e257c43cc62a9965852d59c9fe94dd9f643de3f225450b58b`, header
+type `$13` (MBC3 + RAM + battery), and 8 KiB SRAM.
+
+The 3,600-frame script presses A to enter the first piece set, moves left and
+right, rotates in both directions, then pauses and resumes. The check runs a
+baseline with only the initial A press, then compares the final RGB frame from
+the gameplay-input sequence. It requires at least 200 differing pixels and
+requires baseline and gameplay SRAM to match. This verifies that movement and
+rotation produce visible board changes while both runs continue delivering
+video/audio callbacks; it does not verify line clears, long-term playability,
+high scores, or SRAM persistence. Inspect `frame.ppm` and `baseline-frame.ppm`
+under `build/test-roms/adjustris/` when reviewing a run.
+
+Two consecutive local runs changed the same 1,320 pixels between the final
+frames. Both produced baseline frame SHA-256
+`34a081236fe382296c33a69103972874a07f011b3508aa9792e4330ca8b757a9`, gameplay
+frame SHA-256
+`3851735470873a1fe9599baa8e2a191eda392dc70b764f47381f7e63971f8da8`, and
+identical 8 KiB SRAM. The core SHA-256 was
+`da6a3334e8f6738213cf83f095098521a3b139061eb82c3158239630e89135e2`. The
+binary, source checkout, screenshots, and SRAM artifacts remain outside the
+project repository. Upstream source and license: [tbsp/Adjustris](https://github.com/tbsp/Adjustris).
 
 ## Automated output checks
 

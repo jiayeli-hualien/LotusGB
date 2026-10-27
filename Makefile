@@ -13,6 +13,7 @@ HOMEBREW_GAME ?= big2small
 homebrew_rom_big2small := ../test-roms/homebrew/big2small.gb
 homebrew_rom_tobutobugirl := ../test-roms/homebrew/tobutobugirl/tobu.gb
 homebrew_rom_canyon-racer := ../test-roms/homebrew/canyon-racer/canyon_racer_0.7.7_mbc5.gb
+homebrew_rom_adjustris := ../test-roms/homebrew/Adjustris-source/adjustris.gb
 HOMEBREW_ROM ?= $(homebrew_rom_$(HOMEBREW_GAME))
 HOMEBREW_SAVE ?=
 MOONEYE_GROUP ?= ppu

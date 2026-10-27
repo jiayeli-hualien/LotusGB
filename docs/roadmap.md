@@ -116,6 +116,14 @@ the [PPU guide](ppu-scrolling.md).
   122 SRAM bytes. This confirms the profile changes visible and saved game
   state, not individual button timing or level completion. See the
   [paired control](homebrew-check.md#big2small-scripted-input-control-2026-10-26).
+- **Adjustris gameplay smoke (2026-10-27):** build the CC0 game from pinned
+  upstream source `d899e2f539c07ac49fd42c055605bf778a2df09d` with RGBDS
+  v0.3.10, then run its title-to-board and movement/rotation sequence through
+  the libretro core. The final frame differs from the start-only baseline in
+  1,320 pixels (minimum 200); both runs deliver 3,600 video callbacks,
+  2,893,139 audio frames, and identical 8 KiB SRAM. This verifies visible
+  input response in a block game, not line clears, full playability or save
+  persistence. See the [local profile and evidence](homebrew-check.md#adjustris-movement-and-rotation-check).
 - **Libretro input phase diagnostic (2026-10-26):** controlled probes found a
   `LY=0`/`LY=144` input-phase difference and a one-callback response shift for
   VBlank-only handling. This is not a hardware accuracy verdict or an F-1 Race
