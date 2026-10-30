@@ -1,16 +1,15 @@
 # DMG interrupt behavior and validation
 
-This is the interrupt contract and implementation audit for LotusGB, as of
-2026-10-25. It separates hardware rules from current implementation evidence.
+This is the interrupt contract and implementation audit for LotusGB, updated
+2026-10-28. It separates hardware rules from current implementation evidence.
 Passing instruction tests does not establish peripheral-to-CPU timing accuracy.
 
 LotusGB keeps peripheral requests in IF separate from the CPU's IE/IME
-acceptance decision. The CPU wakes from HALT for an enabled request and enters
-the handler only when IME permits it at an instruction boundary; STOP remains
-a separate state. Focused CPU/system tests and selected Mooneye ROMs cover
-these paths. Exact sub-cycle entry races, automatic STOP wake and external
-serial links remain outside the verified behavior; details and evidence are
-listed below and in the [validation matrix](dmg-validation.md).
+acceptance decision. An enabled request wakes HALT; IME controls handler entry
+at an instruction boundary. STOP is separate: a selected JOYP input-line edge
+wakes it without consulting IE or IME. Focused CPU/system tests cover both
+paths. Exact sub-cycle entry and STOP-wake phases, plus connected serial peers,
+remain outside the verified behavior; see the [validation matrix](dmg-validation.md).
 
 ## Request, wake, and service
 
@@ -24,7 +23,7 @@ Software may also write IF. Multiple requests use the following priority:
 | 1 | 0 / `$01` | VBlank | `$0040` | PPU |
 | 2 | 1 / `$02` | LCD STAT | `$0048` | PPU combined STAT signal and DMG VBlank-entry event |
 | 3 | 2 / `$04` | Timer | `$0050` | Timer overflow reload |
-| 4 | 3 / `$08` | Serial | `$0058` | Serial hardware is not implemented; IF can be requested manually |
+| 4 | 3 / `$08` | Serial | `$0058` | `DmgSerial` requests IF on unconnected internal-clock transfer completion; no peer supplies external clock/data |
 | 5 | 4 / `$10` | Joypad | `$0060` | Selected joypad input-line falling edge |
 
 ```mermaid
@@ -133,9 +132,13 @@ for commands and current results.
    cancellation/reprioritization of requests. Immediate service after RETI now
    has unit and external ROM coverage. Acceptance-time selection is still
    not proof of the remaining entry races.
-3. **Peripheral-specific gaps.** Add evidence for STAT-write glitches. Line-153 early LY reset and comparison
-   now have focused PPU and CPU-handler tests; finer hardware races remain open. Implement STOP wake with joypad evidence. Unconnected serial completion now
-   has component/system coverage; exact serial boot phase and link peers remain separate work.
+3. **Peripheral-specific gaps.** Add evidence for STAT-write glitches. Line-153
+   early LY reset and comparison now have focused PPU and CPU-handler tests;
+   finer hardware races remain open. STOP wake is implemented from the
+   documented selected-JOYP-line signal, but its precise phase and edge-at-entry
+   cases lack hardware validation. Unconnected serial completion and boot-clock
+   alignment have selected component/system and Mooneye coverage; connected
+   peers and external clock input are unsupported.
 
 Items 1–3 are coverage gaps, not confirmed bugs or prerequisites for all other
 emulator work. Choose an item when a reproducer or active feature needs it.

@@ -1,13 +1,33 @@
 # Local homebrew regressions
 
 These optional local profiles run freely available homebrew through the built
-libretro core. Big2Small is the repeatable gameplay target and the manual
-save-persistence acceptance game. Tobu Tobu Girl and Canyon Racer provide
-additional MBC1 and raster-effect smoke coverage. Adjustris checks a puzzle
-board's visible response to movement and rotation input. The automated profiles
-check that the selected ROM reaches a visible state and callbacks continue;
-they do not prove full game compatibility or exact hardware output. ROMs and
-player saves stay outside the repository.
+libretro core. Big2Small is the repeatable gameplay and runner/core
+save/resume target; the separate RetroArch disk-persistence result remains
+manual. Tobu Tobu Girl and Canyon Racer provide
+additional MBC1 and raster-effect smoke coverage. Adjustris fills and clears
+a row, then verifies that the next piece responds to input. Other automated
+profiles check visible startup/gameplay output and callback delivery. These
+bounded profiles do not prove full game compatibility or exact hardware output.
+ROMs and player saves stay outside the repository.
+
+## Consolidated local run (2026-10-28)
+
+Big2Small, Adjustris, and Tobu Tobu Girl were each rerun for 3,600 frames
+through the same LotusGB core. All primary reports had exit code 0, 3,600/3,600
+video frames, 2,893,139 audio frames, an 8 KiB SRAM block, and no validation
+error. The Big2Small final image shows its newly unlocked next puzzle; the
+Adjustris image shows changed pieces; Tobu Tobu Girl reaches a gameplay scene.
+The frames were visually reviewed; these checks do not establish broad game
+compatibility or exact hardware output.
+
+| Profile | ROM SHA-256 | Core SHA-256 | Final frame SHA-256 |
+| --- | --- | --- | --- |
+| Big2Small | `59c096333f93c12c8eb25a5fcffa2be15001abcd5d20b9a82c2bc2dae7e625b2` | `da6a3334e8f6738213cf83f095098521a3b139061eb82c3158239630e89135e2` | `07d948e36f679803c2b0394381d1b5d42cede475c860bc78e23b4eb0830a27dd` |
+| Adjustris | `9b7bfcd8cec7d85e257c43cc62a9965852d59c9fe94dd9f643de3f225450b58b` | `da6a3334e8f6738213cf83f095098521a3b139061eb82c3158239630e89135e2` | `cfb547d3b2eaabdaa73afa6c977d6373a3eb537a8c82b89e1a65bd9cfb419d75` |
+| Tobu Tobu Girl | `5d3871cae77db2287807e8914fd21f76203e73aa3fec20955489d45cb4571d8f` | `da6a3334e8f6738213cf83f095098521a3b139061eb82c3158239630e89135e2` | `0d99c5dcd3c31e459e99919fd5d8754e6eaa274f748e0386621be52c54676bb7` |
+
+Reports, input schedules, and inspected frames remain under
+`build/test-roms/{big2small,adjustris,tobutobugirl}/`.
 
 Run from the repository root:
 
@@ -15,9 +35,12 @@ Run from the repository root:
 make test-homebrew
 # Optionally restore a copy of an existing SRAM image into the core:
 make test-homebrew HOMEBREW_SAVE=/absolute/path/to/big2small.srm
-# Run the Adjustris movement/rotation smoke check:
-make test-homebrew HOMEBREW_GAME=adjustris
 ```
+
+Other profile commands are listed in the [testing workflow](testing.md) and
+the relevant sections below.
+
+## Big2Small save and resume check
 
 `HOMEBREW_ROM` defaults to `../test-roms/homebrew/big2small.gb`.
 Obtain the free ROM from the [author's page](https://mdsteele.itch.io/big2small).
@@ -27,26 +50,65 @@ The accepted ROM SHA-256 is
 the input sequence before updating the pinned hash.
 ROMs and player saves are not committed. This optional workflow is outside CI.
 
-The script runs 3,600 frames with fixed A and directional inputs through the
-actual libretro core. The optional save is read into memory; output SRAM goes
-only to `build/test-roms/big2small/output.srm`. It checks the original save hash
-again afterward. Do not treat the generated SRAM as a replacement for your
-player save. Starting progress affects the scene reached by the fixed inputs.
+The default `make test-homebrew` run starts a new File A, completes the first
+Big2Small puzzle, Peanut Pathway, and dismisses its completion screen to return
+to the map. The map shows Goat Grove as the next puzzle. The puzzle solution is
+the Elephant's Right, Up, Right sequence; see the author's
+[game page](https://mdsteele.games/big2small/) for controls and the published
+[first-puzzle guide](https://gamefaqs.gamespot.com/gameboy/439191-big2small/faqs/81888).
+
+The save check uses independent 3,600-frame runner processes:
+
+1. Complete Peanut Pathway from fresh SRAM and write `output.srm`.
+2. Create a separate 00% slot and restore it in a new process to capture the
+   baseline title screen.
+3. Restore `output.srm` in another new process and compare its title screen at
+   frame 599 with the 00% baseline. The restored screen visibly reads 02%.
+4. Restore `output.srm` again in a fresh process, enter the game and press
+   Right. The captured game image must change by at least 100 RGB pixels.
+
+On 2026-10-28, all five processes delivered 3,600 video frames, 2,893,139 audio
+frames and an 8 KiB SRAM image. The empty-slot SRAM hash was
+`e821e06312e8ba9407262a9850424d3ed44b4e64a72ecea6ca23fb48811f9ac3`; the
+completed-save hash was
+`656420b4a925e3fa66e5ad8c84136d3da632370a856be37e7ef0f5dc49034456` (four
+bytes changed). The 00% and 02% title frames differed by 29 pixels. After
+restoration, Right changed 519 pixels between frames 2199 and 2300. The run
+reported no validation error.
+
+`HOMEBREW_SAVE=/absolute/path/to/big2small.srm` still restores a supplied player
+save read-only and checks its hash afterward; that mode skips the fresh-save
+round trip. Generated SRAM is never written over a player save. This check
+proves runner/core restoration, not RetroArch `.srm` disk writing, RTC behavior,
+or hardware accuracy. The separate manual RetroArch persistence result remains
+recorded in the [validation matrix](dmg-validation.md).
 
 Artifacts under `build/test-roms/big2small/`:
 
 - `input.txt`: input intervals; zero-based start, exclusive end, button name.
-- `runner.log`: video/audio callback counts and SRAM size, or runner errors.
-- `frame.ppm`: final 160×144 RGB frame for manual inspection.
-- `frame.rgb`, `output.srm`: raw framebuffer and final emulated SRAM.
-- `report.json`: ROM/core hashes, command, exit status, original save hash and
-  preservation check, final frame hash and callback summary.
+- `empty-slot-input.txt`, `neutral-input.txt`,
+  `resume-gameplay-input.txt`: the other process input schedules.
+- `runner.log`, `empty-slot-runner.log`, `empty-title-runner.log`,
+  `resume-title-runner.log`, `resume-gameplay-runner.log`: callback counts and
+  runner errors for the separate processes.
+- `frame.ppm`, `puzzle-completed.ppm`, `empty-title.ppm`, `resume-title.ppm`,
+  `resume-gameplay-before.ppm`, `resume-gameplay-after.ppm`: inspectable RGB
+  frames for the completed puzzle, 00% baseline, restored 02% screen, and later
+  input response.
+- `frame.rgb`, `output.srm`, `empty-slot.srm`, `resume-title.srm`,
+  `resume-gameplay.srm`: raw output frames and SRAM images. All test SRAM files
+  stay under the ignored build directory.
+- `progress-sequence.rgb`, `resume-title-sequence.rgb`,
+  `resume-gameplay-sequence.rgb`: captured frames used by the checker.
+- `report.json`: process commands, input scripts, hashes, callback summaries,
+  pixel-difference metrics, and validation outcome.
 
-Success means the core accepted the cartridge, executed the scripted run, and
-published one valid video frame per call. Review the frame for the expected
-scene. Callback counts do not prove audible sound quality, responsive gameplay,
-puzzle completion, or save persistence. The user's separate RetroArch
-save/reload check remains the evidence for actual disk persistence.
+The machine check requires a changed SRAM image, a visible title-frame change
+from the restored 00% slot, and a visible Right-input response after loading the
+completed save. Review the named PPM files to confirm the displayed 02% value,
+completion message, and moved character. Callback counts do not prove audible
+sound quality or broad playability. The separate RetroArch save/reload result
+is still required for actual frontend disk persistence.
 
 ## GB Pong in-process gameplay regression
 
@@ -299,41 +361,52 @@ and generated outputs remain outside source control. This confirms the
 scripted startup/input path and visible gameplay for this release, not level
 completion, audio quality, or save-file persistence.
 
-## Adjustris movement and rotation check
+## Adjustris row-clear and post-clear control check
 
 ```sh
 make test-homebrew HOMEBREW_GAME=adjustris
 ```
 
-Adjustris is a DMG block-dropping game. The upstream repository dedicates the
-software to the public domain under CC0; the source and license stay outside
-the LotusGB repository at `../test-roms/homebrew/Adjustris-source/`. Its source
-revision is `d899e2f539c07ac49fd42c055605bf778a2df09d`. Build the ROM with
-RGBDS v0.3.10 (`0759c98d913e3d4d21207a8886a319c85add2041`) because later RGBDS
-versions reject the source's legacy assembler syntax. The resulting 32 KiB ROM
-has SHA-256
+Adjustris is a DMG block-dropping game. Its author dedicates the software to
+the public domain under CC0. The source and ROM stay outside the LotusGB
+repository at `../test-roms/homebrew/Adjustris-source/`. The source revision is
+`d899e2f539c07ac49fd42c055605bf778a2df09d`; the 32 KiB ROM has SHA-256
 `9b7bfcd8cec7d85e257c43cc62a9965852d59c9fe94dd9f643de3f225450b58b`, header
-type `$13` (MBC3 + RAM + battery), and 8 KiB SRAM.
+type `$13` (MBC3 + RAM + battery), and 8 KiB SRAM. RGBDS v0.3.10
+(`0759c98d913e3d4d21207a8886a319c85add2041`) is needed to rebuild this source.
 
-The 3,600-frame script presses A to enter the first piece set, moves left and
-right, rotates in both directions, then pauses and resumes. The check runs a
-baseline with only the initial A press, then compares the final RGB frame from
-the gameplay-input sequence. It requires at least 200 differing pixels and
-requires baseline and gameplay SRAM to match. This verifies that movement and
-rotation produce visible board changes while both runs continue delivering
-video/audio callbacks; it does not verify line clears, long-term playability,
-high scores, or SRAM persistence. Inspect `frame.ppm` and `baseline-frame.ppm`
-under `build/test-roms/adjustris/` when reviewing a run.
+The 3,600-frame input script selects set 5, whose default pieces contain one
+block each, then places ten blocks across the bottom row. It uses the existing
+libretro runner's frame capture for frames 1000–1139. The checker samples each
+board cell and requires all ten bottom cells to fill, that row to clear within
+90 frames, and the next piece to move right while remaining on the same row.
+A focused ROM-free regression rejects a missing full row, a row that does not
+clear, and a next piece that does not respond. The run still checks the
+existing callback and output contract. A same-set start-only baseline is also
+captured in the same time window and must fail the full-row condition for the
+right reason. It does not claim full playability, hardware accuracy,
+audio quality or save persistence.
 
-Two consecutive local runs changed the same 1,320 pixels between the final
-frames. Both produced baseline frame SHA-256
-`34a081236fe382296c33a69103972874a07f011b3508aa9792e4330ca8b757a9`, gameplay
-frame SHA-256
-`3851735470873a1fe9599baa8e2a191eda392dc70b764f47381f7e63971f8da8`, and
-identical 8 KiB SRAM. The core SHA-256 was
-`da6a3334e8f6738213cf83f095098521a3b139061eb82c3158239630e89135e2`. The
-binary, source checkout, screenshots, and SRAM artifacts remain outside the
-project repository. Upstream source and license: [tbsp/Adjustris](https://github.com/tbsp/Adjustris).
+Two consecutive runs on 2026-10-28 passed with the same ROM and core hashes.
+Both found a full row at frame 1063, an empty row at frame 1109, and movement
+of the next piece from column 5 at frame 1110 to column 6 at frame 1112. Both
+reported 3,600/3,600 video frames, 2,893,139 audio frames, 8,192 SRAM bytes,
+no validation error, and final RGB SHA-256
+`cfb547d3b2eaabdaa73afa6c977d6373a3eb537a8c82b89e1a65bd9cfb419d75`. The
+ROM hash, core hash, input schedule, detected frames and other run details are
+in `build/test-roms/adjustris/report.json`.
+
+Review the captured views and raw sequence under `build/test-roms/adjustris/`:
+`progress-full-row.ppm`, `progress-row-cleared.ppm`,
+`progress-next-piece-moved.ppm`, `progress-sequence.rgb`, and
+`baseline-progress-sequence.rgb`. The earlier
+movement/rotation-only profile and its hashes are historical; its 1,320-pixel
+difference is not the current progress acceptance check. The latest run's
+scripted input differed from its start-only baseline in 407 pixels.
+
+This profile is local and remains outside CI. Its ROM/source checkout and all
+save and capture files stay outside the repository. Upstream source and license:
+[tbsp/Adjustris](https://github.com/tbsp/Adjustris).
 
 ## Automated output checks
 
@@ -347,10 +420,11 @@ missing or inconsistent artifacts still fails and records the reason.
 
 `make test` runs `tools/test_homebrew_check.py` without external ROMs. It
 checks valid output and rejects missing/duplicated summaries, wrong counts,
-missing audio, wrong dimensions and truncated/oversized artifacts. A mocked
-runner also verifies that a zero exit without fresh artifacts cannot pass
-using stale files. These checks establish output delivery, not audible audio
-quality, correct scene contents or disk-save persistence.
+missing audio, wrong dimensions and truncated/oversized artifacts. It also
+checks the Adjustris row-clear and post-clear-control conditions, including
+negative cases. A mocked runner verifies that a zero exit without fresh
+artifacts cannot pass using stale files. These checks do not establish audible
+audio quality or disk-save persistence.
 
 ### Big2Small scripted-input control (2026-10-26)
 
@@ -370,8 +444,9 @@ SRAM block.
 This shows that the pinned scripted profile changes visible and saved game
 state for this ROM/core pair. It does not establish each button's individual
 mapping, level completion, save-file persistence, or VBlank-boundary behavior.
-The regular `make test-homebrew` command still checks callback/output
-contracts; this neutral comparison was a separate local diagnostic. The
+At this historical 2026-10-27 checkpoint, `make test-homebrew` checked only
+callback and output contracts. The neutral comparison was a separate local
+diagnostic; the current save/resume acceptance is documented above. The
 side-by-side image and comparison JSON are under
 `build/test-roms/big2small-input-control/`.
 

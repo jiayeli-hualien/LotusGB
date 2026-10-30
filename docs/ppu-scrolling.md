@@ -19,47 +19,26 @@ regression checks that a SCY write during this pause affects bitplanes not yet
 fetched. This catch-up predicate follows Pan Docs; SameBoy uses a different
 fetcher-state boundary, so the regression records a hypothesis rather than
 hardware-verified behavior.
-The BG fetcher now exposes per-dot tile-map/bitplane address (T1) and data (T2)
-phases, followed by separate FIFO-push and tile-column-advance phases. This
-refactor preserves the current visible output and tested timing; OBJ events are
-still coarse, precomputed stalls, so shared BG/OBJ bus arbitration is not yet
-fully modeled. The attempted OBJ read-slot gate was removed after it proved
-unobservable in the current renderer; OBJ plane reads remain separate coarse
-actions, but the shared bus schedule is still unresolved. Across all 31
-Mealybug PPU ROMs whose assembly mentions OBJ or sprites, the candidate and
-prior `a7b3139` shade buffers were byte-identical.
-The public SCY-during-OBJ regression also distinguishes the current catch-up
-predicate from a stricter predicate-only alternative in a bounded 330-case
-sweep. The selected `m3_scx_high_5_bits` image remains at 84 differing pixels
-under both; neither result verifies hardware behavior.
-`m3_scx_high_5_bits` remains at 84 differing pixels with its previous capture
-hash, so this step does not claim better visual accuracy. `make test`, the
-selected 11-ROM Mooneye PPU/interrupt run, and 3,600-frame Big2Small and
-Canyon Racer callback smoke checks pass. The Canyon Racer frame differs from
-the preceding run in 407 of 23,040 pixels; this profile has no expected frame,
-so the comparison does not establish accuracy. Exact OBJ event alignment and
-per-dot bus arbitration remain unverified.
+The BG fetcher exposes per-dot tile-map/bitplane address and data phases,
+followed by separate FIFO-push and tile-column-advance phases. OBJ events still
+use coarse, precomputed stalls, so shared BG/OBJ bus arbitration is not fully
+modeled. Exact OBJ event alignment and the per-dot shared bus schedule remain
+open.
 
-**Decision (2026-10-26):** keep the current production PPU timing as the
-baseline; no SCX timing candidate is accepted. Retain
-`m3_scx_high_5_bits` as an optional diagnostic against the Mealybug DMG
-reference, not as a universal hardware-conformance gate. The available real-
-device photo is CPU CGB D, so it cannot by itself decide the DMG timing rule.
+The selected 14-case Mooneye PPU timing group passes 14/14 in the latest
+recorded run (2026-10-25); `make test` also checks the in-repository DMG Acid2
+framebuffer regression. These results cover selected boundaries, not complete
+DMG raster accuracy. The roadmap currently defers standalone Mode 3 timing
+sweeps until a supported game exposes a concrete issue or hardware-backed
+evidence can distinguish a change.
 
-A fresh rebuild of the current tree produced these selected Mealybug `DMG-blob`
-pixel differences: BGP 3,642; SCX-low 540; SCX-high 84; SCY 8,334; BG-map
-change 1,082; BG-enable change 2,210. All six differ from the selected
-reference images; these are comparison results, not hardware pass/fail results.
-The repeatable report is under
-`build/test-roms/mealybug-vram-arbitration-candidate/report.json`; it records the
-archive SHA-256
-`e2fa6ca96ad48bd64d7297fda042db04c15117a730da3bbd590f139e89b150bd` and runner
-SHA-256 `0fb0d7eab45a076278b8d39ef660b3aee738ea6aec9d432af5fa34cf0df4dacb`.
-The linked `liblotusgb.so` SHA-256 for this run is
-`976c3b15979988a4b934c949db9318762805fa518b46bd3144409a554957edf9`.
-Earlier counts in the dated investigation sections are historical outputs
-from prior builds; use this fresh run as the current image baseline. The new
-report has the same six counts as the preceding baseline.
+Archived diagnostics remain useful as scoped comparisons: the 2026-10-26
+Mealybug `m3_scx_high_5_bits` capture differed by 84 pixels, and the selected
+BG/SCX/SCY images differed from their reference buffers. Those counts describe
+that archived build and are not current acceptance targets. The 2026-10-26
+Canyon Racer captures likewise document gameplay/rendering behavior, not an
+expected-frame test; see the [homebrew guide](homebrew-check.md) for its dated
+results and the latest consolidated gameplay run.
 
 ## Investigation by boundary (2026-10-26)
 

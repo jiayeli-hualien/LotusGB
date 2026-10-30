@@ -9,16 +9,18 @@ limits live in the [DMG validation matrix](dmg-validation.md).
 LotusGB is a headless DMG system connected to a libretro adapter. The system
 composes the CPU, address bus, cartridge and RAM, timer, interrupts, joypad,
 unconnected serial port, PPU, OAM DMA and APU. The default startup profile
-skips boot-ROM execution and begins from a DMG post-boot state. ROM-only, MBC1,
-MBC2, MBC3 and MBC5 cartridges are supported within the limits listed in the
-validation matrix.
+skips boot-ROM execution and begins from a DMG post-boot state; an optional
+external DMG boot ROM can be selected for startup. ROM-only, MBC1, MBC2, MBC3
+and MBC5 cartridges are supported within the limits listed in the validation
+matrix.
 
 The PPU renders background, window and object pixels and implements selected
 mid-scanline register behavior. Its Mode 3 BG/OBJ fetch arbitration and some
 raster timing remain approximate. The [PPU guide](ppu-scrolling.md) records the
-current model and visual evidence. CGB behavior, boot-ROM execution, additional
-mapper families, multiplayer serial and MBC5 rumble output are outside the
-current implementation.
+current model and visual evidence. CGB behavior, additional mapper families,
+connected serial peers and MBC5 rumble output are outside the current
+implementation. The external boot ROM is user-supplied and is not included in
+the repository.
 
 ## Runtime flow
 
@@ -77,6 +79,14 @@ transition-dot behavior remains a separate PPU timing question.
 
 `GameBoySystem` owns the hardware components. `AddressBus` routes CPU accesses to mapped regions and borrows those regions; the system keeps them alive. RetroArch callbacks and lifecycle handling stay in the libretro adapter, outside CPU and hardware components. The adapter catches exceptions during `retro_run`, logs the failure, and leaves emulation faulted until reset or content reload so a C++ exception cannot escape the libretro callback.
 
+## Save-state boundary
+
+`GameBoySystem` exports/imports versioned value-only snapshots between M-cycles.
+`StateCodec` validates a separate candidate before committing, preserving live
+references, callbacks and published cartridge storage addresses. Libretro owns
+the file/slot interface and contains exceptions. See [save states](save-states.md)
+for the schema, version policy, RTC behavior and validation scope.
+
 ## Main code boundaries
 
 | Area | Location | Responsibility |
@@ -92,10 +102,10 @@ transition-dot behavior remains a separate PPU timing question.
 1. Pick a bounded behavior from the [roadmap](roadmap.md) and state what an external observer should see: registers, flags, cycles, memory accesses, interrupts, pixels, audio samples, or input response.
 2. Check the relevant hardware reference and existing test ROMs. Record model and boot assumptions when a ROM depends on them.
 3. Add a focused regression at the narrowest useful boundary, then implement the behavior in its owning CPU or hardware component. Keep frontend-specific code in the libretro adapter.
-4. Run `make test` and `make build`. Run GBIT or a targeted ROM when it covers the changed behavior; investigate disagreements against hardware behavior.
+4. Run the [standard testing workflow](testing.md). Use GBIT or a targeted ROM when it covers the changed behavior; investigate disagreements against hardware behavior.
 5. Update the roadmap when milestone status, known limits, or implementation order changes. Update this document when ownership or runtime flow changes.
 
-`make test` covers the in-repository unit and libretro adapter tests. GBIT integration is a separate check; use the [README's GBIT instructions](../README.md#gbit-instruction-integration-check) and the CI workflow's pinned revision.
+`make test` covers the in-repository unit and libretro adapter tests. GBIT integration is a separate check; use the [testing workflow](testing.md) and the CI workflow's pinned revision.
 
 ## Refactoring guideline
 
