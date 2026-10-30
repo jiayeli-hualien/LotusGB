@@ -11,6 +11,7 @@ namespace LOTUSGB {
 
 // DMG boot ROM overlay for $0000-$00FF and the one-way $FF50 disable latch.
 class DmgBootRom final : public IAddressRegion {
+    friend class StateCodec;
 public:
     DmgBootRom(Cartridge &cartridge, std::vector<uint8_t> bootRom);
 

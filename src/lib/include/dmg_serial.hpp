@@ -12,6 +12,7 @@ namespace LOTUSGB {
 // DMG serial port with no connected peer. Its free-running internal clock is
 // independent of DIV. External-clock transfers wait for a peer indefinitely.
 class DmgSerial final : public IAddressRegion, public IClockedComponent {
+    friend class StateCodec;
 public:
     explicit DmgSerial(IInterruptController &interrupts);
     void initializeDmgPostBootState();

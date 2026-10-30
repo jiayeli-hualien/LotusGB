@@ -32,6 +32,7 @@ struct RetStepFrame {
 // Initial headless DMG composition: cartridge, basic RAM regions,
 // CPU, address bus, timer, PPU timing/rendering, joypad input, and shared clock.
 class GameBoySystem {
+    friend class StateCodec;
 public:
     static constexpr uint64_t DMG_FRAME_T_CYCLES = 456 * 154;
 
@@ -47,6 +48,12 @@ public:
                   std::vector<uint8_t> dmgBootRom);
     // Build a system from the synthetic CPU-reset state for unit tests.
     static GameBoySystem createForTest(std::vector<uint8_t> rom);
+
+    // Versioned, portable snapshot at an M-cycle boundary. Throws on invalid
+    // input; failed loads leave the machine and frontend memory pointers intact.
+    static constexpr size_t MAX_STATE_SIZE = 512 * 1024;
+    std::vector<uint8_t> saveState();
+    void loadState(const void *data, size_t size);
 
     RetStepOneCycle stepOneCycle();
     RetStepFrame stepFrame();

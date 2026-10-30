@@ -29,11 +29,13 @@ constexpr unsigned HEIGHT = 144;
 unsigned inputPollCount = 0;
 unsigned videoRefreshCount = 0;
 unsigned observedPitch = 0;
+bool frontendAcceptsXrgb8888 = true;
 bool upPressed = false;
 unsigned audioBatchCallCount = 0;
 size_t audioFrameCount = 0;
 size_t nonzeroAudioSampleCount = 0;
 std::vector<size_t> audioBatchSizes;
+std::vector<int16_t> latestAudio;
 std::array<uint32_t, WIDTH * HEIGHT> observedFrame{};
 
 void expect(bool condition, const char *message) {
@@ -73,7 +75,7 @@ bool environmentCallback(unsigned command, void *data) {
         const unsigned pixelFormat = *static_cast<unsigned *>(data);
         expect(pixelFormat == RETRO_PIXEL_FORMAT_XRGB8888,
                "core requests XRGB8888 output");
-        return true;
+        return frontendAcceptsXrgb8888;
     }
     if (command == RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS)
         return true;
@@ -104,15 +106,31 @@ void videoRefreshCallback(const void *data, unsigned width, unsigned height,
     expect(data != nullptr, "core returns a video frame");
     expect(width == WIDTH && height == HEIGHT,
            "core returns native 160x144 dimensions");
-    expect(pitch == WIDTH * sizeof(uint32_t),
-           "core reports the XRGB8888 pitch in bytes");
+    const size_t bytesPerPixel = frontendAcceptsXrgb8888 ? sizeof(uint32_t)
+                                                       : sizeof(uint16_t);
+    expect(pitch == WIDTH * bytesPerPixel,
+           "core reports the negotiated video pitch in bytes");
     observedPitch = static_cast<unsigned>(pitch);
     const auto *pixels = static_cast<const uint8_t *>(data);
-    std::memcpy(observedFrame.data(), pixels, sizeof(observedFrame));
+    if (frontendAcceptsXrgb8888) {
+        std::memcpy(observedFrame.data(), pixels, sizeof(observedFrame));
+    } else {
+        for (size_t i = 0; i < observedFrame.size(); ++i) {
+            uint16_t pixel = 0;
+            std::memcpy(&pixel, pixels + i * sizeof(pixel), sizeof(pixel));
+            const auto expand = [](unsigned channel) {
+                return (channel << 3) | (channel >> 2);
+            };
+            observedFrame[i] = (expand((pixel >> 10) & 31) << 16) |
+                              (expand((pixel >> 5) & 31) << 8) |
+                               expand(pixel & 31);
+        }
+    }
 }
 
 size_t audioSampleBatchCallback(const int16_t *data, size_t frames) {
     ++audioBatchCallCount;
+    latestAudio.assign(data, data + frames * 2);
     audioFrameCount += frames;
     audioBatchSizes.push_back(frames);
     for (size_t i = 0; i < frames * 2; ++i)
@@ -783,6 +801,163 @@ void testLibretroLoadsOptionalBootRomFromSystemDirectory() {
     std::filesystem::remove_all(directory);
 }
 
+std::vector<uint8_t> makeFrameCoherenceRom(uint16_t startupDelay) {
+    // Original synthetic ROM: switch every BG color between black and white
+    // only in VBlank. Every complete frame must therefore be uniform. Delay
+    // LCD enable so a frontend callback can land inside a visible PPU frame.
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x100] = 0xC3; // JP $0150; leave the cartridge header intact.
+    rom[0x101] = 0x50;
+    rom[0x102] = 0x01;
+    const std::vector<uint8_t> program = {
+        0xF3,                         // DI
+        0xF0, 0x44,                   // wait: LDH A, (LY)
+        0xFE, 0x90,                   // CP 144
+        0x38, 0xFA,                   // JR C, wait
+        0xAF,                         // XOR A
+        0xE0, 0x40,                   // LCDC = 0 (disable in VBlank)
+        0xE0, 0x47,                   // BGP = 0 (all white)
+        0x01, static_cast<uint8_t>(startupDelay),
+              static_cast<uint8_t>(startupDelay >> 8), // LD BC, delay
+        0x0B,                         // delay: DEC BC
+        0x78,                         // LD A, B
+        0xB1,                         // OR C
+        0x20, 0xFB,                   // JR NZ, delay
+        0x06, 0x00,                   // LD B, 0 (current palette)
+        0x3E, 0x91,                   // LD A, $91 (LCD + BG; no objects)
+        0xE0, 0x40,                   // LDH (LCDC), A
+        0xF0, 0x44,                   // visible: LDH A, (LY)
+        0xFE, 0x90,                   // CP 144
+        0x30, 0xFA,                   // JR NC, visible
+        0xF0, 0x44,                   // vblank: LDH A, (LY)
+        0xFE, 0x90,                   // CP 144
+        0x38, 0xFA,                   // JR C, vblank
+        0x78,                         // LD A, B
+        0xEE, 0xFF,                   // XOR $FF
+        0x47,                         // LD B, A
+        0xE0, 0x47,                   // LDH (BGP), A
+        0x18, 0xEC,                   // JR visible
+    };
+    std::copy(program.begin(), program.end(), rom.begin() + 0x150);
+    return rom;
+}
+
+void testLibretroPublishesCoherentFramesAcrossLcdStartupPhases() {
+    constexpr std::array<uint16_t, 5> STARTUP_DELAYS = {1, 127, 512, 1024, 2047};
+    constexpr unsigned FRAMES_PER_DELAY = 40;
+    for (const bool xrgb8888 : {true, false}) {
+        retro_unload_game();
+        retro_deinit();
+        frontendAcceptsXrgb8888 = xrgb8888;
+        retro_init();
+
+        for (const uint16_t delay : STARTUP_DELAYS) {
+            const auto rom = makeFrameCoherenceRom(delay);
+            retro_game_info game{};
+            game.data = rom.data();
+            game.size = rom.size();
+            logMessages.clear();
+            logLevels.clear();
+            expect(retro_load_game(&game), "frame-coherence probe loads");
+
+            unsigned blackFrames = 0;
+            unsigned whiteFrames = 0;
+            for (unsigned frame = 0; frame < FRAMES_PER_DELAY; ++frame) {
+                const unsigned previousVideoCount = videoRefreshCount;
+                retro_run();
+                expect(videoRefreshCount == previousVideoCount + 1,
+                       "frame-coherence probe receives one callback per run");
+                const uint32_t color = observedFrame.front();
+                const auto mismatch = std::find_if(
+                    observedFrame.begin(), observedFrame.end(),
+                    [color](uint32_t pixel) { return pixel != color; });
+                if (mismatch != observedFrame.end()) {
+                    const size_t pixel = static_cast<size_t>(
+                        mismatch - observedFrame.begin());
+                    std::cerr << "Frame coherence mismatch: delay=" << delay
+                              << " format=" << (xrgb8888 ? "XRGB8888" : "0RGB1555")
+                              << " callback=" << frame << " pixel=("
+                              << pixel % WIDTH << ',' << pixel / WIDTH << ")\n";
+                }
+                expect(mismatch == observedFrame.end(),
+                       "video callback never mixes rows from alternating frames");
+                expect(color == 0 || color == 0xFFFFFF,
+                       "probe publishes only its programmed black/white palettes");
+                blackFrames += color == 0;
+                whiteFrames += color == 0xFFFFFF;
+            }
+            expect(blackFrames >= 10 && whiteFrames >= 10,
+                   "uniform output must keep alternating, not freeze on one frame");
+            expect(std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_ERROR) ==
+                       logLevels.end(),
+                   "frame-coherence probe executes without core errors");
+            retro_unload_game();
+        }
+    }
+    retro_deinit();
+    frontendAcceptsXrgb8888 = true;
+    retro_init();
+    std::cout << "Frame coherence: 400 callbacks across 5 LCD startup delays "
+                 "and 2 pixel formats passed\n";
+}
+
+}
+
+namespace {
+void testLibretroSaveStateRoundTrip() {
+    expect(retro_serialize_size() == 0, "no snapshot without content");
+    expect(!retro_serialize(nullptr, 0) && !retro_unserialize(nullptr, 0), "null snapshot buffers rejected");
+    const auto rom = readBinary(std::string(LOTUSGB_LIBRETRO_TEST_ASSET_DIR) + "/gb-pong/gb-pong.gb");
+    retro_game_info game{}; game.data = rom.data(); game.size = rom.size();
+    for (bool xrgb : {true, false}) {
+        frontendAcceptsXrgb8888 = xrgb;
+        retro_deinit(); retro_init();
+        expect(retro_load_game(&game), "Pong loads for snapshot regression");
+        upPressed = false;
+        const auto size = retro_serialize_size();
+        std::vector<uint8_t> initial(size);
+        expect(size > 0 && retro_serialize(initial.data(), initial.size()), "save before first frame");
+        for (unsigned i = 0; i < 90; ++i) retro_run();
+        std::vector<uint8_t> saved(size);
+        expect(retro_serialize(saved.data(), saved.size()), "save Pong mid-game");
+        std::vector<std::array<uint32_t, WIDTH * HEIGHT>> frames;
+        std::vector<std::vector<int16_t>> pcm;
+        upPressed = true;
+        for (unsigned i = 0; i < 30; ++i) {
+            retro_run(); frames.push_back(observedFrame); pcm.push_back(latestAudio);
+        }
+        std::vector<uint8_t> expected(size);
+        expect(retro_serialize(expected.data(), expected.size()), "save expected future");
+        expect(expected != saved, "game state advances after checkpoint");
+        expect(retro_serialize_size() == size, "libretro serialization size remains fixed");
+        // Fresh content load reconstructs all pointers and decoder instances.
+        retro_unload_game();
+        expect(retro_load_game(&game), "reload same ROM before restoring snapshot");
+        expect(retro_unserialize(saved.data(), saved.size()), "restore Pong in fresh system");
+        for (unsigned i = 0; i < 30; ++i) {
+            retro_run();
+            expect(observedFrame == frames[i], "Pong restored video matches every subsequent frame");
+            expect(latestAudio == pcm[i], "Pong restored PCM matches every subsequent batch");
+        }
+        std::vector<uint8_t> actual(size);
+        expect(retro_serialize(actual.data(), actual.size()) && actual == expected,
+               "Pong restored complete state matches expected future");
+        auto bad = saved; bad.back() = 1;
+        expect(!retro_unserialize(bad.data(), bad.size()), "nonzero snapshot padding rejected");
+        expect(!retro_unserialize(saved.data(), 100), "truncated libretro snapshot rejected");
+        expect(!retro_serialize(actual.data(), size - 1), "undersized output rejected");
+        expect(retro_serialize(actual.data(), actual.size()) && actual == expected,
+               "failed snapshot operations preserve running game");
+        const auto logsBefore = logMessages.size();
+        retro_run();
+        expect(logMessages.size() == logsBefore, "rejected state does not fault next frame");
+        expect(retro_unserialize(initial.data(), initial.size()), "restore pre-first-frame snapshot");
+        expect(retro_serialize(actual.data(), actual.size()) && actual == initial, "initial state restored exactly");
+        retro_unload_game();
+    }
+    frontendAcceptsXrgb8888 = true; upPressed = false;
+    retro_deinit(); retro_init();
+}
 }
 
 int main() {
@@ -808,6 +983,8 @@ int main() {
     testLibretroReportsLoadAndStoppedFrameDiagnostics();
     testLibretroReportsUnsupportedOpcodeAndCanReset();
     testLibretroCallbackExceptionBoundaryFaultsOnce();
+    testLibretroPublishesCoherentFramesAcrossLcdStartupPhases();
+    testLibretroSaveStateRoundTrip();
 
     retro_unload_game();
     retro_deinit();

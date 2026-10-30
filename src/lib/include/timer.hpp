@@ -13,6 +13,7 @@ namespace LOTUSGB {
 // DMG timer registers and divider. The timer input is derived from a falling
 // edge of one bit of the internal 16-bit system counter.
 class Timer final : public IAddressRegion, public IClockedComponent {
+    friend class StateCodec;
 public:
     explicit Timer(IInterruptController &interrupts);
 

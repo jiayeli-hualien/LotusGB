@@ -9,7 +9,7 @@ core_sources := ../lib/GBCPU.cpp ../lib/decoder.cpp ../lib/instruction.cpp \
 	../lib/interrupt_registers.cpp
 generated_tables := ../lib/include/generated_decode_tables.hpp
 csv_sources := $(wildcard ../lib/include/*.csv)
-test_executables := $(build_dir)/cpu_interface_test $(build_dir)/cpu_instruction_test \
+test_executables := $(build_dir)/save_state_test  $(build_dir)/cpu_interface_test $(build_dir)/cpu_instruction_test \
 	$(build_dir)/adapter_lifetime_test $(build_dir)/system_clock_test \
 	$(build_dir)/address_bus_test $(build_dir)/game_boy_system_test \
 	$(build_dir)/timer_test $(build_dir)/dmg_serial_test \
@@ -24,6 +24,7 @@ acid2_assets := $(wildcard ../../tests/roms/dmg-acid2/*)
 .PHONY: test
 
 test: $(test_executables)
+	$(build_dir)/save_state_test
 	$(build_dir)/cpu_interface_test
 	$(build_dir)/cpu_instruction_test
 	$(build_dir)/adapter_lifetime_test
@@ -95,3 +96,6 @@ $(build_dir)/dmg_acid2_test: dmg_acid2_test.cpp $(wildcard ../lib/*.cpp) \
 
 $(build_dir):
 	mkdir -p $@
+
+$(build_dir)/save_state_test: save_state_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@

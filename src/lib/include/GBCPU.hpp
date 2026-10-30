@@ -11,6 +11,7 @@ namespace LOTUSGB {
 
 // TODO: refactor the naming: GBCPU->GbCpu, find a tool
 class GBCPU : public ICPU {
+    friend class StateCodec;
 public:
     GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB,
           IInterruptController *interruptController = nullptr);
@@ -56,7 +57,7 @@ private:
     uint8_t activeInterruptMask = 0;
     uint16_t activeInterruptVector = 0;
     InstState instStat;
-    IInstruction *pInst;
+    IInstruction *pInst = nullptr;
 };
 
 }

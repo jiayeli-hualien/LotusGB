@@ -10,6 +10,7 @@
 namespace LOTUSGB {
 
 class RamRegion final : public IAddressRegion {
+    friend class StateCodec;
 public:
     RamRegion(uint16_t startAddress, size_t size);
 

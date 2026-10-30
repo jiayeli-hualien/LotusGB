@@ -12,6 +12,7 @@ namespace LOTUSGB {
 
 // Initial DMG APU slice: all four DMG sound channels.
 class DmgApu final : public IAddressRegion, public IClockedComponent {
+    friend class StateCodec;
 public:
     static constexpr unsigned SAMPLE_RATE = 48000;
 

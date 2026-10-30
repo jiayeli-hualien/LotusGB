@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <cstring>
 #include <cstdio>
 #include <exception>
 #include <cstdint>
@@ -429,15 +430,33 @@ void retro_run(void) {
 }
 
 size_t retro_serialize_size(void) {
-    return 0;
+    return emulatorSystem ? GameBoySystem::MAX_STATE_SIZE : 0;
 }
 
-bool retro_serialize(void *, size_t) {
-    return false;
+bool retro_serialize(void *data, size_t size) {
+    if (!emulatorSystem || emulationFaulted || !data || size < GameBoySystem::MAX_STATE_SIZE)
+        return false;
+    // Snapshot failures are recoverable: the running system is not mutated.
+    bool snapshotFailed = false;
+    return LOTUSGB::LibretroInternal::invokeCallbackSafely(
+        snapshotFailed, [&] {
+            const auto state = emulatorSystem->saveState();
+            std::memset(data, 0, size);
+            std::memcpy(data, state.data(), state.size());
+        }, [](const char *error) { logMessage(RETRO_LOG_ERROR, error); });
 }
 
-bool retro_unserialize(const void *, size_t) {
-    return false;
+bool retro_unserialize(const void *data, size_t size) {
+    if (!emulatorSystem || !data)
+        return false;
+    bool snapshotFailed = false;
+    return LOTUSGB::LibretroInternal::invokeCallbackSafely(
+        snapshotFailed, [&] {
+            emulatorSystem->loadState(data, size);
+            // A valid snapshot may recover a machine faulted after the save.
+            emulationFaulted = false;
+            frameProblemReported = false;
+        }, [](const char *error) { logMessage(RETRO_LOG_ERROR, error); });
 }
 
 void retro_cheat_reset(void) {}

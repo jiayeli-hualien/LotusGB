@@ -17,6 +17,7 @@ public:
 // The system-level time authority. Clocked components advance through the
 // modeled M-cycle before the CPU performs its bus transaction.
 class SystemClock {
+    friend class StateCodec;
 public:
     explicit SystemClock(ICPU &cpu);
 

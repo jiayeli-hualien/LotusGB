@@ -15,6 +15,7 @@ namespace LOTUSGB {
 // Cartridge support: ROM-only, MBC1 ($01-$03), MBC2 ($05-$06), MBC3
 // ($0F-$13), and MBC5 ($19-$1E). MBC5 rumble motor output is not exposed.
 class Cartridge final : public IAddressRegion {
+    friend class StateCodec;
 public:
     using RtcNowFunction = std::function<int64_t()>;
 

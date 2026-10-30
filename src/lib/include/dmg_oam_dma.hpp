@@ -11,6 +11,7 @@ namespace LOTUSGB {
 // DMG OAM DMA advances one byte per M-cycle, after its startup delay.
 class DmgOamDma final : public IAddressRegion, public IClockedComponent,
                         public ICpuBusArbiter {
+    friend class StateCodec;
 public:
     DmgOamDma(AddressBus &bus, DmgPpu &ppu);
 

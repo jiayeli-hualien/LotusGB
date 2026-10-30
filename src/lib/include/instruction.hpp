@@ -9,6 +9,7 @@ namespace LOTUSGB {
 // TODO: think a beter way to handle it
 
 class Instruction : public IInstruction {
+    friend class StateCodec;
 public:
     Instruction();
     Instruction(std::string name, int memCycle,

@@ -21,6 +21,7 @@ enum class JoypadButton : uint8_t {
 };
 
 class Joypad final : public IAddressRegion {
+    friend class StateCodec;
 public:
     explicit Joypad(IInterruptController &interrupts);
 

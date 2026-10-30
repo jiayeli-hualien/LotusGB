@@ -15,6 +15,7 @@ namespace LOTUSGB {
 // emitted during mode 3, with SCX fine-scroll, visible-window, and object-fetch
 // stalls included.
 class DmgPpu final : public IAddressRegion, public IClockedComponent {
+    friend class StateCodec;
 public:
     static constexpr size_t FRAME_WIDTH = 160;
     static constexpr size_t FRAME_HEIGHT = 144;
