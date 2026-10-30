@@ -7,7 +7,9 @@ import subprocess
 import tempfile
 from unittest.mock import patch
 
-from run_homebrew_check import differing_pixel_count, main, validate_run
+from run_homebrew_check import (differing_pixel_count, main,
+                                validate_big2small_save_cycle,
+                                validate_adjustris_observations, validate_run)
 
 
 class HomebrewOutputTests(unittest.TestCase):
@@ -50,6 +52,76 @@ class HomebrewOutputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             differing_pixel_count(first, first[:-1])
 
+    def test_big2small_save_cycle_requires_progress_and_post_restore_input(self):
+        empty_save = bytes(8192)
+        completed_save = bytearray(empty_save)
+        completed_save[0] = 1
+        empty_title = bytearray(self.rgb)
+        completed_title = bytearray(self.rgb)
+        before_input = bytearray(self.rgb)
+        after_input = bytearray(self.rgb)
+        for pixel in range(10):
+            completed_title[pixel * 3:pixel * 3 + 3] = b'\xff\xff\xff'
+        for pixel in range(100):
+            after_input[pixel * 3:pixel * 3 + 3] = b'\xff\xff\xff'
+
+        result = validate_big2small_save_cycle(
+            empty_save, bytes(completed_save), bytes(empty_title),
+            bytes(completed_title), bytes(before_input), bytes(after_input))
+        self.assertEqual(result['sram_bytes_changed_from_empty_slot'], 1)
+        self.assertEqual(result['empty_vs_restored_title_differing_pixels'], 10)
+        self.assertEqual(result['post_restore_input_differing_pixels'], 100)
+
+    def test_big2small_save_cycle_rejects_missing_progress_or_input_response(self):
+        title = bytearray(self.rgb)
+        progressed_title = bytearray(self.rgb)
+        for pixel in range(10):
+            progressed_title[pixel * 3:pixel * 3 + 3] = b'\xff\xff\xff'
+        moved = bytearray(self.rgb)
+        for pixel in range(100):
+            moved[pixel * 3:pixel * 3 + 3] = b'\xff\xff\xff'
+
+        with self.assertRaisesRegex(ValueError, 'did not change cartridge SRAM'):
+            validate_big2small_save_cycle(
+                self.ram, self.ram, self.rgb, bytes(progressed_title),
+                self.rgb, bytes(moved))
+        with self.assertRaisesRegex(ValueError, 'did not visibly differ'):
+            validate_big2small_save_cycle(
+                self.ram, bytes([1]) + self.ram[1:], self.rgb, self.rgb,
+                self.rgb, bytes(moved))
+        with self.assertRaisesRegex(ValueError, 'did not visibly respond'):
+            validate_big2small_save_cycle(
+                self.ram, bytes([1]) + self.ram[1:], self.rgb,
+                bytes(progressed_title), self.rgb, self.rgb)
+
+
+    def test_adjustris_requires_row_clear_and_post_clear_control(self):
+        full_row = {(17, column) for column in range(10)}
+        observations = [
+            (1000, {(2, 5)}),
+            (1010, full_row),
+            (1055, set()),
+            (1056, {(2, 5)}),
+            (1068, {(2, 7)}),
+        ]
+        result = validate_adjustris_observations(observations)
+        self.assertEqual(result['full_row_frame'], 1010)
+        self.assertEqual(result['row_cleared_frame'], 1055)
+        self.assertEqual(result['next_piece_control_start_cell'], [2, 5])
+        self.assertEqual(result['next_piece_control_end_cell'], [2, 7])
+
+    def test_adjustris_rejects_incomplete_or_unresponsive_play(self):
+        full_row = {(17, column) for column in range(10)}
+        cases = (
+            [(1000, set()), (1010, {(17, column) for column in range(9)})],
+            [(1000, full_row), (1101, set())],
+            [(1000, full_row), (1040, set()),
+             (1041, {(2, 5)}), (1050, {(2, 5)})],
+        )
+        for observations in cases:
+            with self.subTest(observations=observations), \
+                 self.assertRaises(ValueError):
+                validate_adjustris_observations(observations)
 
     def test_success_exit_without_fresh_artifacts_is_failure(self):
         with tempfile.TemporaryDirectory() as directory:
