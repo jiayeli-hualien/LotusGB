@@ -1,5 +1,16 @@
 # Steam Deck acceptance checks
 
+## M6 rewind checkpoint — user-reported pass (2026-10-31)
+
+The user reports that enabling rewind on Deck allows R to rewind Ping Pong,
+and that normal control resumes after release. This completes the bounded M6
+rewind/release/control checkpoint by user report. SteamOS/RetroArch versions,
+installed core hash, exact ROM file/hash, repeated-use duration and measured
+FPS/audio behavior were not separately recorded. No core binary changed.
+See the [Mac and Deck rewind evidence](rewind.md) for the result, information-
+file update requirement and reproduction steps. The earlier M5 result below
+verifies manual save/load separately.
+
 ## M5 save-state checkpoint — user-reported pass (2026-10-31)
 
 The user reports that both same-session restore/control and restore/control

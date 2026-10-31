@@ -8,7 +8,11 @@ confirmed. Reopen the investigation if the issue becomes reproducible.
 DMG instant save/load through RetroArch (M5) passed its bounded macOS
 frontend checkpoint on 2026-10-30 and the Steam Deck checkpoint by user report
 on 2026-10-31. The latest Deck session also showed no tearing.
-Shader verification and GBC expansion remain separate follow-up options.
+M6 rewind validation is complete for the bounded Mac and Deck scope: the Mac
+GB Pong session passed, and the user confirmed R rewind and normal control
+after release in Ping Pong on Deck. Shader startup works by user report;
+visual and performance acceptance was not separately recorded. GBC remains
+deferred.
 
 ## Current route (2026-10-31)
 
@@ -16,6 +20,7 @@ Work in the order below. These are acceptance milestones, not calendar
 commitments. M1–M3 are complete. M4 is closed for now without a confirmed fix
 or core defect. The current personal-use DMG/libretro baseline is complete;
 M5 is complete for the bounded macOS and Steam Deck frontend scope.
+M6 is also complete; no next milestone has been selected.
 
 | Order | Milestone | Deliverable and exit condition |
 | --- | --- | --- |
@@ -25,6 +30,7 @@ M5 is complete for the bounded macOS and Steam Deck frontend scope.
 | M4 — closed for now (2026-10-29) | Intermittent Steam Deck tearing | The report did not recur in the latest Deck check, and Mac testing shows no tearing. No cause or core defect was confirmed. Reopen only if it becomes reproducible; see the [diagnostic record](dmg-validation.md#yellow-intro-lightning-investigation-2026-10-29). |
 | Current status — complete (2026-10-29) | Personal-use DMG/libretro playable baseline | The tested Mac and Steam Deck use cases are sufficient for the current goal. This closes the current work round, not the full-emulator compatibility gap list. |
 | M5 — complete (2026-10-31) | DMG save states | Core/libretro automated checks pass. RetroArch 1.22.2 saved GB Pong, restored its scene after advancing, and accepted further directional input. The same slot restored after a full frontend relaunch. Steam Deck same-session and full-relaunch restore/control also pass by user report; installed hash and versions were not supplied. See [Mac evidence](save-states.md#macos-retroarch-acceptance-2026-10-30) and [Deck evidence](steam-deck-check.md#m5-save-state-checkpoint--user-reported-pass-2026-10-31). |
+| M6 — complete (2026-10-31) | RetroArch rewind | Existing serialization supports the bounded GB Pong Mac session: score/paddle regression, release and continued control, repeated rewind, and selected near-60 FPS observations. Deck R rewind and control after release pass in Ping Pong by user report; exact ROM/core hash, versions and measured performance were not supplied. Update the installed `.info` as well as the library; old metadata can disable rewind. See [evidence and handoff](rewind.md). |
 | Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery, CGB, and other features need a concrete user or distribution target before becoming milestones. |
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
@@ -48,6 +54,19 @@ closing this baseline. Known hardware and compatibility gaps remain in the
 The user subsequently selected instant save/load as the next product feature.
 M5 extends the completed playable baseline with session convenience. It does
 not reopen the unconfirmed tearing report or claim broader game compatibility.
+
+### M6: RetroArch rewind — complete
+
+Use the existing M5 serialization through RetroArch's built-in rewind.
+The 2026-10-31 Mac GB Pong check passed visible regression and continued
+control; no core code or binary changed. An installed old `.info` initially
+blocked rewind, so keep its update distinct from library installation. See
+the [session evidence, earlier failed attempts and Deck procedure](rewind.md).
+The user confirmed Deck rewind with R and normal control after release in
+Ping Pong on 2026-10-31, completing the bounded M6 checkpoint. Installed
+core/ROM hashes, versions and measured performance were not supplied. Audio
+quality, long-session stability, RTC behavior, run-ahead and replay remain
+separate targets.
 
 ### M5: DMG instant save/load — complete
 
@@ -225,7 +244,7 @@ These are previously recorded results, not checks rerun for this replan.
 | Input/frame phase changes | A playable game reproducibly misses input or shows a control defect, or hardware-backed evidence resolves a specific boundary. | Controlled input-to-visible-result case. Keep completed-frame output and current stepping meanwhile. |
 | Additional games, mapper variants, APU or serial behavior | A named target covers an identified gap or exposes a defect. | One observable gameplay or hardware contract; do not claim whole-family coverage. Link play remains unsupported. |
 | Performance and cleanup | Profiling finds a player-visible bottleneck, or build/test friction blocks active work. | Measure before/after; preserve behavior. GBIT adapter relocation, endian cleanup, Makefile parallelism and broad source reorganization have no independent deadline. |
-| Rewind, run-ahead and replay | A user selects one after M5 save states are validated. | Validate determinism, frontend behavior and performance for that feature; serialization support alone does not establish these results. |
+| Run-ahead and replay | A user selects one after the save-state checkpoint. | Validate determinism, frontend behavior and performance for that feature; serialization support alone does not establish these results. The bounded M6 rewind checkpoint is complete above. |
 | Recalbox | That device becomes an active frontend target. | Verify actual controls, video/audio and saves; the ARM64 headless result already exists. See [Recalbox](recalbox.md). |
 | Windows | Windows becomes an active delivery target. | Native build/CI, then RetroArch gameplay and persistence. |
 | CGB, NES, GBA and other systems | A separate scope decision follows the DMG checkpoint. | Define one target and acceptance game before adding cross-system abstractions. |

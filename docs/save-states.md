@@ -150,7 +150,10 @@ limit fails explicitly. `retro_run()` already drains PCM every frame.
 Future CGB support can use a new model identifier and a revised schema.
 Changes to field meaning/order require a version change or explicit migration.
 There is no promise of compatibility with arbitrary future core versions.
-Rewind, run-ahead and replay performance are separate validation targets.
+[Rewind](rewind.md) passed its bounded macOS checkpoint and the Deck
+rewind/release/control checkpoint by user report with Ping Pong. Long-session
+stability and measured Deck performance remain unverified. Run-ahead and
+replay performance remain separate validation targets.
 
 ## Automated checks
 

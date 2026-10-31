@@ -77,6 +77,7 @@ in the [DMG validation matrix](docs/dmg-validation.md).
 - [Raspberry Pi / Recalbox validation](docs/recalbox.md)
 - [Development roadmap](docs/roadmap.md)
 - [DMG save states](docs/save-states.md)
+- [RetroArch rewind acceptance](docs/rewind.md)
 - [Steam Deck M3 session procedure](docs/steam-deck-check.md)
 - [Documentation writing guide](docs/documentation-guide.md)
 - [Reference catalog](docs/references.md)
