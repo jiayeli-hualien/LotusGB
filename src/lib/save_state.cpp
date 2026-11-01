@@ -534,10 +534,10 @@ std::vector<uint8_t> StateCodec::save(GameBoySystem &v) {
     uint32_t version = v.model == HardwareModel::CgbE ? 2 : STATE_VERSION;
     uint32_t model = v.model == HardwareModel::CgbE ? 2 : DMG_MODEL;
     uint32_t length = static_cast<uint32_t>(HEADER_SIZE + payload.bytes.size());
-    auto romHash = StateInternal::sha256(v.cartridge.rom.data(), v.cartridge.rom.size());
     auto bootHash = StateInternal::sha256(v.bootRom.bootRom.data(), v.bootRom.bootRom.size());
     auto payloadHash = StateInternal::sha256(payload.bytes.data(), payload.bytes.size());
-    header(magic, version, model, length, romHash, bootHash, payloadHash);
+    header(magic, version, model, length, v.cartridge.romHash, bootHash,
+           payloadHash);
     header.bytes.insert(header.bytes.end(), payload.bytes.begin(), payload.bytes.end());
     requireState(header.bytes.size() <= GameBoySystem::MAX_STATE_SIZE, "Snapshot exceeds format size limit");
     return header.bytes;
@@ -557,14 +557,19 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
         || (v.model == HardwareModel::CgbE && version == 2 && model == 2),
         "Unsupported snapshot version or model");
     requireState(length >= HEADER_SIZE && length <= size && length <= GameBoySystem::MAX_STATE_SIZE, "Truncated snapshot payload");
-    requireState(romHash == StateInternal::sha256(v.cartridge.rom.data(), v.cartridge.rom.size()), "Snapshot ROM mismatch");
+    requireState(romHash == v.cartridge.romHash, "Snapshot ROM mismatch");
     requireState(bootHash == StateInternal::sha256(v.bootRom.bootRom.data(), v.bootRom.bootRom.size()), "Snapshot boot ROM mismatch");
     requireState(payloadHash == StateInternal::sha256(header.data + HEADER_SIZE, length - HEADER_SIZE), "Snapshot checksum mismatch");
     requireState(std::all_of(header.data + length, header.data + size, [](uint8_t x) { return x == 0; }), "Invalid snapshot padding");
 
     // Parse and validate on an independently wired machine. Neither its storage
     // nor its callbacks reference the running system.
-    GameBoySystem candidate(v.cartridge.rom, v.model, nullptr, nullptr, v.bootRom.bootRom);
+    GameBoySystem candidate(
+        v.cartridge.rom,
+        v.model == HardwareModel::CgbE
+            ? GameBoySystem::StartupProfile::CgbPostBoot
+            : GameBoySystem::StartupProfile::DmgPostBoot,
+        nullptr, nullptr, v.bootRom.bootRom, v.model, &v.cartridge.romHash);
     Reader payload{header.data + HEADER_SIZE, length - HEADER_SIZE};
     uint8_t kind = 0;
     payload(kind);

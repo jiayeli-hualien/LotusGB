@@ -29,6 +29,30 @@ bash "Install LotusGB.command" --config "/path/to/retroarch.cfg"
 bash "Install LotusGB.command" --core-dir "/path/to/cores" --info-dir "/path/to/info"
 ```
 
+### Steam distribution on macOS
+
+The Steam distribution can use a separate RetroArch configuration and core
+directories. In the tested setup, its config is
+`~/Library/Application Support/Steam/steamapps/common/RetroArch/config/retroarch.cfg`.
+The installer run without `--config` reads the standalone config under
+`~/Library/Application Support/RetroArch/config/retroarch.cfg`; it cannot
+infer which RetroArch copy is active. Quit Steam RetroArch, then pass its
+config explicitly:
+
+```sh
+bash "Install LotusGB.command" \
+  --config "$HOME/Library/Application Support/Steam/steamapps/common/RetroArch/config/retroarch.cfg"
+```
+
+The installer then follows that config's `libretro_directory` and
+`libretro_info_path`, backing up files in those destinations. RetroArch's
+**Load Core → Install or Restore a Core** workflow also copies a local core
+from its Downloads directory into the currently configured Cores directory;
+it does not update another RetroArch installation. Keep the `.info` file in
+the corresponding Core Info directory as well. See Libretro's guides for
+[manual core installation](https://docs.libretro.com/guides/download-cores/)
+and [directory configuration](https://docs.libretro.com/guides/change-directories/).
+
 Existing LotusGB core/info files are backed up under the RetroArch data
 folder's `backups/LotusGB/<UTC timestamp>-<process id>/`; the printed backup
 path contains a `paths.txt` destination record. Staged replacements are checked

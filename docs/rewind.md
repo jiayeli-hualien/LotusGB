@@ -79,7 +79,24 @@ timed out, and one mixed menu/keyboard run ended with process exit status 0
 before a valid rewind capture. Its cause was not established; the later
 keyboard-only run with two rewind holds did not reproduce the exit. The
 installed old info file also produced an explicit rewind-not-supported error
-before the isolated info path was corrected. No core fix is claimed.
+before the isolated info path was corrected. That bounded checkpoint did not
+include a core performance fix.
+
+## macOS Steam audio follow-up (2026-11-02)
+
+The user reported crackling during forward playback with rewind enabled. The
+Steam RetroArch configuration uses a separate core directory from the
+standalone macOS configuration, so the first package installation updated the
+other copy. After installing the updated core through the Steam config, the
+user reports clean audio with rewind enabled during normal play on Mac Steam
+RetroArch, and then on Steam Deck. The updated core caches the immutable ROM
+identity instead of hashing the whole ROM for every snapshot. The user also
+confirmed normal audio while holding Rewind and after releasing it. These are
+user-reported listening checks; the Deck core hash and session duration were
+not recorded. RetroArch has a separate `audio_rewind_mute` setting for muting
+while Rewind is active; the inspected Mac configs set it to `false`, so they
+do not request that mute behavior. The Linux package includes the same
+optimization.
 
 ## Steam Deck result — user-reported pass (2026-10-31)
 

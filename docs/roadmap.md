@@ -16,7 +16,15 @@ automated input/presentation checkpoint is complete. M8 now passes its first nat
 Tobu Tobu Girl Deluxe controls/state replay and a macOS RetroArch session.
 Further CGB hardware accuracy and game compatibility remain separate work.
 
-## Current route (2026-11-01)
+Rewind-audio follow-up (2026-11-02): snapshot serialization now reuses the
+immutable ROM identity rather than hashing the full ROM on every frame. The
+user reports clean audio during forward play with rewind enabled in Mac's
+Steam RetroArch after its separate core directory was updated, and reports
+normal audio on Steam Deck as well. The user also confirmed normal audio while
+holding Rewind and after releasing it. The Deck core hash and session duration
+were not recorded. See the [rewind evidence](rewind.md).
+
+## Current route (2026-11-02)
 
 Work in the order below. These are acceptance milestones, not calendar
 commitments. M1–M3 are complete. M4 is closed for now without a confirmed fix
@@ -24,8 +32,9 @@ or core defect. The current personal-use DMG/libretro baseline is complete;
 M5 is complete for the bounded macOS and Steam Deck frontend scope.
 M6 is also complete. M7's headless input/audio/state checkpoint is complete:
 bounded VBlank presentation is now the default, with fixed stepping retained
-for diagnostics. Manual Mac/Deck checks are deferred and do not block further
-core development. M8 now passes its bounded native-CGB playability checkpoint;
+for diagnostics. Broader manual input-feel and physical-latency checks remain
+deferred and do not block further core development. M8 now passes its bounded
+native-CGB playability checkpoint;
 M9 adds a bounded CGB gameplay and battery-SRAM regression. Broader CGB title
 compatibility remains exploratory; public regressions use original fixtures
 and licensed homebrew.

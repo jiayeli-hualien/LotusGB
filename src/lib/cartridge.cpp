@@ -1,4 +1,5 @@
 #include "include/cartridge.hpp"
+#include "include/state_hash.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -93,9 +94,20 @@ Cartridge::Cartridge(std::vector<uint8_t> rom,
                      std::shared_ptr<std::vector<uint8_t>> saveRam,
                      std::shared_ptr<std::vector<uint8_t>> saveRtc,
                      RtcNowFunction rtcNow)
+    : Cartridge(std::move(rom), std::move(saveRam), std::move(saveRtc),
+                std::move(rtcNow), nullptr) {}
+
+Cartridge::Cartridge(std::vector<uint8_t> rom,
+                     std::shared_ptr<std::vector<uint8_t>> saveRam,
+                     std::shared_ptr<std::vector<uint8_t>> saveRtc,
+                     RtcNowFunction rtcNow,
+                     const std::array<uint8_t, 32> *knownRomHash)
     : rom(std::move(rom)), rtcNow(std::move(rtcNow)) {
     if (this->rom.empty())
         throw std::invalid_argument("cartridge ROM cannot be empty");
+    romHash = knownRomHash
+                  ? *knownRomHash
+                  : StateInternal::sha256(this->rom.data(), this->rom.size());
     if (!this->rtcNow)
         this->rtcNow = getUnixTimeNow;
 

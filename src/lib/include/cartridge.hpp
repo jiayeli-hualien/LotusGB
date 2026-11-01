@@ -36,6 +36,14 @@ public:
     std::shared_ptr<std::vector<uint8_t>> getBatteryRtcStorage() const;
 
 private:
+    friend class GameBoySystem;
+
+    Cartridge(std::vector<uint8_t> rom,
+              std::shared_ptr<std::vector<uint8_t>> saveRam,
+              std::shared_ptr<std::vector<uint8_t>> saveRtc,
+              RtcNowFunction rtcNow,
+              const std::array<uint8_t, 32> *knownRomHash);
+
     enum class Mapper {
         RomOnly,
         Mbc1,
@@ -59,6 +67,8 @@ private:
     size_t getSelectedRamBank() const;
 
     std::vector<uint8_t> rom;
+    // ROM content is immutable; save states reuse this identity per snapshot.
+    std::array<uint8_t, 32> romHash{};
     std::shared_ptr<std::vector<uint8_t>> externalRam;
     std::shared_ptr<std::vector<uint8_t>> rtcStorage;
     RtcNowFunction rtcNow;

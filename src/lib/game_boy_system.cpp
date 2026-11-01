@@ -57,9 +57,11 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
                              StartupProfile startupProfile,
                              std::shared_ptr<std::vector<uint8_t>> saveRam,
                              std::shared_ptr<std::vector<uint8_t>> saveRtc,
-                             std::vector<uint8_t> bootRomImage, HardwareModel model)
+                             std::vector<uint8_t> bootRomImage, HardwareModel model,
+                             const std::array<uint8_t, 32> *knownRomHash)
     : model(model), cgbBootProbe(model == HardwareModel::CgbE && startupProfile == StartupProfile::TestReset),
-      cartridge(std::move(rom), std::move(saveRam), std::move(saveRtc)),
+      cartridge(std::move(rom), std::move(saveRam), std::move(saveRtc), {},
+                knownRomHash),
       bootRom(cartridge, std::move(bootRomImage), model),
       cgbWorkRam(model == HardwareModel::CgbE ? std::make_unique<CgbWorkRam>() : nullptr),
       cgbVideoRam(model == HardwareModel::CgbE ? std::make_unique<CgbVideoRam>() : nullptr),

@@ -1,6 +1,7 @@
 #ifndef LOTUSGB_GAME_BOY_SYSTEM_HPP
 #define LOTUSGB_GAME_BOY_SYSTEM_HPP
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -110,7 +111,8 @@ private:
                   std::shared_ptr<std::vector<uint8_t>> saveRam,
                   std::shared_ptr<std::vector<uint8_t>> saveRtc,
                   std::vector<uint8_t> bootRom,
-                  HardwareModel model = HardwareModel::Dmg);
+                  HardwareModel model = HardwareModel::Dmg,
+                  const std::array<uint8_t, 32> *knownRomHash = nullptr);
     void initializeDmgPostBootState();
     void initializeCgbPostBootState();
 
