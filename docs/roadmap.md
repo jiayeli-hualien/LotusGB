@@ -26,8 +26,9 @@ M6 is also complete. M7's headless input/audio/state checkpoint is complete:
 bounded VBlank presentation is now the default, with fixed stepping retained
 for diagnostics. Manual Mac/Deck checks are deferred and do not block further
 core development. M8 now passes its bounded native-CGB playability checkpoint;
-Broader CGB title compatibility remains exploratory; public game-level
-regressions use licensed homebrew and original test fixtures.
+M9 adds a bounded CGB gameplay and battery-SRAM regression. Broader CGB title
+compatibility remains exploratory; public regressions use original fixtures
+and licensed homebrew.
 
 | Order | Milestone | Deliverable and exit condition |
 | --- | --- | --- |
@@ -40,7 +41,8 @@ regressions use licensed homebrew and original test fixtures.
 | M6 — complete (2026-10-31) | RetroArch rewind | Existing serialization supports the bounded GB Pong Mac session: score/paddle regression, release and continued control, repeated rewind, and selected near-60 FPS observations. Deck R rewind and control after release pass in Ping Pong by user report; exact ROM/core hash, versions and measured performance were not supplied. Update the installed `.info` as well as the library; old metadata can disable rewind. See [evidence and handoff](rewind.md). |
 | M7 — bounded automated checkpoint complete (2026-11-01) | Input response and presentation pacing | Tobu's tested short/held actions now respond in call 2 under the default bounded VBlank policy, versus call 3 in the fixed diagnostic baseline. The policy distinguishes real completion, healthy host repeat, STOP and failure; hardware clocks remain shared. Dual-mode audio/coherent-video/state/rewind regressions pass. See the [current policy and evidence](input-latency.md#current-presentation-policy). Manual Mac/Deck feel, listening and physical latency are deferred, not claimed as passed. |
 | M8 — playable checkpoint passed (2026-11-01) | Native CGB-E through RetroArch | Banked RAM, color PPU, KEY1 speed switching, VRAM DMA and model-tagged snapshots. Exact cgb-acid2 pixels and Deluxe directional/flap/dash response with state replay pass; installed macOS RetroArch loads/restores gameplay. Broader game compatibility and hardware accuracy remain work. See the [canonical evidence and limits](cgb-development.md). |
-| M9 — deferred | Broader CGB game compatibility | Continue with licensed homebrew profiles and original hardware fixtures; keep commercial-game checks private. |
+| M9 — bounded checkpoint complete (2026-11-01) | CGB gameplay and battery SRAM | CI fixtures cover CGB-compatible MBC1 and MBC5, color/input gameplay, battery-backed progress and fresh-content SRAM restore. Optional local `make test-cgb-homebrew` adds Big2Small MBC5 save/resume and Deluxe MBC1 gameplay/state replay. See [CGB evidence](cgb-development.md#reproducible-checks). |
+| M10 — in progress | Broader CGB game compatibility | Original CGB fixtures now cover MBC1/MBC5 gameplay and battery RAM, plus MBC3 guest RTC latch/read/write and fresh-content battery import in both libretro presentation builds. Continue with licensed homebrew gameplay profiles and original hardware fixtures; keep commercial-game checks private. |
 | Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and other systems need a concrete user or distribution target before becoming milestones. |
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
@@ -124,6 +126,18 @@ This closes the bounded playable checkpoint, not all CGB hardware work.
 Compatibility mode on CGB hardware, revision-specific timing, DMA/bus conflicts,
 link/IR and broader game validation remain separate scope. The [CGB guide](cgb-development.md)
 owns the feature matrix, reproducible commands, frontend evidence and limits.
+
+### M9: CGB gameplay and battery-SRAM checkpoint — passed
+
+`make test` now runs original CGB-compatible MBC1 and MBC5 game fixtures through
+the libretro interface. They check color output, directional response,
+progress writes to battery SRAM, and continued progress after unloading,
+reloading and importing SRAM into a fresh content instance. The optional local
+`make test-cgb-homebrew` profile adds puzzle save/resume in Big2Small and
+gameplay input/state replay in Deluxe; both ROMs remain external and outside
+CI. This is a bounded integration checkpoint, not broad CGB compatibility
+evidence. See [CGB development](cgb-development.md) and the
+[testing workflow](testing.md).
 
 ### M6: RetroArch rewind — complete
 

@@ -1365,6 +1365,136 @@ void testLibretroMbc30BatteryAndState() {
     std::cout<<"MBC30 libretro ROM/RAM/RTC, battery reload and state replay passed\n";
 }
 
+void runLibretroCgbBatteryGameProgressReload(std::vector<uint8_t> rom) {
+    retro_game_info game{};
+    game.path = "cgb-battery-game.gb";
+    game.data = rom.data();
+    game.size = rom.size();
+
+    frontendAcceptsXrgb8888 = true;
+    buttonsPressed = 0;
+    upPressed = false;
+    latchUpOnPoll = false;
+    expect(retro_load_game(&game),
+           "core loads a CGB-compatible battery game fixture");
+    for (unsigned frame = 0; frame < 6; ++frame)
+        retro_run();
+
+    const size_t saveRamSize = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    expect(saveRamSize == 0x2000,
+           "CGB game exposes its declared 8-KiB battery RAM");
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr && saveRam[0] == 0x11 &&
+               saveRam[1] == 0x33 && saveRam[2] == 0xFE,
+           "CGB game startup writes its expected cartridge progress signature");
+    expect(observedFrame[80 * WIDTH + 80] == 0xFF0000,
+           "CGB game renders its neutral color scene");
+    const uint8_t initialProgress = saveRam[0x10];
+
+    buttonsPressed = 1u << RETRO_DEVICE_ID_JOYPAD_RIGHT;
+    for (unsigned frame = 0; frame < 4; ++frame)
+        retro_run();
+    expect(observedFrame[80 * WIDTH + 80] == 0x0000FF,
+           "CGB game input changes the visible color scene");
+    expect(saveRam[0x10] > initialProgress,
+           "CGB game advances progress in battery RAM while playing");
+
+    const uint8_t savedProgress = saveRam[0x10];
+    const std::vector<uint8_t> savedRam(saveRam, saveRam + saveRamSize);
+    retro_unload_game();
+
+    buttonsPressed = 0;
+    expect(retro_load_game(&game),
+           "frontend can start a fresh CGB content instance");
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == saveRamSize,
+           "fresh CGB instance exposes the same battery RAM size");
+    saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr,
+           "fresh CGB instance exposes its battery RAM buffer");
+    std::copy(savedRam.begin(), savedRam.end(), saveRam);
+    expect(saveRam[0x10] == savedProgress,
+           "frontend restores CGB game progress before execution");
+    for (unsigned frame = 0; frame < 6; ++frame)
+        retro_run();
+    expect(saveRam[0x10] > savedProgress,
+           "reloaded CGB game reads and advances the restored progress");
+    expect(observedFrame[80 * WIDTH + 80] == 0xFF0000,
+           "reloaded CGB game returns to its neutral color scene");
+
+    buttonsPressed = 1u << RETRO_DEVICE_ID_JOYPAD_RIGHT;
+    for (unsigned frame = 0; frame < 4; ++frame)
+        retro_run();
+    expect(observedFrame[80 * WIDTH + 80] == 0x0000FF,
+           "reloaded CGB game still responds to directional input");
+    retro_unload_game();
+    buttonsPressed = 0;
+}
+
+void testLibretroCgbMbc1AndMbc5BatteryGameProgressReload() {
+    runLibretroCgbBatteryGameProgressReload(
+        LOTUSGB::Test::makeCgbMbc1BatteryExerciseRom());
+    runLibretroCgbBatteryGameProgressReload(
+        LOTUSGB::Test::makeCgbMbc5BatteryExerciseRom());
+    std::cout << "CGB MBC1/MBC5 gameplay and battery SRAM reload passed\n";
+}
+
+void testLibretroCgbMbc3RtcGameplayAndBatteryReload() {
+    auto rom = LOTUSGB::Test::makeCgbMbc3RtcExerciseRom();
+    retro_game_info game{};
+    game.path = "cgb-mbc3-rtc.gbc";
+    game.data = rom.data();
+    game.size = rom.size();
+
+    buttonsPressed = 0;
+    expect(retro_load_game(&game), "core loads a CGB-compatible MBC3+RTC game");
+    expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x8000 &&
+               retro_get_memory_size(RETRO_MEMORY_RTC) == 24,
+           "CGB MBC3 game exposes separate 32-KiB SRAM and RTC blocks");
+
+    auto *rtc = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_RTC));
+    expect(rtc != nullptr, "CGB MBC3 game exposes importable RTC data");
+    std::fill(rtc, rtc + 24, 0);
+    rtc[0] = 'L'; rtc[1] = 'G'; rtc[2] = 'R'; rtc[3] = 'T';
+    rtc[4] = 1;       // Versioned persistence payload.
+    rtc[5] = 37;      // Live seconds.
+    rtc[9] = 0x40;    // Halt the clock so the test is independent of wall time.
+    rtc[10] = 37;     // Latched seconds returned by the guest-visible register.
+    rtc[14] = 0x40;   // Latched day-high register also records the halt bit.
+    rtc[15] = 0xFF;   // Permit the guest's 0 -> 1 latch edge.
+
+    for (unsigned frame = 0; frame < 2; ++frame)
+        retro_run();
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr && saveRam[0x30] == 38,
+           "CGB guest reads, increments and writes the MBC3 RTC seconds register");
+    expect(rtc[5] == 38 && rtc[10] == 38 && (rtc[9] & 0x40) != 0,
+           "RTC live and latched state reflect the guest register write");
+
+    const std::vector<uint8_t> savedRam(saveRam, saveRam + 0x8000);
+    const std::vector<uint8_t> savedRtc(rtc, rtc + 24);
+    retro_unload_game();
+
+    expect(retro_load_game(&game),
+           "frontend can reload the CGB MBC3+RTC content instance");
+    saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    rtc = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_RTC));
+    expect(saveRam != nullptr && rtc != nullptr,
+           "fresh CGB MBC3 instance exposes both importable battery blocks");
+    std::copy(savedRam.begin(), savedRam.end(), saveRam);
+    std::copy(savedRtc.begin(), savedRtc.end(), rtc);
+    for (unsigned frame = 0; frame < 2; ++frame)
+        retro_run();
+    expect(saveRam[0x30] == 39 && rtc[5] == 39 && rtc[10] == 39,
+           "reloaded CGB guest resumes from imported MBC3 RTC and SRAM state");
+    retro_unload_game();
+    std::cout << "CGB MBC3 RTC guest registers and frontend battery reload passed\n";
+}
+
 void measureTobuInput(const std::string &romPath, const std::filesystem::path &output, bool deluxe = false) {
     const unsigned firstCheckpoint = deluxe ? 1780 : 1840;
     const auto rom = readBinary(romPath);
@@ -1571,6 +1701,8 @@ int main(int argc, char **argv) {
     testLibretroSaveStateRoundTrip();
     testLibretroRepeatedRewindReplay();
     testLibretroCgbColorInputStateAndReset();
+    testLibretroCgbMbc1AndMbc5BatteryGameProgressReload();
+    testLibretroCgbMbc3RtcGameplayAndBatteryReload();
     testLibretroMbc30BatteryAndState();
 
     retro_unload_game();

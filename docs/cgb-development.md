@@ -8,6 +8,12 @@ color gameplay, directional input, flap/dash and exact snapshot replay.
 These results do not establish compatibility with every GBC game or complete
 CGB hardware accuracy.
 
+The automated libretro gate also exercises original CGB-compatible MBC1 and
+MBC5 battery game fixtures: color output and directional response work,
+gameplay advances cartridge SRAM, and a fresh content instance resumes from
+restored SRAM. The optional local homebrew profile pairs Big2Small's MBC5 save
+cycle with Deluxe's CGB/MBC1 gameplay and input-state replay.
+
 The initial hardware target is **CGB-E**. The frontend selects native CGB when
 cartridge header `$0143` bit 7 is set, including dual-mode games distributed
 as `.gb`. Other cartridges retain the existing DMG path. Filename extensions
@@ -38,7 +44,7 @@ checkpoint, not a manual controller/handfeel, listening or Steam Deck result.
 
 | Area | Implemented behavior | Evidence / scope |
 | --- | --- | --- |
-| Shared CPU / bus / cartridge | Existing instruction engine, decoders, memory dispatcher and ROM-only/MBC1/2/3/5 implementations serve both models; MBC30 adds 4-MiB ROM / 64-KiB SRAM geometry. | CPU/DMG regressions and pinned GBIT remain required. Original MBC30 tests cover high ROM/SRAM banks, RTC/battery ownership and CGB state replay. |
+| Shared CPU / bus / cartridge | Existing instruction engine, decoders, memory dispatcher and ROM-only/MBC1/2/3/5 implementations serve both models; MBC30 adds 4-MiB ROM / 64-KiB SRAM geometry. | CPU/DMG regressions and pinned GBIT remain required. Original CGB MBC3 tests cover guest RTC registers and fresh-content battery import; MBC30 tests cover high ROM/SRAM banks, RTC/battery ownership and CGB state replay. |
 | Startup | Explicit model selection; CGB A=`$11`, F=`$80`, BC=`$0000`, DE=`$FF56`, HL=`$000D`, SP=`$FFFE`, PC=`$0100`, IME off; white BG palettes and deterministic RAM/OBJ palette defaults. | Original probe checks handoff. This synthetic profile does not reproduce all BIOS VRAM/OAM contents or exact power-on phases. |
 | WRAM | 32 KiB; fixed bank 0 at `$C000–CFFF`, bank 1–7 at `$D000–DFFF`; SVBK zero aliases bank 1 while preserving raw zero readback. Echo uses the existing bus alias. | Address-line, full-bank retention, echo-boundary and CPU tests in `cgb_memory_test`. |
 | VRAM | 16 KiB in two banks; VBK selects CPU access, while PPU fetches explicitly select their bank. CPU access windows are applied by the PPU before storage dispatch. | Shared-storage rendering/access tests in `ppu_video_memory_test`. CGB-specific access-edge timing is not hardware-verified. |
@@ -75,7 +81,26 @@ and HBlank DMA, switches speed, emits a tone, and changes a red field to blue
 on Right input. System checkpoints cover in-flight work and reproduce future
 PCM/state exactly. Libretro tests additionally verify `.gb`/`.gbc` content,
 header-based selection, both pixel formats, three rewind/replays and reset
-with stable SRAM.
+with stable SRAM. Original CGB MBC1 and MBC5 fixtures change a color field on
+Right, increment battery-RAM progress during play, then resume and continue
+that progress after a frontend-style unload, reload and SRAM import. `make test`
+runs these regressions without external ROMs. An original CGB-compatible
+MBC3+RTC fixture reads and writes the guest-visible seconds register, then
+verifies SRAM and RTC state continue after frontend-style reload and import in
+both libretro presentation builds.
+
+For local gameplay checks of CGB-compatible MBC5 and MBC1 homebrew releases:
+
+```sh
+make test-cgb-homebrew
+```
+
+This optional local target runs the Big2Small gameplay/save-resume profile and
+the Deluxe input/state-replay profile. Both check the pinned release's
+CGB-compatible header and mapper geometry. The ROMs and generated artifacts
+remain outside the repository and CI; see the [homebrew guide](homebrew-check.md#big2small-save-and-resume-check)
+and the publisher's [Deluxe page](https://tangramgames.itch.io/tobu-tobu-girl-deluxe)
+for source and licensing details.
 
 For the external Deluxe game check:
 

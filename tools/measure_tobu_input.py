@@ -21,6 +21,23 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def validate_tobudx_cgb_header(rom):
+    """Require the pinned Deluxe release's CGB/MBC1 battery cartridge."""
+    if len(rom) <= 0x149:
+        raise ValueError('Deluxe ROM is too short to contain its cartridge header')
+    if not rom[0x143] & 0x80:
+        raise ValueError('Deluxe profile requires a CGB-compatible ROM header')
+    if rom[0x147] != 0x03:
+        raise ValueError('Deluxe profile requires MBC1 + RAM + battery')
+    if rom[0x149] != 0x02:
+        raise ValueError('Deluxe profile requires the pinned 8-KiB SRAM geometry')
+    return {
+        'cgb_header': f'0x{rom[0x143]:02X}',
+        'mapper': 'MBC1 + RAM + battery',
+        'save_ram_bytes': 8192,
+    }
+
+
 def write_contact_sheet(output):
     """Rows: calls 3/8. Columns: neutral, left, right, B, right+A, right+B."""
     columns = ('neutral', 'left-pulse', 'right-pulse', 'flap-b-pulse',
@@ -63,6 +80,12 @@ def main():
             parser.error('ROM and test executable must stay outside the output directory')
     if digest(rom) != ROM_SHA256[args.game]:
         parser.error('expected the pinned game ROM; see docs/homebrew-check.md and docs/cgb-development.md')
+    cartridge = None
+    if deluxe:
+        try:
+            cartridge = validate_tobudx_cgb_header(rom.read_bytes())
+        except ValueError as error:
+            parser.error(str(error))
     output.mkdir(parents=True, exist_ok=True)
     for name in ('report.json', 'measurements.json', 'contact-sheet.png'):
         (output / name).unlink(missing_ok=True)
@@ -102,6 +125,8 @@ def main():
                   'one-poll and held input; A without direction is diagnostic only. '
                   'No physical input/display latency or frontend feel claim.'),
     }
+    if cartridge:
+        report['cartridge'] = cartridge
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(summary, indent=2))
 

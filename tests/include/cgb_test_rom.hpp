@@ -42,6 +42,59 @@ inline std::vector<uint8_t> makeCgbExerciseRom() {
     jump(loop);
     return rom;
 }
+// Original CGB-compatible MBC1/MBC5 battery game fixtures. They render a color
+// field, change it on Right, and advance SRAM progress each frame.
+inline std::vector<uint8_t> makeCgbMbc1BatteryExerciseRom() {
+    auto rom = makeCgbExerciseRom();
+    rom[0x143] = 0x80; // CGB compatible; header selects native CGB hardware.
+    rom[0x147] = 0x03; // MBC1 + RAM + battery.
+    rom[0x148] = 0x00; // 32 KiB ROM.
+    rom[0x149] = 0x02; // 8 KiB external SRAM.
+    return rom;
+}
+inline std::vector<uint8_t> makeCgbMbc5BatteryExerciseRom() {
+    auto rom = makeCgbExerciseRom();
+    rom[0x143] = 0x80;
+    rom[0x147] = 0x1B; // MBC5 + RAM + battery.
+    rom[0x148] = 0x00; // 32 KiB ROM.
+    rom[0x149] = 0x02; // 8 KiB external SRAM.
+    return rom;
+}
+// Original CGB-compatible MBC3+RTC game fixture. Its startup reads the
+// latched seconds register, increments it, writes it back, then exposes the
+// observed value in battery SRAM at offset $30.
+inline std::vector<uint8_t> makeCgbMbc3RtcExerciseRom() {
+    auto rom = makeCgbExerciseRom();
+    rom[0x143] = 0x80; // CGB compatible.
+    rom[0x147] = 0x10; // MBC3 + timer + RAM + battery.
+    rom[0x148] = 0x00; // 32 KiB ROM.
+    rom[0x149] = 0x03; // 32 KiB external SRAM.
+    rom[0x101] = 0x00;
+    rom[0x102] = 0x03; // Run RTC exercise before the normal CGB game loop.
+
+    const uint8_t rtcExercise[] = {
+        0xF3,                         // DI
+        0x3E, 0x0A, 0xEA, 0x00, 0x00, // Enable cartridge RAM/RTC.
+        0x3E, 0x0C, 0xEA, 0x00, 0x40, // Select RTC day-high register.
+        0x3E, 0x40, 0xEA, 0x00, 0xA0, // Halt clock for deterministic reads.
+        0xAF, 0xEA, 0x00, 0x60,       // Begin RTC latch sequence (0).
+        0x3C, 0xEA, 0x00, 0x60,       // Complete RTC latch sequence (1).
+        0x3E, 0x08, 0xEA, 0x00, 0x40, // Select RTC seconds register.
+        0xFA, 0x00, 0xA0,             // Read latched seconds.
+        0x3C, 0xEA, 0x00, 0xA0,       // Increment and write seconds.
+        0xAF, 0xEA, 0x00, 0x60,       // Latch the updated clock (0, then 1).
+        0x3C, 0xEA, 0x00, 0x60,
+        0x3E, 0x08, 0xEA, 0x00, 0x40, // Re-select seconds and read them back.
+        0xFA, 0x00, 0xA0,
+        0x47,                         // Preserve observed seconds in B.
+        0xAF, 0xEA, 0x00, 0x40,       // Select SRAM bank 0.
+        0x78, 0xEA, 0x30, 0xA0,       // Store observed seconds at SRAM[$30].
+        0xC3, 0x50, 0x01              // Continue into the CGB game fixture.
+    };
+    for (size_t i = 0; i < sizeof(rtcExercise); ++i)
+        rom[0x0300 + i] = rtcExercise[i];
+    return rom;
+}
 // Original MBC30 setup for expanded ROM/SRAM, frozen RTC and portable state.
 inline std::vector<uint8_t> makeCgbMbc30ExerciseRom() {
     auto rom=makeCgbExerciseRom();rom.resize(0x400000,0);

@@ -46,8 +46,11 @@ the relevant sections below.
 Obtain the free ROM from the [author's page](https://mdsteele.itch.io/big2small).
 The accepted ROM SHA-256 is
 `59c096333f93c12c8eb25a5fcffa2be15001abcd5d20b9a82c2bc2dae7e625b2`
-(64 KiB, MBC5 + RAM + battery). A different release needs explicit review of
-the input sequence before updating the pinned hash.
+(64 KiB, CGB-compatible header, MBC5 + 8-KiB RAM + battery). The dedicated
+`make test-cgb-homebrew` target requires that header/mapper/RAM geometry, then
+runs this puzzle-progress/fresh-process SRAM-resume profile and the Deluxe
+CGB/MBC1 input/state-replay profile. A different release needs explicit review
+of the input sequence before updating the pinned hash.
 ROMs and player saves are not committed. This optional workflow is outside CI.
 
 The default `make test-homebrew` run starts a new File A, completes the first

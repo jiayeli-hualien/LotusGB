@@ -47,8 +47,12 @@ renderer. `cgb_hardware_test` checks palette ports, DMA and fast serial/divider
 behavior; `cgb_system_test` checks exact cgb-acid2 pixels, speed/DMA/audio/input,
 model-tagged state replay and invalid typed payload rejection. Libretro tests
 check the CGB reference, input/reset and exact video/PCM/state rewind in both
-pixel formats. `mbc30_test` and libretro MBC30 fixtures additionally cover 4-MiB ROM / 64-KiB
-SRAM, RTC, battery import and high-bank state replay using original code.
+pixel formats. Original CGB-compatible MBC1 and MBC5 game fixtures additionally
+check color/input gameplay, battery progress and fresh-instance SRAM restore.
+An original CGB MBC3+RTC fixture exercises guest RTC latch/read/write and checks
+RTC plus SRAM import across a fresh content load in both presentation builds.
+`mbc30_test` and libretro MBC30 fixtures also cover 4-MiB ROM / 64-KiB SRAM,
+RTC, battery import and high-bank state replay using original code.
 The optional `make test-tobudx` runs the pinned external Deluxe
 ROM; it is separate from CI. These checks do not imply all CGB hardware timing
 or whole-library compatibility. See the
@@ -83,6 +87,7 @@ Homebrew profiles currently available in the local setup:
 
 ```sh
 make test-homebrew
+make test-cgb-homebrew
 make test-homebrew HOMEBREW_GAME=adjustris
 make test-homebrew HOMEBREW_GAME=tobutobugirl
 make test-homebrew HOMEBREW_GAME=canyon-racer
@@ -111,7 +116,10 @@ The default Big2Small profile completes Peanut Pathway, compares a restored
 02% save with a restored 00% slot, and checks directional response after
 loading the completed save in a fresh process. It writes all SRAM and captures
 under `build/test-roms/big2small/`; `HOMEBREW_SAVE` keeps the supplied-save
-inspection read-only and skips the fresh-save round trip.
+inspection read-only and skips the fresh-save round trip. Its pinned header is
+CGB-compatible and declares MBC5+RAM+battery; `make test-cgb-homebrew` names
+this optional local gameplay/save check and the Deluxe CGB/MBC1 input/state
+check explicitly. Both ROMs stay external and out of CI and the repository.
 Canyon Racer is an optional external profile for raster-effect gameplay
 investigation; it was not part of the 2026-10-28 consolidated three-profile run.
 Inspect the generated views and `report.json`; keep source ROMs, saves and game

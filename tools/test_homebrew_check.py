@@ -7,7 +7,9 @@ import subprocess
 import tempfile
 from unittest.mock import patch
 
+from measure_tobu_input import validate_tobudx_cgb_header
 from run_homebrew_check import (differing_pixel_count, main,
+                                validate_big2small_cgb_header,
                                 validate_big2small_save_cycle,
                                 validate_adjustris_observations, validate_run)
 
@@ -123,11 +125,53 @@ class HomebrewOutputTests(unittest.TestCase):
                  self.assertRaises(ValueError):
                 validate_adjustris_observations(observations)
 
+    def test_big2small_game_profile_requires_cgb_mbc5_battery_geometry(self):
+        rom = bytearray(0x150)
+        rom[0x143] = 0x80
+        rom[0x147] = 0x1B
+        rom[0x149] = 0x02
+        self.assertEqual(validate_big2small_cgb_header(rom), {
+            'cgb_header': '0x80',
+            'mapper': 'MBC5 + RAM + battery',
+            'save_ram_bytes': 8192,
+        })
+        for offset, value, message in (
+                (0x143, 0x00, 'CGB-compatible'),
+                (0x147, 0x13, 'MBC5'),
+                (0x149, 0x03, '8-KiB')):
+            invalid = bytearray(rom)
+            invalid[offset] = value
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, message):
+                validate_big2small_cgb_header(invalid)
+
+    def test_tobudx_profile_requires_cgb_mbc1_battery_geometry(self):
+        rom = bytearray(0x150)
+        rom[0x143] = 0x80
+        rom[0x147] = 0x03
+        rom[0x149] = 0x02
+        self.assertEqual(validate_tobudx_cgb_header(rom), {
+            'cgb_header': '0x80',
+            'mapper': 'MBC1 + RAM + battery',
+            'save_ram_bytes': 8192,
+        })
+        for offset, value, message in (
+                (0x143, 0x00, 'CGB-compatible'),
+                (0x147, 0x1B, 'MBC1'),
+                (0x149, 0x03, '8-KiB')):
+            invalid = bytearray(rom)
+            invalid[offset] = value
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, message):
+                validate_tobudx_cgb_header(invalid)
+
     def test_success_exit_without_fresh_artifacts_is_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             rom = root / 'game.gb'
-            rom.write_bytes(b'synthetic ROM')
+            synthetic_rom = bytearray(0x150)
+            synthetic_rom[0x143] = 0x80
+            synthetic_rom[0x147] = 0x1B
+            synthetic_rom[0x149] = 0x02
+            rom.write_bytes(synthetic_rom)
             output = root / 'output'
             output.mkdir()
             (output / 'frame.rgb').write_bytes(self.rgb)

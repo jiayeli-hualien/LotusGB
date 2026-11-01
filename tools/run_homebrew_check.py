@@ -43,6 +43,23 @@ def validate_run(summary, rgb, save_ram):
         raise ValueError('expected an 8192-byte cartridge SRAM output')
 
 
+def validate_big2small_cgb_header(rom):
+    """Keep the pinned game-level save profile on its CGB/MBC5 cartridge."""
+    if len(rom) <= 0x149:
+        raise ValueError('Big2Small ROM is too short to contain its cartridge header')
+    if not rom[0x143] & 0x80:
+        raise ValueError('Big2Small save profile requires a CGB-compatible ROM header')
+    if rom[0x147] != 0x1B:
+        raise ValueError('Big2Small save profile requires MBC5 + RAM + battery')
+    if rom[0x149] != 0x02:
+        raise ValueError('Big2Small save profile requires the pinned 8-KiB SRAM geometry')
+    return {
+        'cgb_header': f'0x{rom[0x143]:02X}',
+        'mapper': 'MBC5 + RAM + battery',
+        'save_ram_bytes': 8192,
+    }
+
+
 def adjustris_occupied_cells(frame_rgb):
     """Read DMG block tiles from the pinned 160x144 Adjustris frame."""
     if len(frame_rgb) != RGB_BYTES_PER_FRAME:
@@ -355,6 +372,12 @@ def main():
     }[args.game]
     if hashlib.sha256(rom).hexdigest() != expected_hash:
         parser.error(f'expected the pinned {args.game} ROM; see docs/homebrew-check.md')
+    cartridge = None
+    if args.game == 'big2small':
+        try:
+            cartridge = validate_big2small_cgb_header(rom)
+        except ValueError as error:
+            parser.error(str(error))
     output.mkdir(parents=True, exist_ok=True)
     events = ['# zero-based start end(exclusive) button']
     if args.game == 'big2small':
@@ -480,6 +503,8 @@ def main():
     report = dict(game=args.game, rom_sha256=sha256(args.rom), core_sha256=sha256(args.core),
                   restored_save_sha256=original_save_hash, original_save_unchanged=unchanged,
                   runner_exit_code=result.returncode, command=command, scope=scope)
+    if cartridge:
+        report['cartridge'] = cartridge
     validation_error = None
     if result.returncode == 0:
         try:

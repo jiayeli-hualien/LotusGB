@@ -22,7 +22,7 @@ $(error Unsupported TARGET '$(TARGET)'; choose ubuntu-x86_64, mac-m1, or steamde
 endif
 
 # PHONY: non file targets
-.PHONY: build test test-roms test-mooneye test-mooneye-visual test-homebrew \
+.PHONY: build test test-roms test-mooneye test-mooneye-visual test-homebrew test-cgb-homebrew \
 	test-gbmicrotest-ppu-latch test-tobu-input test-tobu-input-vblank test-tobu-input-fixed test-vblank test-tobudx install-retroarch-core-macos package-retroarch-macos package-retroarch-steam-deck clean
 
 TEST_ROM_DIR ?= ../test-roms/dmg_sound
@@ -121,6 +121,10 @@ test-homebrew:
 		--runner "$(build_dir)/libretro_rom_runner" \
 		--rom "$(HOMEBREW_ROM)" \
 		$(if $(HOMEBREW_SAVE),--save "$(HOMEBREW_SAVE)")
+
+test-cgb-homebrew:
+	$(MAKE) test-homebrew HOMEBREW_GAME=big2small
+	$(MAKE) test-tobudx
 
 test-tobu-input:
 	$(MAKE) -C $(src_dir)/libretro $(build_dir)/libretro_core_test build_dir=$(build_dir)
