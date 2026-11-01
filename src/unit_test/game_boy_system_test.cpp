@@ -1,8 +1,12 @@
+#include <algorithm>
 #include <cstdlib>
+#include <iterator>
 #include <iostream>
+#include <stdexcept>
 #include <vector>
 
 #include "game_boy_system.hpp"
+#include "../../tests/include/lcd_cadence_rom.hpp"
 
 namespace {
 
@@ -373,6 +377,164 @@ void testDmgPostBootStartupAndFrameStepping() {
            "system clock advances the requested frame duration");
 }
 
+void testVblankSteppingUsesFrameEventsAndSurvivesRestore() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {0x3E, 0xFF, 0xE0, 0x47, // BGP: black
+                               0xC3, 0x04, 0x01};      // JP $0104
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    GameBoySystem system(std::move(rom));
+    auto result = system.stepUntilVBlank(456 * 144 - 4);
+    expect(result.success && !result.frameCompleted && result.tCyclesElapsed == 65660,
+           "VBlank stepping stops at its budget without mistaking early LY for completion");
+    result = system.stepUntilVBlank(4);
+    expect(result.success && result.frameCompleted && result.tCyclesElapsed == 4,
+           "the final M-cycle reaches the actual PPU frame event");
+    expect(system.getCompletedFrameBuffer()[0] == 3,
+           "VBlank stepping exposes the newly completed frame");
+    auto saved = system.saveState();
+    result = system.stepUntilVBlank();
+    expect(result.success && result.frameCompleted &&
+               result.tCyclesElapsed == GameBoySystem::DMG_FRAME_T_CYCLES,
+           "starting in VBlank waits for the next full frame, not the current VBlank level");
+    const auto future = system.saveState();
+    system.loadState(saved.data(), saved.size());
+    result = system.stepUntilVBlank();
+    expect(result.success && result.frameCompleted &&
+               result.tCyclesElapsed == GameBoySystem::DMG_FRAME_T_CYCLES &&
+               system.saveState() == future,
+           "restored VBlank stepping keeps its target callbacks and deterministic continuation");
+    result = system.stepFrame();
+    expect(result.success && result.frameCompleted &&
+               result.tCyclesElapsed == GameBoySystem::DMG_FRAME_T_CYCLES,
+           "fixed-duration stepping retains its original contract");
+    for (uint64_t budget : {0, 6}) {
+        bool rejected = false;
+        try { system.stepUntilVBlank(budget); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        expect(rejected, "VBlank step rejects a zero or partial-M-cycle budget");
+    }
+}
+
+void testVblankSteppingBoundsDisabledStoppedAndFaultedSystems() {
+    auto off = GameBoySystem::createForTest(std::vector<uint8_t>(0x8000, 0));
+    auto result = off.stepUntilVBlank(256);
+    expect(result.success && !result.frameCompleted && result.tCyclesElapsed == 256,
+           "LCD-off execution is bounded and explicitly reports no frame event");
+
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0] = 0x10; // STOP
+    auto stopped = GameBoySystem::createForTest(rom);
+    result = stopped.stepUntilVBlank();
+    expect(result.success && !result.frameCompleted && result.tCyclesElapsed < 70224,
+           "STOP returns before a VBlank without an unbounded wait");
+    rom[0] = 0xD3; // Unsupported opcode
+    auto faulted = GameBoySystem::createForTest(rom);
+    bool propagated = false;
+    try { faulted.stepUntilVBlank(); }
+    catch (const std::runtime_error &error) {
+        propagated = std::string(error.what()).find("unsupported opcode 0xD3") != std::string::npos;
+    }
+    expect(propagated, "CPU exceptions during VBlank stepping propagate to the caller");
+
+    rom[0] = 0;
+    rom[0x100] = 0xF3; // DI
+    rom[0x101] = 0x76; // HALT
+    GameBoySystem halted(std::move(rom));
+    result = halted.stepUntilVBlank();
+    expect(result.success && result.frameCompleted && result.tCyclesElapsed == 456 * 144,
+           "HALT keeps clocking the PPU and reaches VBlank, unlike STOP");
+}
+
+void testDmgSystemDoesNotExposeCgbBankRegisters() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {
+        0x3E, 0x01, 0xE0, 0x4F, // attempt VBK=1
+        0xF0, 0x4F, 0x47,       // B=VBK
+        0x3E, 0x07, 0xE0, 0x70, // attempt SVBK=7
+        0xF0, 0x70, 0x4F,       // C=SVBK
+        0x1E, 0x99, 0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin());
+    auto system = GameBoySystem::createForTest(std::move(rom));
+    for (unsigned cycle = 0; cycle < 100 && system.getCpuRegisters().getRefE() != 0x99; ++cycle)
+        expect(system.stepOneCycle().success, "DMG bank-register probe executes");
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefE() == 0x99 && registers.getRefB() == 0xFF && registers.getRefC() == 0xFF,
+           "CGB memory foundations do not enable VBK/SVBK in the existing DMG system");
+}
+
+void testPresentationReasonsSeparateHostRepeatFromHardwareVblank() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t readIf[] = {0xF0, 0x0F, 0x47, 0x18, 0xFB};
+    std::copy(std::begin(readIf), std::end(readIf), rom.begin());
+    auto off = GameBoySystem::createForTest(rom);
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto result = off.stepForPresentation();
+        expect(result.reason == PresentationReason::Repeat && result.tCyclesElapsed == 70224,
+               "LCD-off presentation returns a bounded host repeat");
+        expect((off.getCpuRegisters().getRefB() & 1) == 0,
+               "host presentation repeats never synthesize a guest VBlank IRQ");
+    }
+    GameBoySystem visible(rom);
+    auto result = visible.stepForPresentation();
+    expect(result.reason == PresentationReason::VBlank && result.tCyclesElapsed == 65664,
+           "presentation identifies actual first frame completion separately from repeats");
+    result = visible.stepForPresentation();
+    expect(result.reason == PresentationReason::VBlank && result.tCyclesElapsed == 70224,
+           "steady presentation returns on the next real VBlank");
+    // A state recorded under the previous fixed stepping policy needs no
+    // migration: its hardware phase determines the next presentation event.
+    GameBoySystem legacy(rom);
+    expect(legacy.stepFrame().success, "legacy fixed step advances");
+    legacy.takeAudioSamples();
+    auto fixedState = legacy.saveState();
+    GameBoySystem restored(rom);
+    restored.loadState(fixedState.data(), fixedState.size());
+    result = restored.stepForPresentation();
+    expect(result.reason == PresentationReason::VBlank && result.tCyclesElapsed == 65664,
+           "a fixed-policy state resumes at its actual next VBlank under presentation stepping");
+    const auto referenceStep = legacy.stepUntilVBlank();
+    expect(referenceStep.frameCompleted && referenceStep.tCyclesElapsed == result.tCyclesElapsed &&
+               legacy.saveState() == restored.saveState() &&
+               legacy.takeAudioSamples() == restored.takeAudioSamples(),
+           "policy transition preserves the same hardware state and PCM at the shared event");
+    rom[0] = 0x10;
+    auto stopped = GameBoySystem::createForTest(std::move(rom));
+    result = stopped.stepForPresentation();
+    expect(result.reason == PresentationReason::CpuStopped && result.tCyclesElapsed < 70224,
+           "CPU STOP is observable rather than classified as a healthy repeat");
+}
+
+void testAudioCountsActualCyclesAcrossLcdRestartStepping() {
+    uint64_t fixedCycles = 0;
+    for (bool toVblank : {false, true}) {
+        GameBoySystem system(TestRom::lcdRestartCadence());
+        size_t audioFrames = 0;
+        unsigned incomplete = 0, shortCalls = 0;
+        for (unsigned call = 0; call < 120; ++call) {
+            const auto step = toVblank ? system.stepUntilVBlank() : system.stepFrame();
+            expect(step.success && step.tCyclesElapsed > 0 && step.tCyclesElapsed <= 70224,
+                   "LCD restart stepping stays bounded and preserves running CPU progress");
+            incomplete += !step.frameCompleted;
+            shortCalls += step.tCyclesElapsed < 70224;
+            audioFrames += system.takeAudioSamples().size() / 2;
+            expect(audioFrames == system.getElapsedTCycles() * 48000 / 4194304,
+                   "LCD restart PCM count follows actual hardware time on every step");
+        }
+        if (!toVblank) {
+            fixedCycles = system.getElapsedTCycles();
+            expect(incomplete == 0 && shortCalls == 0 && fixedCycles == 120 * 70224ULL,
+                   "fixed stepping keeps nominal time even while LCD is off");
+        } else {
+            expect(incomplete > 0 && shortCalls > 0 && system.getElapsedTCycles() < fixedCycles,
+                   "VBlank restart cadence differs from fixed-rate frontend time and remains observable");
+        }
+        std::cout << "LCD restart system cadence (" << (toVblank ? "VBlank" : "fixed")
+                  << "): " << system.getElapsedTCycles() << " T-cycles, " << audioFrames
+                  << " PCM frames / 120 calls; incomplete=" << incomplete << '\n';
+    }
+}
+
 void testFrameSteppingReturnsWhenCpuStops() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     rom[0x0100] = 0x10; // STOP
@@ -660,6 +822,11 @@ int main() {
     testGameBoySystemExposesRenderedFrameBuffer();
     testDmgPostBootStartupAndFrameStepping();
     testFrameSteppingReturnsWhenCpuStops();
+    testVblankSteppingUsesFrameEventsAndSurvivesRestore();
+    testVblankSteppingBoundsDisabledStoppedAndFaultedSystems();
+    testAudioCountsActualCyclesAcrossLcdRestartStepping();
+    testPresentationReasonsSeparateHostRepeatFromHardwareVblank();
+    testDmgSystemDoesNotExposeCgbBankRegisters();
     testSelectedJoypadLineWakesStopWithoutInterruptAcceptance();
     std::cout << "Headless system tests passed\n";
 }

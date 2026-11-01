@@ -11,6 +11,7 @@ OBJS := $(patsubst %.cpp,$(obj_build_dir)/%.o,$(SRCS))
 include_path = $(CURDIR)/include
 generated_tables := $(include_path)/generated_decode_tables.hpp
 csv_sources := $(wildcard $(include_path)/*.csv)
+core_headers := $(wildcard $(include_path)/*.hpp)
 
 all: $(lotus_gb_lib_build_path)
 
@@ -23,7 +24,7 @@ $(obj_build_dir) $(build_dir):
 $(generated_tables): $(csv_sources) $(CURDIR)/../../tools/generate_decode_tables.py
 	python3 $(CURDIR)/../../tools/generate_decode_tables.py
 
-$(obj_build_dir)/%.o: %.cpp $(obj_build_dir) $(generated_tables)
+$(obj_build_dir)/%.o: %.cpp $(core_headers) $(generated_tables) | $(obj_build_dir)
 	$(CC) $(CPPFLAGS) -c $< -o $@
 
 $(lotus_gb_lib_build_path): $(OBJS)

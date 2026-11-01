@@ -4,14 +4,16 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 #include "IInterruptController.hpp"
 #include "address_bus.hpp"
 #include "system_clock.hpp"
+#include "video_ram.hpp"
 
 namespace LOTUSGB {
 
-// Initial DMG PPU timing, memory interface, and scanline renderer. Pixels are
+// Shared DMG/native-CGB timing, memory interface, and renderer. Pixels are
 // emitted during mode 3, with SCX fine-scroll, visible-window, and object-fetch
 // stalls included.
 class DmgPpu final : public IAddressRegion, public IClockedComponent {
@@ -21,13 +23,21 @@ public:
     static constexpr size_t FRAME_HEIGHT = 144;
     static constexpr size_t OAM_SIZE = 0x00A0;
     using FrameBuffer = std::array<uint8_t, FRAME_WIDTH * FRAME_HEIGHT>;
+    using ColorFrameBuffer = std::array<uint16_t, FRAME_WIDTH * FRAME_HEIGHT>;
 
-    explicit DmgPpu(IInterruptController &interrupts);
+    // Optional video storage is borrowed and must outlive the PPU. A null
+    // pointer retains the DMG-owned 8 KiB storage and version 1 snapshot layout.
+    // CGB mode requires external banked storage and emits RGB555 pixels.
+    explicit DmgPpu(IInterruptController &interrupts,
+                    IVideoRam *externalVideoRam = nullptr, bool cgbMode = false);
 
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
     void advanceTCycles(uint64_t tCycles) override;
     void initializeDmgPostBootState();
+    void initializeCgbPostBootState();
+    const ColorFrameBuffer &getCompletedColorFrameBuffer() const { return completedColorFrameBuffer; }
+    void setHBlankCallback(std::function<void()> callback) { hblankCallback = std::move(callback); }
     void writeOamFromDma(size_t offset, uint8_t value);
 
     // Each pixel is a DMG shade index (0 is lightest, 3 is darkest), after
@@ -35,6 +45,9 @@ public:
     const FrameBuffer &getFrameBuffer() const;
     // Stable video snapshot copied after all visible scanlines finish.
     const FrameBuffer &getCompletedFrameBuffer() const;
+    // Host notification after a complete visible frame is copied at actual
+    // VBlank entry. It is not emulated state and is not serialized.
+    void setFrameCompletedCallback(std::function<void()> callback);
 
 private:
     static constexpr uint16_t MODE3_BASE_DOTS = 172;
@@ -77,15 +90,16 @@ private:
 
         bool canPushRow() const { return size == 0; }
 
-        bool pushRow(uint8_t low, uint8_t high) {
+        bool pushRow(uint8_t low, uint8_t high, uint8_t attributes = 0) {
             if (!canPushRow())
                 return false;
 
             for (uint8_t pixel = 0; pixel < 8; ++pixel) {
-                const uint8_t bit = static_cast<uint8_t>(7 - pixel);
+                const uint8_t bit = static_cast<uint8_t>((attributes & 0x20) ? pixel : 7 - pixel);
                 const uint8_t color = static_cast<uint8_t>(
                     ((low >> bit) & 0x01) | (((high >> bit) & 0x01) << 1));
-                pixels[(readIndex + size) % CAPACITY] = color;
+                pixels[(readIndex + size) % CAPACITY] = static_cast<uint8_t>(color |
+                    ((attributes & 7) << 2) | ((attributes & 0x80) ? 0x20 : 0));
                 ++size;
             }
             return true;
@@ -105,10 +119,13 @@ private:
         uint8_t colorIndex = 0;
         bool usesPalette1 = false;
         bool behindBackground = false;
+        uint8_t cgbPalette = 0;
+        uint8_t priorityIndex = 0xFF;
     };
 
     struct ObjectFetchEvent {
         std::array<ObjectPixel, 8> pixels{};
+        uint8_t oamIndex = 0xFF;
         uint8_t tileIndex = 0;
         uint8_t tileRow = 0;
         uint8_t attributes = 0;
@@ -140,7 +157,8 @@ private:
                 const size_t fifoOffset = source - event.firstPixelIndex;
                 const size_t index = (readIndex + fifoOffset) % CAPACITY;
                 const ObjectPixel &incoming = event.pixels[source];
-                if (incoming.colorIndex != 0 && pixels[index].colorIndex == 0)
+                if (incoming.colorIndex != 0 && (pixels[index].colorIndex == 0
+                    || incoming.priorityIndex < pixels[index].priorityIndex))
                     pixels[index] = incoming;
             }
         }
@@ -282,12 +300,24 @@ private:
                          bool unsignedTileData) const;
     uint8_t getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) const;
     static uint8_t applyPalette(uint8_t palette, uint8_t colorIndex);
+    uint8_t readVideoBank(uint8_t bank, size_t offset) const;
 
     IInterruptController &interrupts;
+    IVideoRam *externalVideoRam;
+    bool cgbMode;
+    ColorFrameBuffer colorFrameBuffer{};
+    ColorFrameBuffer completedColorFrameBuffer{};
+    std::array<uint8_t, 64> cgbBgPalettes{};
+    std::array<uint8_t, 64> cgbObjPalettes{};
+    uint8_t cgbBgIndex = 0, cgbObjIndex = 0;
+    uint8_t cgbFetchAttributes = 0, cgbFetchRow = 0;
+    std::function<void()> hblankCallback;
+    uint16_t cgbColor(bool object, uint8_t palette, uint8_t color) const;
     std::array<uint8_t, 0x2000> videoRam{};
     std::array<uint8_t, OAM_SIZE> objectRam{};
     FrameBuffer frameBuffer{};
     FrameBuffer completedFrameBuffer{};
+    std::function<void()> frameCompletedCallback;
     Mode3State mode3{};
 
     uint8_t lcdControl = 0;

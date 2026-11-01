@@ -16,7 +16,8 @@ test_executables := $(build_dir)/save_state_test  $(build_dir)/cpu_interface_tes
 	$(build_dir)/joypad_test $(build_dir)/dmg_ppu_test \
 	$(build_dir)/dmg_oam_dma_test \
 	$(build_dir)/dmg_apu_test \
-	$(build_dir)/dmg_acid2_test
+	$(build_dir)/dmg_acid2_test $(build_dir)/cgb_memory_test $(build_dir)/cgb_boot_test \
+	$(build_dir)/ppu_video_memory_test $(build_dir)/cgb_system_test $(build_dir)/cgb_hardware_test $(build_dir)/mbc30_test
 
 acid2_asset_dir := ../../tests/roms/dmg-acid2
 acid2_assets := $(wildcard ../../tests/roms/dmg-acid2/*)
@@ -38,9 +39,21 @@ test: $(test_executables)
 	$(build_dir)/dmg_oam_dma_test
 	$(build_dir)/dmg_apu_test
 	$(build_dir)/dmg_acid2_test
+	$(build_dir)/cgb_memory_test
+	$(build_dir)/cgb_boot_test
+	$(build_dir)/ppu_video_memory_test
+	$(build_dir)/cgb_system_test
+	$(build_dir)/cgb_hardware_test
+	$(build_dir)/mbc30_test
 
 $(build_dir)/cpu_interface_test: cpu_cycle_test.cpp ../lib/GBCPU.cpp $(test_headers) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/GBCPU.cpp -o $@
+
+$(build_dir)/cgb_memory_test: cgb_memory_test.cpp ../lib/cgb_memory.cpp \
+		../lib/address_bus.cpp ../lib/cartridge.cpp ../lib/memory_region.cpp \
+		../lib/system_clock.cpp $(core_sources) $(test_headers) $(generated_tables) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< ../lib/cgb_memory.cpp ../lib/address_bus.cpp \
+		../lib/cartridge.cpp ../lib/memory_region.cpp ../lib/system_clock.cpp $(core_sources) -o $@
 
 $(generated_tables): $(csv_sources) ../../tools/generate_decode_tables.py
 	python3 ../../tools/generate_decode_tables.py
@@ -59,7 +72,7 @@ $(build_dir)/address_bus_test: address_bus_test.cpp ../lib/address_bus.cpp \
 	$(CXX) $(CPPFLAGS) $< ../lib/address_bus.cpp ../lib/cartridge.cpp \
 		../lib/memory_region.cpp -o $@
 
-$(build_dir)/game_boy_system_test: game_boy_system_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) | $(build_dir)
+$(build_dir)/game_boy_system_test: game_boy_system_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) $(wildcard ../../tests/include/*.hpp) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@
 
 $(build_dir)/timer_test: timer_test.cpp ../lib/timer.cpp \
@@ -98,4 +111,21 @@ $(build_dir):
 	mkdir -p $@
 
 $(build_dir)/save_state_test: save_state_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@
+
+$(build_dir)/cgb_boot_test: cgb_boot_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@
+
+$(build_dir)/ppu_video_memory_test: ppu_video_memory_test.cpp ../lib/dmg_ppu.cpp \
+        ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/interrupt_registers.cpp $(test_headers) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< ../lib/dmg_ppu.cpp ../lib/cgb_memory.cpp \
+		../lib/address_bus.cpp ../lib/interrupt_registers.cpp -o $@
+
+$(build_dir)/cgb_system_test: cgb_system_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) $(wildcard ../../tests/include/*.hpp) $(wildcard ../../tests/roms/cgb-acid2/*) | $(build_dir)
+	$(CXX) $(CPPFLAGS) -DLOTUSGB_CGB_ACID2_ASSET_DIR=\"../../tests/roms/cgb-acid2\" $< $(wildcard ../lib/*.cpp) -o $@
+
+$(build_dir)/cgb_hardware_test: cgb_hardware_test.cpp ../lib/cgb_hardware.cpp ../lib/dmg_ppu.cpp ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/memory_region.cpp ../lib/interrupt_registers.cpp ../lib/timer.cpp ../lib/dmg_serial.cpp $(test_headers) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< ../lib/cgb_hardware.cpp ../lib/dmg_ppu.cpp ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/memory_region.cpp ../lib/interrupt_registers.cpp ../lib/timer.cpp ../lib/dmg_serial.cpp -o $@
+
+$(build_dir)/mbc30_test: mbc30_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) $(wildcard ../../tests/include/*.hpp) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@

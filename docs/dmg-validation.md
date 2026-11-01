@@ -8,6 +8,10 @@ counts below are historical checkpoints.
 
 The current system can either execute an optional external DMG boot ROM or start from a fast synthetic post-boot profile. CGB behavior and unsupported cartridge hardware are outside this matrix.
 
+Native CGB-E playability is tracked in the separate
+[CGB implementation guide](cgb-development.md); its native-CGB game and hardware checks do
+not extend this DMG-specific matrix.
+
 ## Target model and PPU acceptance
 
 LotusGB currently targets the DMG software-visible behavior. Labels such as
@@ -60,7 +64,7 @@ mid-Mode 3 race. See [Pan Docs rendering](https://gbdev.io/pandocs/Rendering.htm
 | --- | --- | --- | --- |
 | CPU instructions and timing | CPU advances in M-cycles and reports T-cycles. Implemented behavior includes arithmetic, ALU, loads/stores, CB operations, control flow, stack and interrupt sequences; 11 base opcodes remain explicitly unsupported and fail through the libretro error path. | `make test`: `cpu_instruction_test.cpp` and `cpu_cycle_test.cpp` check externally visible registers, flags, bus order and cycle phases across register, immediate, memory, stack, jump and interrupt forms. `ADD SP,e8` is checked over all 65,536 SP-low-byte/offset combinations. The pinned GBIT integration comparison is separate. | CPU phase tests follow GB-CTR and check observable state; they are not physical-DMG timing measurements. The 11 unsupported opcodes and DMG OAM corruption from IDU accesses remain outside implementation; other internal timing is not fully hardware-validated. |
 | Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp` verifies TAC frequencies and confirms TIMA overflow requests Timer IF on reload; `game_boy_system_test.cpp` checks that the timer IRQ wakes HALT and reaches its handler; `cpu_instruction_test.cpp` covers CPU interrupt entry. | All 13 Mooneye `acceptance/timer` ROMs pass, including TIMA/TMA writes during reload. The PPU group includes interrupt-entry and HALT timing ROMs, and the interrupt group adds ten EI/DI, RETI, HALT and IF/IE checks. This does not cover every interrupt race. |
-| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; 27 Mooneye standard MBC1/MBC2/MBC5 cases pass. Libretro integration runs CPU code from MBC1 bank 2, writes battery RAM, unloads the game, restores the SRAM block, and verifies banked code reads and updates it. Other libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23. RetroArch `.rtc` disk write/reload was verified on 2026-10-26 using a temporary MBC3 timer-only probe: clean exit wrote the 24-byte RTC block, and a second RetroArch process restored and advanced it. These verify one cartridge/frontend path each, not every mapper or game; RTC evidence and limits are recorded under `build/test-roms/mbc3-rtc-persistence/`. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. MBC30-sized RAM and other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
+| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; 27 Mooneye standard MBC1/MBC2/MBC5 cases pass. Libretro integration runs CPU code from MBC1 bank 2, writes battery RAM, unloads the game, restores the SRAM block, and verifies banked code reads and updates it. Other libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23. RetroArch `.rtc` disk write/reload was verified on 2026-10-26 using a temporary MBC3 timer-only probe: clean exit wrote the 24-byte RTC block, and a second RetroArch process restored and advanced it. These verify one cartridge/frontend path each, not every mapper or game; RTC evidence and limits are recorded under `build/test-roms/mbc3-rtc-persistence/`. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. MBC30 now has separate original banking/RTC/state tests and supports up to 4-MiB ROM / 64-KiB SRAM; see the CGB/MBC30 implementation and original fixture coverage. Other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
 | Save states | Version 1 DMG snapshots include CPU instruction progress, hardware pipelines, RAM, mapper/RTC state, and frame/audio state. Libretro uses a fixed 512 KiB buffer and validates before atomic commit. | `save_state_test.cpp` and libretro GB Pong regressions are part of `make test`. Core tests compare 30 subsequent video and PCM callbacks after fresh-load restore in both pixel formats; invalid states leave the next frame running. `make build`, `make test`, and the pinned GBIT comparison passed. On 2026-10-30, macOS RetroArch 1.22.2 passed GB Pong save/advance/restore, further input, and restoration from the same file after a frontend relaunch; see [session identity and evidence](save-states.md#macos-retroarch-acceptance-2026-10-30). The user reported Steam Deck same-session and full-relaunch restore/control passing on 2026-10-31, with no current tearing; see [Deck evidence and identity limits](steam-deck-check.md#m5-save-state-checkpoint--user-reported-pass-2026-10-31). | Installed Deck hash and frontend/OS versions were not supplied. Running RTCs retain wall-clock behavior. A bounded macOS [rewind session](rewind.md) passed with GB Pong; Deck R rewind and control after release pass in Ping Pong by user report; long-session stability and measured Deck performance remain unverified. Future-version migration and run-ahead are untested. |
 | Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. Startup profiles restore model-specific clock phase. | `make test`: `dmg_serial_test.cpp` checks register, bit/completion, and boot/post-boot divider-phase boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. Mooneye `boot_sclk_align-dmgABCmgb` passes with both fast startup and the local standard DMG BIOS. | The Mooneye result is for its documented DMG ABC/MGB target, not all DMG revisions or physical hardware. No real peer, external clock input, accessories or CGB fast clock are implemented. Component/system tests do not establish full hardware serial conformance. |
 | Joypad | Active-low button lines, direction/button selection, falling-edge interrupt requests, and DMG STOP wake on a selected P10–P13 line falling low. STOP wake is separate from IE/IME interrupt acceptance. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; `testSelectedJoypadLineWakesStopWithoutInterruptAcceptance` checks unselected input keeps STOP active, selected A input wakes it, IF is requested, execution resumes and no interrupt vector is entered with IME=0 / IE=0. Libretro input regression uses GB Pong. | STOP signal behavior follows [Pan Docs](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction); no physical-DMG result is available. Exact wake phase, already-low-at-entry behavior and unusual STOP-entry races remain unverified. The libretro input/callback phase can shift VBlank-synchronized visible response by one callback; this is demonstrated with a synthetic ROM, not hardware-validated. See the [input-phase report](#libretro-input-phase-and-vblank-response-2026-10-26). |
@@ -68,7 +72,7 @@ mid-Mode 3 race. See [Pan Docs rendering](https://gbdev.io/pandocs/Rendering.htm
 | PPU modes and Mode 3 timing | 456-dot scanlines; VBlank/STAT requests; final-line LY reset and delayed LYC comparison; mode-based VRAM/OAM access. Mode 3 starts at 172 dots, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. Normal-line readable LY changes at dot 452; LCD startup retains its dot-454 edge. | `make test` covers selected mode/access boundaries and CPU writes during blocked modes. Eleven selected Mooneye PPU/interrupt ROMs pass; the expanded 14-case PPU set passed 14/14 in its latest recorded run. | These tests do not establish full raster accuracy. SCX/SCY fetch sampling and BG/OBJ arbitration remain simplified or unverified against matching DMG hardware. The [PPU guide](ppu-scrolling.md) records the model and scoped diagnostics. |
 | OAM DMA | FF46 schedules 160 bytes at one byte per M-cycle after startup, supports delayed restart, and arbitrates CPU OAM/source-bus access; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. | `make test`: `dmg_oam_dma_test.cpp`; six Mooneye OAM DMA cases pass: `basic`, `reg_read`, `sources-GS`, `oam_dma_start`, `oam_dma_timing`, `oam_dma_restart`. | Basic read contention is modeled; exact write-induced bus corruption, PPU/DMA rendering contention, and sub-M-cycle bus effects remain unmodeled. |
 | APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the 2026-10-26 run against the current core. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
-| Startup, frame stepping, and libretro | The default fast path starts at `$0100` with a synthetic DMG post-boot state calibrated to the BIOS handoff. When `dmg_boot.bin` (or the compatible fallback name `gb_bios.bin`) is present in RetroArch's system directory, the core maps its 256 bytes at `$0000-$00FF`, starts the CPU at `$0000`, and unmaps it when the boot program writes nonzero to `$FF50`. Reset repeats the selected startup path. `stepFrame()` advances a nominal 70,224 T-cycles. | `make test`: system and libretro tests cover the synthetic BIOS overlay, `$FF50` handoff, optional system-directory loading, malformed-image diagnostics, content errors, STOP warnings, and callback-exception boundaries. With the local standard DMG BIOS, Mooneye `boot_regs-dmgABC`, `boot_hwio-dmgABCmgb`, and `boot_div-dmgABCmgb` all pass. The no-BIOS fast profile also passes all three after matching the handoff CPU/I/O values and divider phase. The core .so remains a local build artifact. | The fast profile skips the logo animation and initializes tested handoff state; it is not a byte-for-byte snapshot of all CPU-visible and internal memory (including logo-derived VRAM and OAM contents). Logo rendering/header checks and model-specific power-on behavior are not independently verified. Reserved-opcode diagnostics remain `stderr`-only, and placeholder handling continues execution. See [startup profile and boot-ROM scope](#startup-profile-and-boot-rom-scope). |
+| Startup, frame stepping, and libretro | The default fast path starts at `$0100` with a synthetic DMG post-boot state calibrated to the BIOS handoff. When `dmg_boot.bin` (or the compatible fallback name `gb_bios.bin`) is present in RetroArch's system directory, the core maps its 256 bytes at `$0000-$00FF`, starts the CPU at `$0000`, and unmaps it when the boot program writes nonzero to `$FF50`. Reset repeats the selected startup path. The default adapter uses bounded VBlank presentation; the diagnostic `stepFrame()` API advances 70,224 T-cycles. | `make test`: system and libretro tests cover the synthetic BIOS overlay, `$FF50` handoff, optional system-directory loading, malformed-image diagnostics, content errors, STOP warnings, and callback-exception boundaries. With the local standard DMG BIOS, Mooneye `boot_regs-dmgABC`, `boot_hwio-dmgABCmgb`, and `boot_div-dmgABCmgb` all pass. The no-BIOS fast profile also passes all three after matching the handoff CPU/I/O values and divider phase. The core .so remains a local build artifact. | The fast profile skips the logo animation and initializes tested handoff state; it is not a byte-for-byte snapshot of all CPU-visible and internal memory (including logo-derived VRAM and OAM contents). Logo rendering/header checks and model-specific power-on behavior are not independently verified. Reserved-opcode diagnostics remain `stderr`-only, and placeholder handling continues execution. See [startup profile and boot-ROM scope](#startup-profile-and-boot-rom-scope). |
 
 The Mooneye `manual-only/sprite_priority` DMG frame also matches its v7.0
 reference image exactly (0/23,040 pixels differ). This verifies sprite-priority
@@ -193,53 +197,42 @@ The user subsequently identified the scene below, then reported no tearing in
 a later Deck check or Mac testing. The Deck core was not rebuilt by this
 test-only change. The report is closed for now without a confirmed core defect.
 
-### Yellow intro lightning investigation (2026-10-29)
+### Private game-specific visual report (2026-10-29)
 
-**Conclusion:** the reported scene is Pokémon Yellow's opening Pikachu
-lightning animation. The user reports that the tear did not recur in a later
-Deck check and that Mac testing shows no tearing. The cause of the original
-intermittent Deck report remains unverified; no core defect was confirmed.
-Completed-frame submission prevents the earlier partially rendered frame bug,
-but does not establish correct palette-write timing or synchronized physical
-display presentation.
-
-In the public [Yellow disassembly](https://github.com/pret/pokeyellow/blob/master/engine/movie/intro_yellow.asm#L565-L647),
-intro scene 14 changes the background and object palettes using a repeating
-sequence; scene 15 toggles palette bits every four timer steps. This makes
-palette update timing a concrete investigation target, while establishing
-that flashing itself is intentional in that reference version. It does not
-prove that the user's reported split is an intended effect.
-
-The reference intro loop runs its scene update and sprite animation before
-calling `DelayFrame`; the [delay routine](https://github.com/pret/pokeyellow/blob/master/home/delay.asm)
-waits for the next VBlank interrupt. The palette animation is therefore
-updated by the main loop between VBlank waits, not by a per-scanline HBlank
-routine. In LotusGB, the PPU emits pixels dot by dot and `renderPixel` applies
-the current BGP/OBP values; a CPU palette write can consequently change later
-pixels in the same frame. This is capable of representing a mid-frame palette
-transition. It does not by itself establish whether its scanline timing matches
-the original Game Boy, especially because the user's ROM hash differs from the
-reference disassembly's listed retail build.
-
-The user's local ROM was found outside the repository and its header identifies
-Pokémon Yellow. Its SHA-1 does not match the retail UE ROM documented by the
-disassembly, so the source is a behavioral reference, not a verified exact
-match. The Deck and Mac observations are non-reproductions, not an A/B settings
-result or proof that the fault belongs to either frontend. No production core
-code or Deck binary changed during this investigation. The report is closed for
-now; reopen if it becomes reproducible. Keep commercial-game validation private and manual,
-with ROMs, saves and captures outside the repository and CI. Any eventual
-automated regression should use an original synthetic reproducer of the
-identified hardware behavior. No production PPU change is justified yet.
+A user-reported visual effect did not recur during a later Steam Deck check or
+Mac testing. No core defect was confirmed, and no production core change was
+made. Commercial game identification and scene details remain in private
+validation notes. If the effect becomes reproducible, capture a licensed
+homebrew reproduction or an original synthetic test case before changing PPU
+timing. Frame-coherence checks cover frontend callback output but do not prove
+physical display synchronization.
 
 ## Libretro input phase and VBlank response (2026-10-26)
 
-**Conclusion:** LotusGB and SameBoy apply a scripted frontend input at different
+The current [input-response assessment](input-latency.md) adds reproducible
+Pong press/release and synthetic one-poll pulse checks on 2026-10-31. The
+tested Pong response is two or three calls including the input call; physical
+button-to-screen latency and fighting-game acceptance remain unmeasured.
+On 2026-11-01, Tobu Tobu Girl was selected for action-game assessment; its
+[short-input baseline and reference difference](input-latency.md#tobu-tobu-girl-action-baseline-2026-11-01)
+are recorded separately. The bounded same-BIOS comparison responds in
+LotusGB call 3 versus SameBoy call 2. [Event tracing and a phase-only control](input-latency.md#root-cause-completed-frame-publication-relative-to-the-callback)
+identify callback/VBlank alignment as the cause of this case. The default
+now uses bounded VBlank presentation and responds in call 2 for the tested
+Tobu cases. Fixed stepping remains available as a diagnostic baseline.
+Both builds now run the [headless audio/state/rewind gate](input-latency.md#headless-pacing-and-rewind-assessment-2026-11-01).
+Manual device checks are deferred. The [presentation policy](input-latency.md#current-presentation-policy)
+distinguishes healthy host repeats from PPU events and CPU STOP/failure;
+sound quality and physical latency are not claimed as validated.
+The historical cross-core phase comparison below does not establish a fixed
+whole-game latency offset.
+
+**Historical fixed-step conclusion:** LotusGB and SameBoy apply a scripted frontend input at different
 PPU phases. A controlled VBlank-only ROM showed that this can move the visible
 response by one video callback. This is a real adapter timing difference, not a
 measured 1 ms wait in LotusGB and not evidence that either phase matches real
-hardware. Keep the current frame stepping until a target-game or
-hardware-backed result supports a change.
+hardware. That checkpoint retained fixed stepping; the later Tobu trace and
+current presentation policy above supersede that earlier work decision.
 
 ### Hypothesis and setup
 

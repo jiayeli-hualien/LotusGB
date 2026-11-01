@@ -14,6 +14,7 @@ constexpr size_t RAM_BANK_SIZE = 0x2000;
 constexpr size_t MINIMUM_BANKED_ROM_SIZE = 2 * ROM_BANK_SIZE;
 constexpr size_t MAXIMUM_MBC2_ROM_SIZE = 16 * ROM_BANK_SIZE;
 constexpr size_t MAXIMUM_MBC_ROM_SIZE = 2 * 1024 * 1024;
+constexpr size_t MAXIMUM_MBC30_ROM_SIZE = 4 * 1024 * 1024;
 constexpr size_t MAXIMUM_MBC5_ROM_SIZE = 8 * 1024 * 1024;
 constexpr size_t MBC2_RAM_SIZE = 0x0200;
 constexpr size_t MBC3_RTC_STORAGE_SIZE = 24;
@@ -57,8 +58,10 @@ size_t getMbc3RamSize(uint8_t sizeCode) {
         return 0x2000;
     case 0x03:
         return 0x8000;
+    case 0x05:
+        return 0x10000;
     default:
-        throw std::invalid_argument("unsupported MBC3 RAM size");
+        throw std::invalid_argument("unsupported MBC3/MBC30 RAM size");
     }
 }
 
@@ -151,10 +154,13 @@ Cartridge::Cartridge(std::vector<uint8_t> rom,
     case 0x12:
     case 0x13:
         if (this->rom.size() < MINIMUM_BANKED_ROM_SIZE ||
-            this->rom.size() > MAXIMUM_MBC_ROM_SIZE ||
+            this->rom.size() > MAXIMUM_MBC30_ROM_SIZE ||
             this->rom.size() % ROM_BANK_SIZE != 0)
-            throw std::invalid_argument("MBC3 cartridge must contain 32 KiB to 2 MiB of banked ROM");
+            throw std::invalid_argument("MBC3/MBC30 cartridge must contain 32 KiB to 4 MiB of banked ROM");
         mapper = Mapper::Mbc3;
+        // The header has no separate MBC30 type. Expanded geometry selects
+        // the variant; no game-title or ROM-hash special case is involved.
+        mbc30 = this->rom.size() > MAXIMUM_MBC_ROM_SIZE;
         mbc3HasRtc = type == 0x0F || type == 0x10;
         battery = mbc3HasRtc || type == 0x13;
         if (type == 0x10 || type == 0x12 || type == 0x13) {
@@ -162,6 +168,7 @@ Cartridge::Cartridge(std::vector<uint8_t> rom,
                                          ? this->rom[RAM_SIZE_OFFSET]
                                          : 0x00;
             const size_t ramSize = getMbc3RamSize(sizeCode);
+            mbc30 = mbc30 || ramSize > 0x8000;
             if (battery && saveRam) {
                 if (saveRam->size() != ramSize)
                     throw std::invalid_argument("MBC3 save RAM size does not match the cartridge header");
@@ -266,7 +273,7 @@ void Cartridge::write(uint16_t address, uint8_t value) {
             if (romBankLow == 0)
                 romBankLow = 1;
         } else if (mapper == Mapper::Mbc3) {
-            mbc3RomBank = value & 0x7F;
+            mbc3RomBank = value & (mbc30 ? 0xFF : 0x7F);
             if (mbc3RomBank == 0)
                 mbc3RomBank = 1;
         }
@@ -493,7 +500,7 @@ uint8_t Cartridge::readExternalRam(uint16_t address) {
     if (mapper == Mapper::RomOnly || !ramEnabled || !externalRam ||
         externalRam->empty())
         return 0xFF;
-    if (mapper == Mapper::Mbc3 && mbc3RamBank > 0x03)
+    if (mapper == Mapper::Mbc3 && mbc3RamBank > (mbc30 ? 0x07 : 0x03))
         return 0xFF;
 
     if (mapper == Mapper::Mbc2) {
@@ -515,7 +522,7 @@ void Cartridge::writeExternalRam(uint16_t address, uint8_t value) {
     }
     if (!ramEnabled || !externalRam || externalRam->empty())
         return;
-    if (mapper == Mapper::Mbc3 && mbc3RamBank > 0x03)
+    if (mapper == Mapper::Mbc3 && mbc3RamBank > (mbc30 ? 0x07 : 0x03))
         return;
 
     if (mapper == Mapper::Mbc2) {

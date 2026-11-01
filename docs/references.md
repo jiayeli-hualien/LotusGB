@@ -17,6 +17,8 @@ hardware specification.
 
 ### CPU, interrupts, timer and memory
 
+- [Pan Docs: CGB registers](https://gbdev.io/pandocs/CGB_Registers.html) and [memory map](https://gbdev.io/pandocs/Memory_Map.html) — VBK/SVBK, bank layout and echo contracts used by the [CGB implementation](cgb-development.md).
+
 - [Pan Docs: Interrupts](https://gbdev.io/pandocs/Interrupts.html) and [HALT](https://gbdev.io/pandocs/halt.html) — interrupt requests and CPU behavior.
 - [Pan Docs: OAM Corruption Bug](https://gbdev.io/pandocs/OAM_Corruption_Bug.html) — DMG OAM effects from memory access and 16-bit IDU operations, including implicit SP decrements during stack pushes.
 - [Game Boy CPU internals](https://gist.github.com/SonoSooS/c0055300670d678b5ae8433e20bea595) — reverse-engineered SM83 micro-operation schedules for stack and interrupt entry; useful as a timing reference, not a substitute for hardware verification.

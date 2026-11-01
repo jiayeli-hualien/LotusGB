@@ -623,7 +623,7 @@ void testMbc3SupportsRtcCartridgesAndRejectsUnsupportedRam() {
 
     std::vector<uint8_t> unsupportedRtcRamRom(0x8000, 0);
     unsupportedRtcRamRom[0x0147] = 0x10;
-    unsupportedRtcRamRom[0x0149] = 0x04; // MBC30-sized RAM
+    unsupportedRtcRamRom[0x0149] = 0x04; // 128 KiB exceeds MBC30 RAM capacity
     bool unsupportedRtcRamRejected = false;
     try {
         Cartridge cartridge(std::move(unsupportedRtcRamRom));
@@ -631,11 +631,11 @@ void testMbc3SupportsRtcCartridgesAndRejectsUnsupportedRam() {
         unsupportedRtcRamRejected = true;
     }
     expect(unsupportedRtcRamRejected,
-           "MBC3 RTC cartridges reject the larger MBC30 RAM size");
+           "MBC3/MBC30 RTC cartridges reject 128 KiB RAM");
 
     std::vector<uint8_t> unsupportedRamRom(0x8000, 0);
     unsupportedRamRom[0x0147] = 0x13;
-    unsupportedRamRom[0x0149] = 0x04; // MBC30-sized RAM
+    unsupportedRamRom[0x0149] = 0x04; // 128 KiB exceeds MBC30 RAM capacity
     bool unsupportedRamRejected = false;
     try {
         Cartridge cartridge(std::move(unsupportedRamRom));
@@ -643,7 +643,7 @@ void testMbc3SupportsRtcCartridgesAndRejectsUnsupportedRam() {
         unsupportedRamRejected = true;
     }
     expect(unsupportedRamRejected,
-           "MBC3 rejects the larger MBC30 RAM size until it is implemented");
+           "MBC3/MBC30 rejects 128 KiB RAM");
 }
 
 void testMbc3SupportsSmallExternalRamSizes() {

@@ -17,6 +17,15 @@ make build
 make test
 ```
 
+These default commands build and run tests for the detected local host:
+Ubuntu x86-64 or Mac M1. Use `make build TARGET=steamdeck` to cross-compile the Linux x86-64 core; use
+`make package-retroarch-steam-deck` to create its install ZIP. Cross-target
+builds do not run host tests, and `make test TARGET=steamdeck` is rejected.
+The Deck build uses `build/toolchains/zig-0.17.0/zig` by default; override it
+with `STEAM_DECK_ZIG=/path/to/zig` and select another Zig target triple with
+`STEAM_DECK_TARGET=x86_64-linux-gnu`. macOS Universal packaging remains
+`make package-retroarch-macos` and requires macOS/Xcode tools.
+
 Then run LotusGB's GBIT instruction comparison from `build/`:
 
 ```sh
@@ -27,7 +36,26 @@ Use the same GBIT revision as CI. On macOS, build GBIT with the linker override
 and use `DYLD_LIBRARY_PATH`; see the [macOS setup](macos-development.md).
 `make build` builds the core and frontend adapter. `make test` runs the CPU,
 hardware-component, system, libretro, Acid2 framebuffer, and runner-protocol
-tests. These gates do not need downloaded ROM suites.
+tests. The libretro gate runs the ordinary VBlank-presentation and diagnostic fixed-step
+builds, including 48 kHz cadence, LCD restart, state restore and repeated
+rewind-protocol replay. These gates do not need downloaded ROM suites.
+`cgb_memory_test` checks the CGB memory components with an original CPU probe;
+`cgb_boot_test` checks explicit CGB-E assembly, split boot handoff and bank
+retention through `GameBoySystem`, plus the synthetic fixture factory's LCD-off/snapshot restriction (separate from playable CGB startup).
+`ppu_video_memory_test` compares owned/external VRAM with the monochrome
+renderer. `cgb_hardware_test` checks palette ports, DMA and fast serial/divider
+behavior; `cgb_system_test` checks exact cgb-acid2 pixels, speed/DMA/audio/input,
+model-tagged state replay and invalid typed payload rejection. Libretro tests
+check the CGB reference, input/reset and exact video/PCM/state rewind in both
+pixel formats. `mbc30_test` and libretro MBC30 fixtures additionally cover 4-MiB ROM / 64-KiB
+SRAM, RTC, battery import and high-bank state replay using original code.
+The optional `make test-tobudx` runs the pinned external Deluxe
+ROM; it is separate from CI. These checks do not imply all CGB hardware timing
+or whole-library compatibility. See the
+[CGB contracts and focused command](cgb-development.md#reproducible-checks).
+The libretro tests also print the [input-response baseline](input-latency.md):
+GB Pong press/release callback counts and synthetic one-poll input checks in
+both pixel formats. These do not measure physical controller/display latency.
 
 The GBIT comparison should report 244/244 ordinary opcodes and 256/256 CB
 opcodes. The standard sequence was run on macOS on 2026-10-28: GBIT's own
@@ -59,6 +87,22 @@ make test-homebrew HOMEBREW_GAME=adjustris
 make test-homebrew HOMEBREW_GAME=tobutobugirl
 make test-homebrew HOMEBREW_GAME=canyon-racer
 ```
+
+For the selected Tobu Tobu Girl input-response assessment, run
+`make test-tobu-input`. Compare it with `make test-tobu-input-fixed`, which
+builds the earlier fixed-step diagnostic executable. The older
+`make test-tobu-input-vblank` name also tests the new default in a separate
+output directory. None installs a core.
+Both use the pinned external ROM and compare neutral,
+one-poll and held actions from identical snapshots. Results and reviewed-frame
+definitions are in the [input-response guide](input-latency.md#tobu-tobu-girl-action-baseline-2026-11-01).
+This optional game measurement is not a CI dependency.
+PPU completion events and `GameBoySystem::stepUntilVBlank()` timeout,
+STOP/HALT, restore and early-LY boundary checks are covered by `make test`.
+Use `make test-vblank` for just the default VBlank-presentation libretro gate;
+`make test` already includes it. The [headless assessment](input-latency.md#headless-pacing-and-rewind-assessment-2026-11-01)
+records the cadence differences; matching PCM to actual hardware time is
+checked separately from maintaining a fixed amount of time per video call.
 
 The default profile is Big2Small. The Adjustris check also writes
 `progress-full-row.ppm`, `progress-row-cleared.ppm`,

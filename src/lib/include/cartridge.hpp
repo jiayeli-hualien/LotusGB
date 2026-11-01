@@ -13,7 +13,7 @@
 namespace LOTUSGB {
 
 // Cartridge support: ROM-only, MBC1 ($01-$03), MBC2 ($05-$06), MBC3
-// ($0F-$13), and MBC5 ($19-$1E). MBC5 rumble motor output is not exposed.
+// / MBC30 ($0F-$13), and MBC5 ($19-$1E). MBC5 rumble motor output is not exposed.
 class Cartridge final : public IAddressRegion {
     friend class StateCodec;
 public:
@@ -73,6 +73,7 @@ private:
     std::array<uint8_t, 5> mbc3RtcLatchedRegisters{};
     int64_t mbc3RtcLastUnixTime = 0;
     uint8_t mbc3RtcLastLatchValue = 0xFF;
+    bool mbc30 = false; // Immutable variant derived from ROM/RAM geometry.
     bool mbc3HasRtc = false;
     bool mbc3RtcLoaded = false;
     uint8_t mbc2RomBank = 1;

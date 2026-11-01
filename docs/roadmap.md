@@ -11,16 +11,23 @@ on 2026-10-31. The latest Deck session also showed no tearing.
 M6 rewind validation is complete for the bounded Mac and Deck scope: the Mac
 GB Pong session passed, and the user confirmed R rewind and normal control
 after release in Ping Pong on Deck. Shader startup works by user report;
-visual and performance acceptance was not separately recorded. GBC remains
-deferred.
+visual and performance acceptance was not separately recorded. M7's bounded
+automated input/presentation checkpoint is complete. M8 now passes its first native CGB-E playability checkpoint: color Acid2,
+Tobu Tobu Girl Deluxe controls/state replay and a macOS RetroArch session.
+Further CGB hardware accuracy and game compatibility remain separate work.
 
-## Current route (2026-10-31)
+## Current route (2026-11-01)
 
 Work in the order below. These are acceptance milestones, not calendar
 commitments. M1–M3 are complete. M4 is closed for now without a confirmed fix
 or core defect. The current personal-use DMG/libretro baseline is complete;
 M5 is complete for the bounded macOS and Steam Deck frontend scope.
-M6 is also complete; no next milestone has been selected.
+M6 is also complete. M7's headless input/audio/state checkpoint is complete:
+bounded VBlank presentation is now the default, with fixed stepping retained
+for diagnostics. Manual Mac/Deck checks are deferred and do not block further
+core development. M8 now passes its bounded native-CGB playability checkpoint;
+Broader CGB title compatibility remains exploratory; public game-level
+regressions use licensed homebrew and original test fixtures.
 
 | Order | Milestone | Deliverable and exit condition |
 | --- | --- | --- |
@@ -31,7 +38,10 @@ M6 is also complete; no next milestone has been selected.
 | Current status — complete (2026-10-29) | Personal-use DMG/libretro playable baseline | The tested Mac and Steam Deck use cases are sufficient for the current goal. This closes the current work round, not the full-emulator compatibility gap list. |
 | M5 — complete (2026-10-31) | DMG save states | Core/libretro automated checks pass. RetroArch 1.22.2 saved GB Pong, restored its scene after advancing, and accepted further directional input. The same slot restored after a full frontend relaunch. Steam Deck same-session and full-relaunch restore/control also pass by user report; installed hash and versions were not supplied. See [Mac evidence](save-states.md#macos-retroarch-acceptance-2026-10-30) and [Deck evidence](steam-deck-check.md#m5-save-state-checkpoint--user-reported-pass-2026-10-31). |
 | M6 — complete (2026-10-31) | RetroArch rewind | Existing serialization supports the bounded GB Pong Mac session: score/paddle regression, release and continued control, repeated rewind, and selected near-60 FPS observations. Deck R rewind and control after release pass in Ping Pong by user report; exact ROM/core hash, versions and measured performance were not supplied. Update the installed `.info` as well as the library; old metadata can disable rewind. See [evidence and handoff](rewind.md). |
-| Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery, CGB, and other features need a concrete user or distribution target before becoming milestones. |
+| M7 — bounded automated checkpoint complete (2026-11-01) | Input response and presentation pacing | Tobu's tested short/held actions now respond in call 2 under the default bounded VBlank policy, versus call 3 in the fixed diagnostic baseline. The policy distinguishes real completion, healthy host repeat, STOP and failure; hardware clocks remain shared. Dual-mode audio/coherent-video/state/rewind regressions pass. See the [current policy and evidence](input-latency.md#current-presentation-policy). Manual Mac/Deck feel, listening and physical latency are deferred, not claimed as passed. |
+| M8 — playable checkpoint passed (2026-11-01) | Native CGB-E through RetroArch | Banked RAM, color PPU, KEY1 speed switching, VRAM DMA and model-tagged snapshots. Exact cgb-acid2 pixels and Deluxe directional/flap/dash response with state replay pass; installed macOS RetroArch loads/restores gameplay. Broader game compatibility and hardware accuracy remain work. See the [canonical evidence and limits](cgb-development.md). |
+| M9 — deferred | Broader CGB game compatibility | Continue with licensed homebrew profiles and original hardware fixtures; keep commercial-game checks private. |
+| Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and other systems need a concrete user or distribution target before becoming milestones. |
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
 
@@ -43,7 +53,8 @@ hash-identified Linux core. The intermittent Deck tearing report did not recur
 in the latest check; Mac testing also showed no tearing. These results do not
 claim broad commercial-game compatibility or exact hardware accuracy.
 
-Keep the project scoped as a DMG libretro core for now. RetroArch supplies the
+The playable frontend now supports DMG and native CGB through one libretro
+core. RetroArch supplies the
 user interface, so a custom GUI is not part of the current scope. Windows
 delivery is deferred until there is a concrete Windows user or release target;
 the Linux Steam Deck build does not count as native Windows validation. Adding
@@ -54,6 +65,65 @@ closing this baseline. Known hardware and compatibility gaps remain in the
 The user subsequently selected instant save/load as the next product feature.
 M5 extends the completed playable baseline with session convenience. It does
 not reopen the unconfirmed tearing report or claim broader game compatibility.
+
+### M7: bounded automated input/presentation checkpoint — complete
+
+The user selected an input-delay assessment on 2026-10-31, including whether
+response is adequate for fighting-game feel, and raised CGB as the next
+expansion. The selected DMG personal-use baseline is sufficient to continue
+development; it does not mean all GB specifications are implemented.
+
+On 2026-11-01, the user selected Tobu Tobu Girl as the first action-game target.
+The local checkpoint covers Left/Right, B flap, Right+A dash and Right+B under
+short and held inputs. All twelve states respond in call 3 including the
+press call. A separate same-BIOS DMG comparison of Right, Right+A and B
+responds in LotusGB call 3 versus SameBoy call 2. Event tracing now identifies
+the callback/VBlank phase as this case's cause: JOYP and sprite updates occur
+in the same game phases, but the affected complete frame reaches different
+callback indices. A phase-only control keeps the same emulated update ticks
+and completed-frame buffer yet responds in call 2. The user requested a
+VBlank test mode; `stepUntilVBlank()` and `make test-tobu-input-vblank` now
+provide it, with twelve-state call-2 results. Following the dual-mode headless
+gate, the bounded presentation policy was promoted to the default; fixed
+stepping remains diagnostic. This does not establish hardware accuracy or
+pass low-latency frontend acceptance. See the
+[cause, control and current policy](input-latency.md#current-presentation-policy).
+
+The fixed diagnostic baseline preserves one-poll Up pulses in both pixel formats.
+Across 24 neutral GB Pong states, first paddle response takes two or three
+video calls including the input call; the new default responds in call 2 for
+all 24. These results do
+not measure physical controller-to-screen latency or certify a fighting game.
+See the [measurement definitions, results and pending frontend procedure](input-latency.md).
+The complete-frame buffer is preserved while the presentation boundary changes.
+
+The user deferred Mac/Deck manual operation on 2026-11-01. The automated gate
+now runs both stepping builds with audio-clock totals, LCD restart/timeout,
+coherent video, state restore and repeated rewind/replay checks. A normalized
+48 kHz comparison confirms SameBoy also has variable callback-time/sample
+totals on the restart stress ROM. The implemented policy returns a real frame
+or a bounded healthy Repeat, distinguishing both from STOP/failure and never
+synthesizing a guest VBlank IRQ. Fixed-policy snapshots resume without format
+migration. This closes the bounded automated checkpoint.
+Device feel, listening and physical latency remain deferred; they
+are not requirements for continuing core development. See the
+[headless results and decision](input-latency.md#headless-pacing-and-rewind-assessment-2026-11-01).
+
+
+### M8: native CGB-E playability checkpoint — passed
+
+The shared CPU/bus/clock now supports native CGB startup, banked WRAM/VRAM,
+color palettes/attributes/priority, speed switching, VRAM DMA and CGB version 2
+snapshots. The frontend advertises `.gb|gbc` and chooses the model by header.
+Both libretro pixel formats pass the exact cgb-acid2 reference and synthetic
+color/input/state/rewind checks. The external Deluxe game responds to held and
+one-poll directional/flap/dash input at 12 restored gameplay checkpoints.
+The installed core also loaded/restored Deluxe gameplay in macOS RetroArch.
+
+This closes the bounded playable checkpoint, not all CGB hardware work.
+Compatibility mode on CGB hardware, revision-specific timing, DMA/bus conflicts,
+link/IR and broader game validation remain separate scope. The [CGB guide](cgb-development.md)
+owns the feature matrix, reproducible commands, frontend evidence and limits.
 
 ### M6: RetroArch rewind — complete
 
@@ -146,7 +216,7 @@ device/frontend check.
 
 ### M3: close a bounded Steam Deck checkpoint — complete
 
-The 2026-10-26 user report confirms normal F-1 Race and Pokémon Yellow play,
+The 2026-10-26 user report confirms normal F-1 Race and another Game Boy title play,
 working battery saves and scaling, but it does not identify the exact core hash
 or RetroArch version. Minor tearing was reported before the completed-frame
 output fix. The cross-compiled candidate's later device result is summarized
@@ -180,9 +250,8 @@ manual validation; a headless run cannot close it.
 ### M4: intermittent Steam Deck screen tearing — closed for now (2026-10-29)
 
 The user prioritized tearing over save states. After the initial occasional
-Deck report, the user identified Pokémon Yellow's opening Pikachu lightning
-animation as a scene to watch. The user later reported no tearing in the latest
-Deck check and no tearing during Mac testing. No production core code or Deck
+Deck report, the user identified a scene-specific visual effect to watch. The user later
+reported no recurrence in the latest Deck check or during Mac testing. No production core code or Deck
 binary changed during this investigation, so the non-reproduction is not a code
 fix. No cause was confirmed; frontend/device settings remain one possibility,
 not a finding.
@@ -247,7 +316,7 @@ These are previously recorded results, not checks rerun for this replan.
 | Run-ahead and replay | A user selects one after the save-state checkpoint. | Validate determinism, frontend behavior and performance for that feature; serialization support alone does not establish these results. The bounded M6 rewind checkpoint is complete above. |
 | Recalbox | That device becomes an active frontend target. | Verify actual controls, video/audio and saves; the ARM64 headless result already exists. See [Recalbox](recalbox.md). |
 | Windows | Windows becomes an active delivery target. | Native build/CI, then RetroArch gameplay and persistence. |
-| CGB, NES, GBA and other systems | A separate scope decision follows the DMG checkpoint. | Define one target and acceptance game before adding cross-system abstractions. |
+| NES, GBA and other systems | A separate scope decision follows the DMG/CGB work. | Define one target and acceptance game before adding cross-system abstractions. |
 
 macOS is the current development environment; Ubuntu remains the CI platform.
 The bounded Steam Deck checkpoint passed for one identified build; the

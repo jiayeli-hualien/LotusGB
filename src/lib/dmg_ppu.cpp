@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <utility>
+#include <stdexcept>
 
 namespace LOTUSGB {
 
@@ -51,7 +53,36 @@ constexpr size_t OBJECT_ENTRY_SIZE = 4;
 constexpr size_t OBJECT_COUNT = 40;
 }
 
-DmgPpu::DmgPpu(IInterruptController &interrupts) : interrupts(interrupts) {}
+DmgPpu::DmgPpu(IInterruptController &interrupts, IVideoRam *externalVideoRam, bool cgbMode)
+    : interrupts(interrupts), externalVideoRam(externalVideoRam), cgbMode(cgbMode) {
+    if (cgbMode && !externalVideoRam)
+        throw std::invalid_argument("CGB PPU requires banked VRAM");
+}
+
+void DmgPpu::initializeCgbPostBootState() {
+    initializeDmgPostBootState();
+    cgbBgPalettes.fill(0xFF);
+    cgbObjPalettes.fill(0xFF); // Deterministic; hardware OBJ colors are undefined.
+    cgbBgIndex = cgbObjIndex = 0;
+    colorFrameBuffer.fill(0x7FFF);
+    completedColorFrameBuffer.fill(0x7FFF);
+}
+
+uint16_t DmgPpu::cgbColor(bool object, uint8_t palette, uint8_t color) const {
+    const auto &ram = object ? cgbObjPalettes : cgbBgPalettes;
+    const size_t at = (palette & 7) * 8 + (color & 3) * 2;
+    return static_cast<uint16_t>((ram[at] | (ram[at + 1] << 8)) & 0x7FFF);
+}
+
+uint8_t DmgPpu::readVideoBank(uint8_t bank, size_t offset) const {
+    if (offset >= videoRam.size())
+        throw std::out_of_range("PPU VRAM fetch offset exceeds 8 KiB");
+    if (externalVideoRam)
+        return externalVideoRam->readBank(bank, static_cast<uint16_t>(VRAM_START + offset));
+    if (bank != 0)
+        throw std::out_of_range("DMG VRAM has only bank 0");
+    return videoRam[offset];
+}
 
 void DmgPpu::initializeDmgPostBootState() {
     startupScanline = false;
@@ -82,7 +113,8 @@ uint8_t DmgPpu::read(uint16_t address) {
         if (lcdEnabled() && (getMode() == 3 ||
             (getMode() == 2 && dot >= MODE2_DOTS - 2)))
             return 0xFF;
-        return videoRam[address - VRAM_START];
+        return externalVideoRam ? externalVideoRam->read(address)
+                                : videoRam[address - VRAM_START];
     }
 
     if (address >= OAM_START && address <= OAM_END) {
@@ -94,6 +126,16 @@ uint8_t DmgPpu::read(uint16_t address) {
         return objectRam[address - OAM_START];
     }
 
+    if (cgbMode) {
+        switch (address) {
+        case 0xFF68: return cgbBgIndex | 0x40;
+        case 0xFF6A: return cgbObjIndex | 0x40;
+        case 0xFF69: return lcdEnabled() && getMode() == 3 ? 0xFF : cgbBgPalettes[cgbBgIndex & 63];
+        case 0xFF6B: return lcdEnabled() && getMode() == 3 ? 0xFF : cgbObjPalettes[cgbObjIndex & 63];
+        case 0xFF6C: return 0xFE; // Native CGB OAM-order priority.
+        default: break;
+        }
+    }
     switch (address) {
         case LCDC_ADDRESS:
             return lcdControl;
@@ -126,8 +168,12 @@ uint8_t DmgPpu::read(uint16_t address) {
 
 void DmgPpu::write(uint16_t address, uint8_t value) {
     if (address >= VRAM_START && address <= VRAM_END) {
-        if (!lcdEnabled() || getMode() != 3)
-            videoRam[address - VRAM_START] = value;
+        if (!lcdEnabled() || getMode() != 3) {
+            if (externalVideoRam)
+                externalVideoRam->write(address, value);
+            else
+                videoRam[address - VRAM_START] = value;
+        }
         return;
     }
 
@@ -141,6 +187,19 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
         return;
     }
 
+    if (cgbMode) {
+        if (address == 0xFF68 || address == 0xFF6A) {
+            (address == 0xFF68 ? cgbBgIndex : cgbObjIndex) = value & 0xBF;
+            return;
+        }
+        if (address == 0xFF69 || address == 0xFF6B) {
+            auto &index = address == 0xFF69 ? cgbBgIndex : cgbObjIndex;
+            auto &ram = address == 0xFF69 ? cgbBgPalettes : cgbObjPalettes;
+            if (!lcdEnabled() || getMode() != 3) ram[index & 63] = value;
+            if (index & 0x80) index = static_cast<uint8_t>(0x80 | ((index + 1) & 63));
+            return;
+        }
+    }
     switch (address) {
         case LCDC_ADDRESS: {
             const bool wasEnabled = lcdEnabled();
@@ -157,6 +216,8 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 if (!lcdEnabled()) {
                     frameBuffer.fill(0);
                     completedFrameBuffer.fill(0);
+                    colorFrameBuffer.fill(0x7FFF);
+                    completedColorFrameBuffer.fill(0x7FFF);
                 }
                 updateStatInterruptLine();
             }
@@ -203,8 +264,12 @@ void DmgPpu::advanceTCycles(uint64_t tCycles) {
     if (!lcdEnabled())
         return;
 
-    for (uint64_t cycle = 0; cycle < tCycles; ++cycle)
+    for (uint64_t cycle = 0; cycle < tCycles; ++cycle) {
+        const uint8_t previousMode = getMode();
         advanceDot();
+        if (previousMode == 3 && getMode() == 0 && hblankCallback)
+            hblankCallback();
+    }
 }
 
 void DmgPpu::writeOamFromDma(size_t offset, uint8_t value) {
@@ -218,6 +283,10 @@ const DmgPpu::FrameBuffer &DmgPpu::getFrameBuffer() const {
 
 const DmgPpu::FrameBuffer &DmgPpu::getCompletedFrameBuffer() const {
     return completedFrameBuffer;
+}
+
+void DmgPpu::setFrameCompletedCallback(std::function<void()> callback) {
+    frameCompletedCallback = std::move(callback);
 }
 
 uint8_t DmgPpu::getMode() const {
@@ -308,6 +377,9 @@ void DmgPpu::advanceDot() {
         dot = 0;
         if (ly == VISIBLE_SCANLINES) {
             completedFrameBuffer = frameBuffer;
+            if (cgbMode) completedColorFrameBuffer = colorFrameBuffer;
+            if (frameCompletedCallback)
+                frameCompletedCallback();
             windowYTriggered = false;
             // DMG also clocks the Mode 2 STAT source at VBlank entry,
             // although STAT's mode field becomes 1. Respect the combined
@@ -452,7 +524,7 @@ void DmgPpu::prepareScanline() {
     mode3.fineScroll = scrollX & 0x07;
     mode3.duration = MODE3_BASE_DOTS + mode3.fineScroll;
 
-    const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
+    const bool bgWindowEnabled = cgbMode || (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const uint16_t windowTileMapOffset =
         (lcdControl & WINDOW_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
     const bool windowEnabled = bgWindowEnabled && (lcdControl & WINDOW_ENABLE_MASK) &&
@@ -493,7 +565,8 @@ uint16_t DmgPpu::backgroundBitplaneAddressOffset(bool high) const {
     // On DMG, each bitplane samples SCY separately, while the tile number
     // remains latched from the preceding tile-map data phase. This address is
     // captured in the bitplane's T1 phase and read from VRAM in T2.
-    const uint8_t row = static_cast<uint8_t>(scrollY + ly) & 7;
+    const uint8_t row = cgbMode ? static_cast<uint8_t>(cgbFetchRow ^ ((cgbFetchAttributes & 0x40) ? 7 : 0))
+        : static_cast<uint8_t>(scrollY + ly) & 7;
     return static_cast<uint16_t>(tileOffset + row * 2 + (high ? 1 : 0));
 }
 
@@ -520,7 +593,11 @@ void DmgPpu::advanceBackgroundFetch() {
         break;
     }
     case BackgroundFetcherState::Phase::TileMapData:
-        fetcher.tile = videoRam[fetcher.tileMapAddress];
+        fetcher.tile = readVideoBank(0, fetcher.tileMapAddress);
+        if (cgbMode) {
+            cgbFetchAttributes = readVideoBank(1, fetcher.tileMapAddress);
+            cgbFetchRow = static_cast<uint8_t>(scrollY + ly) & 7;
+        }
         fetcher.phase = BackgroundFetcherState::Phase::TileDataLowAddress;
         break;
     case BackgroundFetcherState::Phase::TileDataLowAddress:
@@ -528,7 +605,7 @@ void DmgPpu::advanceBackgroundFetch() {
         fetcher.phase = BackgroundFetcherState::Phase::TileDataLow;
         break;
     case BackgroundFetcherState::Phase::TileDataLow:
-        fetcher.low = videoRam[fetcher.lowPlaneAddress];
+        fetcher.low = readVideoBank(cgbMode ? (cgbFetchAttributes >> 3) & 1 : 0, fetcher.lowPlaneAddress);
         fetcher.phase = BackgroundFetcherState::Phase::TileDataHighAddress;
         break;
     case BackgroundFetcherState::Phase::TileDataHighAddress:
@@ -536,13 +613,13 @@ void DmgPpu::advanceBackgroundFetch() {
         fetcher.phase = BackgroundFetcherState::Phase::TileDataHigh;
         break;
     case BackgroundFetcherState::Phase::TileDataHigh:
-        fetcher.high = videoRam[fetcher.highPlaneAddress];
+        fetcher.high = readVideoBank(cgbMode ? (cgbFetchAttributes >> 3) & 1 : 0, fetcher.highPlaneAddress);
         fetcher.phase = BackgroundFetcherState::Phase::Push;
         break;
     case BackgroundFetcherState::Phase::Push:
         // The FIFO accepts a decoded row only when empty. Keep the second
         // push-state dot separate from the row write, matching the old cadence.
-        if (!mode3.backgroundFifo.pushRow(fetcher.low, fetcher.high))
+        if (!mode3.backgroundFifo.pushRow(fetcher.low, fetcher.high, cgbMode ? cgbFetchAttributes : 0))
             return;
         fetcher.phase = BackgroundFetcherState::Phase::AdvanceTileColumn;
         break;
@@ -556,6 +633,17 @@ void DmgPpu::advanceBackgroundFetch() {
 void DmgPpu::renderPixel(size_t screenX, uint8_t backgroundColorIndex,
                          const ObjectPixel &objectPixel) {
     const size_t frameOffset = static_cast<size_t>(ly) * FRAME_WIDTH + screenX;
+    if (cgbMode) {
+        const uint8_t color = backgroundColorIndex & 3;
+        const bool bgWins = (lcdControl & 1) && color != 0
+            && ((backgroundColorIndex & 0x20) || objectPixel.behindBackground);
+        const bool objWins = (lcdControl & OBJECT_ENABLE_MASK) && objectPixel.colorIndex != 0 && !bgWins;
+        colorFrameBuffer[frameOffset] = objWins
+            ? cgbColor(true, objectPixel.cgbPalette, objectPixel.colorIndex)
+            : cgbColor(false, (backgroundColorIndex >> 2) & 7, color);
+        frameBuffer[frameOffset] = objWins ? objectPixel.colorIndex : color;
+        return;
+    }
     const bool backgroundEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     if (!backgroundEnabled)
         backgroundColorIndex = 0;
@@ -584,14 +672,25 @@ uint8_t DmgPpu::getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
 
     const size_t rowOffset = static_cast<size_t>(tileDataOffset) + y * 2;
     const uint8_t bit = static_cast<uint8_t>(7 - x);
-    const uint8_t lowBit = (videoRam[rowOffset] >> bit) & 0x01;
-    const uint8_t highBit = (videoRam[rowOffset + 1] >> bit) & 0x01;
+    const uint8_t lowBit = (readVideoBank(0, rowOffset) >> bit) & 0x01;
+    const uint8_t highBit = (readVideoBank(0, rowOffset + 1) >> bit) & 0x01;
     return static_cast<uint8_t>(lowBit | (highBit << 1));
 }
 
 uint8_t DmgPpu::getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) const {
     const size_t mapIndex = static_cast<size_t>(y / 8) * 32 + x / 8;
-    const uint8_t tileIndex = videoRam[tileMapOffset + mapIndex];
+    const uint8_t tileIndex = readVideoBank(0, tileMapOffset + mapIndex);
+    if (cgbMode) {
+        const uint8_t attr = readVideoBank(1, tileMapOffset + mapIndex);
+        const uint8_t row = (y & 7) ^ ((attr & 0x40) ? 7 : 0);
+        const uint8_t bit = (attr & 0x20) ? (x & 7) : 7 - (x & 7);
+        const int tile = (lcdControl & TILE_DATA_SELECT_MASK) ? tileIndex * 16
+            : 0x1000 + (tileIndex < 0x80 ? tileIndex : tileIndex - 0x100) * 16;
+        const auto low = readVideoBank((attr >> 3) & 1, tile + row * 2);
+        const auto high = readVideoBank((attr >> 3) & 1, tile + row * 2 + 1);
+        return static_cast<uint8_t>(((low >> bit) & 1) | (((high >> bit) & 1) << 1)
+            | ((attr & 7) << 2) | ((attr & 0x80) ? 0x20 : 0));
+    }
     return getTilePixel(tileIndex, x % 8, y % 8,
                         (lcdControl & TILE_DATA_SELECT_MASK) != 0);
 }
@@ -621,7 +720,7 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
                                            : left.x < right.x;
               });
 
-    const bool bgWindowEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
+    const bool bgWindowEnabled = cgbMode || (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const bool windowEnabled = bgWindowEnabled &&
                                (lcdControl & WINDOW_ENABLE_MASK) &&
                                windowYTriggered && windowX <= 166;
@@ -706,6 +805,7 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
             tileIndex = static_cast<uint8_t>(tileIndex + objectRow / 8);
             objectRow %= 8;
         }
+        event.oamIndex = static_cast<uint8_t>(object.oamIndex);
         event.tileIndex = tileIndex;
         event.tileRow = static_cast<uint8_t>(objectRow);
         event.attributes = attributes;
@@ -718,9 +818,9 @@ void DmgPpu::readObjectTilePlane(ObjectFetchEvent &event, bool high) const {
     const size_t rowOffset = static_cast<size_t>(event.tileIndex) * 16 +
                              event.tileRow * 2 + (high ? 1 : 0);
     if (high)
-        event.high = videoRam[rowOffset];
+        event.high = readVideoBank(cgbMode ? (event.attributes >> 3) & 1 : 0, rowOffset);
     else
-        event.low = videoRam[rowOffset];
+        event.low = readVideoBank(cgbMode ? (event.attributes >> 3) & 1 : 0, rowOffset);
 }
 
 void DmgPpu::decodeObjectTileRow(ObjectFetchEvent &event) const {
@@ -732,7 +832,9 @@ void DmgPpu::decodeObjectTileRow(ObjectFetchEvent &event) const {
         event.pixels[sourcePixel] = {
             colorIndex,
             (event.attributes & 0x10) != 0,
-            (event.attributes & 0x80) != 0};
+            (event.attributes & 0x80) != 0,
+            static_cast<uint8_t>(cgbMode ? event.attributes & 7 : 0),
+            static_cast<uint8_t>(cgbMode ? event.oamIndex : 0xFF)};
     }
 }
 

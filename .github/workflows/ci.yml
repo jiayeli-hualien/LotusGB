@@ -33,7 +33,7 @@ jobs:
         working-directory: lotus-gbemu
         run: make build
 
-      - name: Run CPU unit tests
+      - name: Run unit and libretro regressions
         working-directory: lotus-gbemu
         run: make test
 

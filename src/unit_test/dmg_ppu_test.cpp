@@ -391,6 +391,36 @@ void testTenObjectsAtXTenMatchMode0TimingBoundary() {
            "ten X=10 objects enter mode 0 at dot 314");
 }
 
+void testFrameCompletionNotificationUsesActualVblankEntry() {
+    InterruptRegisters interrupts;
+    DmgPpu ppu(interrupts);
+    ppu.initializeDmgPostBootState();
+    ppu.write(BGP, 0xFF);
+    unsigned completions = 0;
+    ppu.setFrameCompletedCallback([&] {
+        ++completions;
+        expect(ppu.getCompletedFrameBuffer() == ppu.getFrameBuffer(),
+               "frame completion notifies after the completed snapshot is copied");
+    });
+    ppu.advanceTCycles(456 * 144 - 4);
+    expect(ppu.read(LY) == 144 && (ppu.read(STAT) & 3) == 0,
+           "readable LY reaches 144 four dots before actual VBlank");
+    expect(completions == 0 && ppu.getCompletedFrameBuffer()[0] == 0,
+           "early readable LY must not notify or publish the next frame");
+    ppu.advanceTCycles(3);
+    expect(completions == 0, "frame completion does not fire before the last dot");
+    ppu.advanceTCycles(1);
+    expect(completions == 1 && ppu.getCompletedFrameBuffer()[0] == 3,
+           "actual VBlank entry publishes the black frame and notifies once");
+    ppu.advanceTCycles(456 * 10);
+    expect(completions == 1, "remaining in VBlank does not repeat completion");
+    ppu.advanceTCycles(456 * 144);
+    expect(completions == 2, "the next actual visible frame produces a new completion");
+    ppu.write(LCDC, 0);
+    ppu.advanceTCycles(456 * 154);
+    expect(completions == 2, "LCD-off blank output is not a completed visible frame");
+}
+
 void testVblankInterruptAndFrameRollover() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -1198,6 +1228,7 @@ int main() {
     testObjectsAtSameXRunSeparateFetchEvents();
     testTenObjectsAtXTenMatchMode0TimingBoundary();
     testVblankInterruptAndFrameRollover();
+    testFrameCompletionNotificationUsesActualVblankEntry();
     testCompletedFrameBufferUpdatesOnlyAtVblank();
     testLastVblankLineResetsLyBeforeModeEnds();
     testLastVblankLineLycComparisonAndInterruptEdges();

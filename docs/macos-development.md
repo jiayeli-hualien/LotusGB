@@ -58,8 +58,17 @@ directory with:
 make install-retroarch-core-macos
 ```
 
-The installation target builds the core first and replaces
-`~/Library/Application Support/RetroArch/cores/lotusgb_libretro.dylib`.
-If RetroArch uses a different core directory, pass
-`RETROARCH_CORE_DIR="/path/to/cores"` to the command. Fully quit and restart
+The installation target builds the core first and replaces the library and
+matching `.info` under the RetroArch user directory, then requests an info
+cache refresh. Override `RETROARCH_CORE_DIR="/path/to/cores"` and
+`RETROARCH_INFO_DIR="/path/to/info"` for other locations. Fully quit and restart
 RetroArch after installing so it loads the updated library.
+
+## Shareable core installer
+
+Run `make package-retroarch-macos` to build a separate Universal arm64/x86_64
+core with a macOS 11.0 deployment target and package its installer ZIP under
+`build/packages/`. It installs into an existing RetroArch setup without
+administrator privileges, Python or Xcode. It includes the `.info`, cache
+refresh, backups and rollback, but no RetroArch.app, ROM or BIOS. See the
+[package contents, installation and validation](macos-package.md).

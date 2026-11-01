@@ -22,7 +22,9 @@ public:
     explicit SystemClock(ICPU &cpu);
 
     // CPU and components are borrowed; they must outlive this clock.
-    void addClockedComponent(IClockedComponent &component);
+    void addClockedComponent(IClockedComponent &component, bool cpuRate = false);
+    void setDoubleSpeed(bool enabled) { doubleSpeed = enabled; }
+    RetStepOneCycle stepIdle(bool clockCpuDevices = true);
     // Called by the CPU bus immediately before a memory transaction. The
     // current model advances devices to the end of the M-cycle here.
     void advanceToCpuBusAccess();
@@ -31,12 +33,14 @@ public:
 
 private:
     ICPU &cpu;
-    std::vector<IClockedComponent *> components;
+    struct ClockedDevice { IClockedComponent *component; bool cpuRate; };
+    std::vector<ClockedDevice> components;
+    bool doubleSpeed = false;
     uint64_t elapsedTCycles = 0;
     uint64_t currentStepTCyclesAdvanced = 0;
     bool cpuStepInProgress = false;
 
-    void advanceComponents(uint64_t tCycles);
+    void advanceComponents(uint64_t tCycles, bool clockCpuDevices = true);
 };
 
 }

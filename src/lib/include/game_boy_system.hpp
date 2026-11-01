@@ -11,7 +11,9 @@
 #include "cartridge.hpp"
 #include "decoder.hpp"
 #include "dmg_apu.hpp"
-#include "dmg_boot_rom.hpp"
+#include "boot_rom.hpp"
+#include "cgb_memory.hpp"
+#include "cgb_hardware.hpp"
 #include "dmg_ppu.hpp"
 #include "dmg_serial.hpp"
 #include "dmg_oam_dma.hpp"
@@ -29,8 +31,14 @@ struct RetStepFrame {
     uint64_t tCyclesElapsed = 0;
 };
 
-// Initial headless DMG composition: cartridge, basic RAM regions,
-// CPU, address bus, timer, PPU timing/rendering, joypad input, and shared clock.
+enum class PresentationReason { VBlank, Repeat, CpuStopped, CpuFailure };
+
+struct RetPresentationStep {
+    PresentationReason reason = PresentationReason::CpuFailure;
+    uint64_t tCyclesElapsed = 0;
+};
+
+// Shared DMG/native-CGB system composition.
 class GameBoySystem {
     friend class StateCodec;
 public:
@@ -46,8 +54,21 @@ public:
                   std::shared_ptr<std::vector<uint8_t>> saveRam,
                   std::shared_ptr<std::vector<uint8_t>> saveRtc,
                   std::vector<uint8_t> dmgBootRom);
+    // Explicit native hardware selection; libretro selects by header bit 7.
+    GameBoySystem(std::vector<uint8_t> rom, HardwareModel model,
+                  std::shared_ptr<std::vector<uint8_t>> saveRam = nullptr,
+                  std::shared_ptr<std::vector<uint8_t>> saveRtc = nullptr,
+                  std::vector<uint8_t> bootRom = {});
+    const DmgPpu::ColorFrameBuffer &getCompletedColorFrameBuffer() const;
     // Build a system from the synthetic CPU-reset state for unit tests.
     static GameBoySystem createForTest(std::vector<uint8_t> rom);
+
+    // Synthetic LCD-off boot fixture composition for mapping/handoff tests.
+    // Requires a CGB-capable cartridge and an address-indexed boot fixture.
+    // This test-only entry point rejects LCD enable and snapshots.
+    static GameBoySystem createCgbBootProbe(std::vector<uint8_t> rom,
+                                            std::vector<uint8_t> bootRom);
+    HardwareModel getHardwareModel() const { return model; }
 
     // Versioned, portable snapshot at an M-cycle boundary. Throws on invalid
     // input; failed loads leave the machine and frontend memory pointers intact.
@@ -57,6 +78,14 @@ public:
 
     RetStepOneCycle stepOneCycle();
     RetStepFrame stepFrame();
+    // Diagnostic stepping to the next actual PPU frame-completion event,
+    // including when already in VBlank. Stops on CPU failure/STOP or budget
+    // exhaustion (e.g. LCD off); frameCompleted is false if no event occurred.
+    // Advances whole M-cycles; maxTCycles must be a positive multiple of four.
+    RetStepFrame stepUntilVBlank(uint64_t maxTCycles = DMG_FRAME_T_CYCLES);
+    // Frontend return policy: a real complete frame, or a bounded repeat when
+    // no frame arrives. Repeat is a host event; it never requests a guest IRQ.
+    RetPresentationStep stepForPresentation();
     uint64_t getElapsedTCycles() const;
     Reg getCpuRegisters();
     const DmgPpu::FrameBuffer &getFrameBuffer() const;
@@ -74,16 +103,24 @@ private:
     enum class StartupProfile {
         TestReset,
         DmgPostBoot,
+        CgbPostBoot,
     };
 
     GameBoySystem(std::vector<uint8_t> rom, StartupProfile startupProfile,
                   std::shared_ptr<std::vector<uint8_t>> saveRam,
                   std::shared_ptr<std::vector<uint8_t>> saveRtc,
-                  std::vector<uint8_t> dmgBootRom);
+                  std::vector<uint8_t> bootRom,
+                  HardwareModel model = HardwareModel::Dmg);
     void initializeDmgPostBootState();
+    void initializeCgbPostBootState();
 
+    HardwareModel model;
+    bool cgbBootProbe;
     Cartridge cartridge;
-    DmgBootRom dmgBootRom;
+    BootRom bootRom;
+    std::unique_ptr<CgbWorkRam> cgbWorkRam;
+    std::unique_ptr<CgbVideoRam> cgbVideoRam;
+    std::unique_ptr<CgbIo> cgbIo;
     RamRegion workRam;
     RamRegion highRam;
     InterruptRegisters interruptRegisters;
@@ -93,11 +130,14 @@ private:
     DmgApu apu;
     DmgPpu ppu;
     AddressBus bus;
+    std::unique_ptr<CgbVramDma> cgbVramDma;
     DmgOamDma oamDma;
     Decoder decoder{false};
     Decoder decoderCB{true};
     GBCPU cpu;
     SystemClock systemClock;
+    // Ephemeral host notification, reset before every M-cycle, not save data.
+    bool completedFrameThisCycle = false;
 };
 
 }

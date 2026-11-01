@@ -93,7 +93,7 @@ public:
     static auto fields(RamRegion &v) {
         return std::tie(v.bytes);
     }
-    static auto fields(DmgBootRom &v) {
+    static auto fields(BootRom &v) {
         return std::tie(v.mapped);
     }
     static auto fields(SystemClock &v) {
@@ -273,7 +273,30 @@ public:
     static auto fields(GameBoySystem &v) {
         return std::tie(v.cpu, v.interruptRegisters, v.workRam, v.highRam,
                         v.timer, v.serial, v.joypad, v.oamDma, v.ppu, v.apu,
-                        v.cartridge, v.dmgBootRom, v.systemClock);
+                        v.cartridge, v.bootRom, v.systemClock);
+    }
+    static auto fields(CgbWorkRam &v) { return std::tie(v.banks, v.bankSelect); }
+    static auto fields(CgbVideoRam &v) { return std::tie(v.banks, v.bankSelect); }
+    static auto fields(CgbIo &v) {
+        return std::tie(v.switchArmed, v.doubleSpeed, v.speedPauseMCycles, v.infrared, v.scratch);
+    }
+    static auto fields(CgbVramDma &v) {
+        return std::tie(v.source, v.destination, v.remainingBlocks, v.blockBytes,
+                        v.byteTCycles, v.active, v.hblank);
+    }
+    static auto cgbFields(GameBoySystem &v) {
+        auto &p = v.ppu;
+        return std::tie(*v.cgbWorkRam, *v.cgbVideoRam, *v.cgbIo, *v.cgbVramDma,
+            p.colorFrameBuffer, p.completedColorFrameBuffer, p.cgbBgPalettes,
+            p.cgbObjPalettes, p.cgbBgIndex, p.cgbObjIndex, p.cgbFetchAttributes, p.cgbFetchRow);
+    }
+    template<class F> static void visitCgbPixels(GameBoySystem &v, F action) {
+        for (auto &pixel : v.ppu.mode3.objectFifo.pixels)
+            action(pixel.cgbPalette, pixel.priorityIndex);
+        for (auto &event : v.ppu.mode3.objectFetchEvents) {
+            action(event.oamIndex);
+            for (auto &pixel : event.pixels) action(pixel.cgbPalette, pixel.priorityIndex);
+        }
     }
     static uint8_t instructionKind(GBCPU &v) {
         if (!v.pInst) return 0;
@@ -420,7 +443,7 @@ void StateCodec::validate(GameBoySystem &v) {
                  v.timer.reloadWindowTCycles >= 0 && v.timer.reloadWindowTCycles <= 4 && v.timer.tac <= 7,
                  "Invalid timer snapshot state");
     requireState(v.serial.clockPhaseTCycles < 512 && v.serial.bitsTransferred < 8 &&
-                 (v.serial.control & 0x7e) == 0, "Invalid serial snapshot state");
+                 (v.serial.control & (v.model == HardwareModel::CgbE ? 0x7c : 0x7e)) == 0, "Invalid serial snapshot state");
     requireState(v.oamDma.byteOffset <= DmgPpu::OAM_SIZE && v.oamDma.startDelayMCycles <= 2 &&
                  v.oamDma.mCycleTCycles < 4, "Invalid DMA snapshot state");
     auto &p = v.ppu;
@@ -441,7 +464,11 @@ void StateCodec::validate(GameBoySystem &v) {
         return std::all_of(pixels.begin(), pixels.end(), [](uint8_t x) { return x < 4; });
     };
     requireState(shadesValid(p.frameBuffer) && shadesValid(p.completedFrameBuffer) &&
-                 shadesValid(m.windowColorIndices) && shadesValid(m.backgroundFifo.pixels),
+                 std::all_of(m.windowColorIndices.begin(), m.windowColorIndices.end(), [&](uint8_t x) {
+                     return x < (p.cgbMode ? 64 : 4);
+                 }) && std::all_of(m.backgroundFifo.pixels.begin(), m.backgroundFifo.pixels.end(), [&](uint8_t x) {
+                     return x < (p.cgbMode ? 64 : 4);
+                 }),
                  "Invalid framebuffer or FIFO shades");
     for (const auto &pixel : m.objectFifo.pixels)
         requireState(pixel.colorIndex < 4, "Invalid object FIFO color");
@@ -458,12 +485,34 @@ void StateCodec::validate(GameBoySystem &v) {
                  a.previousRightOutputQ16 >= -(1LL << 32) && a.previousRightOutputQ16 <= (1LL << 32) &&
                  a.audioSamples.size() <= MAX_AUDIO_SAMPLES && a.audioSamples.size() % 2 == 0,
                  "Invalid APU snapshot state or undrained audio queue exceeds one second");
-    requireState(!v.dmgBootRom.mapped || !v.dmgBootRom.bootRom.empty(), "Snapshot requires a boot ROM");
+    if (v.model == HardwareModel::CgbE) {
+        requireState(v.cgbWorkRam->bankSelect < 8 && v.cgbVideoRam->bankSelect < 2
+            && v.cgbIo->speedPauseMCycles <= 2050 && p.cgbFetchRow < 8
+            && (p.cgbBgIndex & 0x40) == 0 && (p.cgbObjIndex & 0x40) == 0,
+            "Invalid CGB banks, speed or palette index");
+        const auto &d = *v.cgbVramDma;
+        requireState(d.destination >= 0x8000 && d.destination <= 0x9FFF
+            && d.remainingBlocks <= 128 && d.blockBytes <= 16 && d.byteTCycles < 2
+            && (!d.active || (d.remainingBlocks && (d.hblank || d.blockBytes))),
+            "Invalid CGB VRAM DMA state");
+        for (const auto &buffer : {&p.colorFrameBuffer, &p.completedColorFrameBuffer})
+            requireState(std::all_of(buffer->begin(), buffer->end(), [](uint16_t x) { return x <= 0x7FFF; }),
+                "Invalid CGB color framebuffer");
+        auto validPixel = [](const DmgPpu::ObjectPixel &pixel) {
+            return pixel.cgbPalette < 8 && (pixel.priorityIndex < 40 || pixel.priorityIndex == 0xFF);
+        };
+        for (const auto &pixel : m.objectFifo.pixels) requireState(validPixel(pixel), "Invalid CGB object FIFO metadata");
+        for (const auto &event : m.objectFetchEvents) {
+            requireState(event.oamIndex < 40 || event.oamIndex == 0xFF, "Invalid CGB object index");
+            for (const auto &pixel : event.pixels) requireState(validPixel(pixel), "Invalid CGB object metadata");
+        }
+    }
+    requireState(!v.bootRom.mapped || !v.bootRom.bootRom.empty(), "Snapshot requires a boot ROM");
     auto &cart = v.cartridge;
     requireState(cart.mbc3RtcLastUnixTime >= 0 && cart.mbc5RomBank < 512 &&
                  cart.mbc5RamBank < 16 && cart.bankHigh < 4 && cart.romBankLow < 32 &&
                  cart.mbc2RomBank > 0 && cart.mbc2RomBank < 16 && cart.mbc3RomBank > 0 &&
-                 cart.mbc3RomBank < 128, "Invalid cartridge snapshot state");
+                 (cart.mbc30 || cart.mbc3RomBank < 128), "Invalid cartridge snapshot state");
 }
 
 std::vector<uint8_t> StateCodec::save(GameBoySystem &v) {
@@ -476,12 +525,17 @@ std::vector<uint8_t> StateCodec::save(GameBoySystem &v) {
     std::apply([&](auto &...component) {
         ((payload(++section), payload(component)), ...);
     }, fields(v));
+    if (v.model == HardwareModel::CgbE) {
+        std::apply(payload, cgbFields(v));
+        visitCgbPixels(v, [&](auto &...x) { payload(x...); });
+    }
     Writer header;
     std::array<uint8_t,8> magic{'L','O','T','U','S','S','T',0};
-    uint32_t version = STATE_VERSION, model = DMG_MODEL;
+    uint32_t version = v.model == HardwareModel::CgbE ? 2 : STATE_VERSION;
+    uint32_t model = v.model == HardwareModel::CgbE ? 2 : DMG_MODEL;
     uint32_t length = static_cast<uint32_t>(HEADER_SIZE + payload.bytes.size());
     auto romHash = StateInternal::sha256(v.cartridge.rom.data(), v.cartridge.rom.size());
-    auto bootHash = StateInternal::sha256(v.dmgBootRom.bootRom.data(), v.dmgBootRom.bootRom.size());
+    auto bootHash = StateInternal::sha256(v.bootRom.bootRom.data(), v.bootRom.bootRom.size());
     auto payloadHash = StateInternal::sha256(payload.bytes.data(), payload.bytes.size());
     header(magic, version, model, length, romHash, bootHash, payloadHash);
     header.bytes.insert(header.bytes.end(), payload.bytes.begin(), payload.bytes.end());
@@ -499,16 +553,18 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
     std::array<uint8_t,32> romHash{}, bootHash{}, payloadHash{};
     header(magic, version, model, length, romHash, bootHash, payloadHash);
     requireState(magic == std::array<uint8_t,8>{'L','O','T','U','S','S','T',0}, "Not a LotusGB snapshot");
-    requireState(version == STATE_VERSION && model == DMG_MODEL, "Unsupported snapshot version or model");
+    requireState((v.model == HardwareModel::Dmg && version == STATE_VERSION && model == DMG_MODEL)
+        || (v.model == HardwareModel::CgbE && version == 2 && model == 2),
+        "Unsupported snapshot version or model");
     requireState(length >= HEADER_SIZE && length <= size && length <= GameBoySystem::MAX_STATE_SIZE, "Truncated snapshot payload");
     requireState(romHash == StateInternal::sha256(v.cartridge.rom.data(), v.cartridge.rom.size()), "Snapshot ROM mismatch");
-    requireState(bootHash == StateInternal::sha256(v.dmgBootRom.bootRom.data(), v.dmgBootRom.bootRom.size()), "Snapshot boot ROM mismatch");
+    requireState(bootHash == StateInternal::sha256(v.bootRom.bootRom.data(), v.bootRom.bootRom.size()), "Snapshot boot ROM mismatch");
     requireState(payloadHash == StateInternal::sha256(header.data + HEADER_SIZE, length - HEADER_SIZE), "Snapshot checksum mismatch");
     requireState(std::all_of(header.data + length, header.data + size, [](uint8_t x) { return x == 0; }), "Invalid snapshot padding");
 
     // Parse and validate on an independently wired machine. Neither its storage
     // nor its callbacks reference the running system.
-    GameBoySystem candidate(v.cartridge.rom, nullptr, nullptr, v.dmgBootRom.bootRom);
+    GameBoySystem candidate(v.cartridge.rom, v.model, nullptr, nullptr, v.bootRom.bootRom);
     Reader payload{header.data + HEADER_SIZE, length - HEADER_SIZE};
     uint8_t kind = 0;
     payload(kind);
@@ -521,6 +577,12 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
         };
         (readSection(component), ...);
     }, fields(candidate));
+    if (v.model == HardwareModel::CgbE) {
+        std::apply(payload, cgbFields(candidate));
+        visitCgbPixels(candidate, [&](auto &...x) { payload(x...); });
+        candidate.systemClock.setDoubleSpeed(candidate.cgbIo->doubleSpeed);
+        candidate.timer.setDoubleSpeed(candidate.cgbIo->doubleSpeed);
+    }
     requireState(payload.position == payload.size, "Unexpected snapshot payload data");
     bindInstruction(candidate.cpu, kind);
     validate(candidate);
@@ -531,11 +593,36 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
         ? v.cpu.decoder.decode(candidate.cpu.instStat.opcode)
         : v.cpu.decoderCB.decode(candidate.cpu.instStat.opcode);
     commitValue(v, candidate);
+    if (v.model == HardwareModel::CgbE) {
+        auto d = cgbFields(v), s = cgbFields(candidate);
+        commitTuple(d, s, std::make_index_sequence<std::tuple_size_v<decltype(d)>>{});
+        auto copyPixel = [](auto &dst, const auto &src) {
+            dst.cgbPalette = src.cgbPalette; dst.priorityIndex = src.priorityIndex;
+        };
+        for (size_t i = 0; i < v.ppu.mode3.objectFifo.pixels.size(); ++i)
+            copyPixel(v.ppu.mode3.objectFifo.pixels[i], candidate.ppu.mode3.objectFifo.pixels[i]);
+        for (size_t i = 0; i < v.ppu.mode3.objectFetchEvents.size(); ++i) {
+            auto &dst = v.ppu.mode3.objectFetchEvents[i];
+            const auto &src = candidate.ppu.mode3.objectFetchEvents[i];
+            dst.oamIndex = src.oamIndex;
+            for (size_t j = 0; j < dst.pixels.size(); ++j) copyPixel(dst.pixels[j], src.pixels[j]);
+        }
+        v.systemClock.setDoubleSpeed(v.cgbIo->doubleSpeed);
+        v.timer.setDoubleSpeed(v.cgbIo->doubleSpeed);
+    }
     v.cpu.pInst = instruction;
     v.systemClock.currentStepTCyclesAdvanced = 0;
     v.systemClock.cpuStepInProgress = false;
 }
 
-std::vector<uint8_t> GameBoySystem::saveState() { return StateCodec::save(*this); }
-void GameBoySystem::loadState(const void *data, size_t size) { StateCodec::load(*this, data, size); }
+std::vector<uint8_t> GameBoySystem::saveState() {
+    if (cgbBootProbe)
+        throw std::logic_error("Synthetic CGB boot probes do not support snapshots");
+    return StateCodec::save(*this);
+}
+void GameBoySystem::loadState(const void *data, size_t size) {
+    if (cgbBootProbe)
+        throw std::logic_error("Synthetic CGB boot probes do not support snapshots");
+    StateCodec::load(*this, data, size);
+}
 }

@@ -31,6 +31,11 @@ void Timer::initializeDmgPostBootState() {
     reloadWindowTCycles = 0;
 }
 
+void Timer::initializeCgbPostBootState() {
+    initializeDmgPostBootState();
+    systemCounter = 0x1EA0; // Synthetic normal-speed CGB handoff phase.
+}
+
 void Timer::initializeDmgBootRomState() {
     // The DMG divider is already four T-cycles into its first M-cycle when
     // the reset-vector boot ROM begins executing.
@@ -124,7 +129,7 @@ bool Timer::timerInput() const {
 }
 
 bool Timer::dividerApuInput() const {
-    return (systemCounter & (1U << DIV_APU_COUNTER_BIT)) != 0;
+    return (systemCounter & (1U << (DIV_APU_COUNTER_BIT + (doubleSpeed ? 1 : 0)))) != 0;
 }
 
 void Timer::incrementTima() {

@@ -15,7 +15,8 @@ constexpr unsigned DMG_POST_BOOT_SERIAL_PHASE_T_CYCLES = 0x1C8;
 constexpr unsigned DMG_BOOT_ROM_SERIAL_PHASE_T_CYCLES = 4;
 }
 
-DmgSerial::DmgSerial(IInterruptController &interrupts) : interrupts(interrupts) {}
+DmgSerial::DmgSerial(IInterruptController &interrupts, bool cgbMode)
+    : interrupts(interrupts), cgbMode(cgbMode) {}
 
 void DmgSerial::initializeDmgPostBootState() {
     // The synthesized DIV handoff value is $ABC8; the serial divider's
@@ -33,7 +34,7 @@ uint8_t DmgSerial::read(uint16_t address) {
     if (address == SB_ADDRESS)
         return data;
     if (address == SC_ADDRESS)
-        return control | UNUSED_SC_BITS;
+        return control | (cgbMode ? 0x7C : UNUSED_SC_BITS);
     return 0xFF;
 }
 
@@ -41,19 +42,21 @@ void DmgSerial::write(uint16_t address, uint8_t value) {
     if (address == SB_ADDRESS) {
         data = value;
     } else if (address == SC_ADDRESS) {
-        control = value & (TRANSFER_ENABLE | INTERNAL_CLOCK);
+        control = value & (TRANSFER_ENABLE | INTERNAL_CLOCK | (cgbMode ? 2 : 0));
         bitsTransferred = 0;
         // SC requests a transfer, but does not restart the clock divider.
     }
 }
 
 void DmgSerial::advanceTCycles(uint64_t tCycles) {
+    const unsigned period = cgbMode && (control & 2) ? 16 : BIT_PERIOD_T_CYCLES;
+    clockPhaseTCycles %= period;
     while (tCycles > 0) {
         const auto elapsed = std::min<uint64_t>(
-            tCycles, BIT_PERIOD_T_CYCLES - clockPhaseTCycles);
+            tCycles, period - clockPhaseTCycles);
         clockPhaseTCycles += static_cast<unsigned>(elapsed);
         tCycles -= elapsed;
-        if (clockPhaseTCycles == BIT_PERIOD_T_CYCLES) {
+        if (clockPhaseTCycles == period) {
             clockPhaseTCycles = 0;
             clockBit();
         }

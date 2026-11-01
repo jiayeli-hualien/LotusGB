@@ -315,6 +315,11 @@ an empty input file.
 
 ## Tobu Tobu Girl gameplay smoke check
 
+For the newer M7 input-response question, use `make test-tobu-input` and the
+[action baseline and reference comparison](input-latency.md#tobu-tobu-girl-action-baseline-2026-11-01).
+That optional check measures short/held directions, flap and directional dash;
+the older smoke profile below remains a startup/execution check.
+
 ```sh
 make test-homebrew HOMEBREW_GAME=tobutobugirl
 ```

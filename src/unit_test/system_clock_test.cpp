@@ -101,9 +101,29 @@ void testSystemClockAdvancesDevicesToCpuBusPhaseBeforeTransaction() {
            "bus transaction timing preserves total elapsed time");
 }
 
+void testDoubleSpeedSeparatesCpuAndBaseClock() {
+    ScriptedCpu cpu; cpu.results={{true,false,4}};
+    SystemClock clock(cpu);
+    ClockedSpy timer,ppu;
+    clock.addClockedComponent(timer,true); clock.addClockedComponent(ppu);
+    clock.setDoubleSpeed(true);
+    cpu.duringStep=[&] { clock.advanceToCpuBusAccess(); };
+    expect(clock.step().tCyclesElapsed==2 && clock.getElapsedTCycles()==2,
+           "double-speed M-cycle consumes two base T-cycles");
+    expect(timer.advances==std::vector<uint64_t>{4} && ppu.advances==std::vector<uint64_t>{2},
+           "CPU timer and base PPU receive different rates at the same bus access");
+    clock.stepIdle();
+    expect(timer.advances==std::vector<uint64_t>({4,4}) && ppu.advances==std::vector<uint64_t>({2,2}),
+           "DMA idle clocks both domains while CPU execution is stalled");
+    clock.stepIdle(false);
+    expect(timer.advances.size()==2 && ppu.advances.size()==3 && clock.getElapsedTCycles()==6,
+           "speed-switch pause freezes CPU devices while base time continues");
+}
+
 }
 
 int main() {
+    testDoubleSpeedSeparatesCpuAndBaseClock();
     testSystemClockDistributesSuccessfulCpuTime();
     testSystemClockAdvancesDevicesToCpuBusPhaseBeforeTransaction();
     std::cout << "System clock tests passed\n";

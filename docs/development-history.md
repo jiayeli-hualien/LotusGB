@@ -17,9 +17,7 @@ and the [homebrew guide](homebrew-check.md) for current game profiles.
 
 - **PPU Mode 2/STAT timing diagnostic (2026-10-23):** The local `make test-mooneye` workflow runs a curated set of external timing ROMs through the DMG post-boot system and checks Mooneye's register-result protocol. At the previous bus phase (after 3 T-cycles), `intr_1_2_timing-GS`, `intr_2_0_timing`, `intr_timing`, and `halt_ime1_timing` passed; `intr_2_mode3_timing`, `intr_2_mode0_timing`, and `intr_2_oam_ok_timing` failed on the first measurement by one count. Changing the Mode 2 threshold to 79 dots made two tests pass but violated the existing 80-dot boundary test; delaying STAT evaluation at visible-line start broke `intr_1_2_timing-GS`. Both were discarded. Moving CPU bus transactions to the end of the M-cycle makes all seven selected Mooneye ROMs pass while preserving the 80-dot Mode 2 test. Blargg CH3 tests 09, 10, and 12 were rerun at this phase on 2026-10-26; all three passed. ROM binaries remain outside the repository; reports and logs are under `build/test-roms/mooneye/`.
 
-- **Local Pokémon Red check (2026-10-23):** a user-provided commercial ROM remained outside the repository. SameBoy comparison exposed an interrupt accepted between a `CB` prefix and its opcode; the CPU fix now executes the prefixed instruction before interrupt entry. The revised libretro input run reached the player's room, and a Right-button hold changed the framebuffer; LotusGB and SameBoy matched on the sampled frames from frame 1,500 onward. The run produced 5,400 video frames without unsupported-opcode diagnostics. A scripted in-game save completed; restoring its 32 KiB SRAM block into a fresh libretro core showed the Continue option, resumed in the saved room, and accepted directional input. This used a temporary runner and kept the commercial ROM outside the repository. RetroArch's actual `.srm` disk save/reload and broader gameplay remain to be verified.
 
-- **Local Pokémon Yellow check (2026-10-23):** a user-provided commercial ROM remained outside the repository. Its header declares a 1 MiB MBC3 + RAM + battery cartridge (`$13`) with 32 KiB RAM. LotusGB reached the title screen, started a new game, reached the player's room, and moved the player in response to Right input. Sampled title and gameplay frames matched SameBoy pixel-for-pixel. This verifies startup and basic control response for another MBC3 game; outdoor progression and battery-save reload still need verification.
 
 - **Local audio comparison (2026-10-23):** the captured PCM contained the town music that sounded noisy during live RetroArch playback in WSL. Playing that same capture directly in Windows produced no audible noise. This points to the WSL/RetroArch playback path rather than the APU sample stream; it has not been compared on a native Linux or Windows RetroArch installation.
 
@@ -209,7 +207,7 @@ and the [homebrew guide](homebrew-check.md) for current game profiles.
 
 - **Steam Deck RetroArch gameplay check (2026-10-26):** the user reports that
   the x86_64 LotusGB core loaded through Steam RetroArch and played F-1 Race
-  and Pokémon Yellow normally. This confirms basic core loading and gameplay
+  and another DMG title normally. This confirms basic core loading and gameplay
   on that Steam Deck. It does not independently establish sound quality, save
   persistence, hardware accuracy, or broad compatibility. Commercial ROMs
   and game-derived files remain private and are not included in the repository.

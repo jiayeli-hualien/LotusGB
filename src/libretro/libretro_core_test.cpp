@@ -1,5 +1,6 @@
 #include "libretro.h"
 #include "callback_exception_boundary.hpp"
+#include "../../tests/include/lcd_cadence_rom.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,9 +14,11 @@
 #include <filesystem>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include "../../tests/include/cgb_test_rom.hpp"
 
 #ifndef LOTUSGB_LIBRETRO_TEST_ASSET_DIR
 #error LOTUSGB_LIBRETRO_TEST_ASSET_DIR must name the test ROM assets directory
@@ -31,6 +34,9 @@ unsigned videoRefreshCount = 0;
 unsigned observedPitch = 0;
 bool frontendAcceptsXrgb8888 = true;
 bool upPressed = false;
+bool latchUpOnPoll = false;
+bool pendingUpPressed = false;
+unsigned buttonsPressed = 0;
 unsigned audioBatchCallCount = 0;
 size_t audioFrameCount = 0;
 size_t nonzeroAudioSampleCount = 0;
@@ -90,10 +96,15 @@ bool environmentCallback(unsigned command, void *data) {
 
 void inputPollCallback() {
     ++inputPollCount;
+    if (latchUpOnPoll)
+        upPressed = pendingUpPressed;
 }
 
 int16_t inputStateCallback(unsigned port, unsigned device, unsigned index,
                            unsigned id) {
+    if (port == 0 && device == RETRO_DEVICE_JOYPAD && index == 0 && id < 16 &&
+        (buttonsPressed & (1u << id)))
+        return 1;
     if (port == 0 && device == RETRO_DEVICE_JOYPAD && index == 0 &&
         id == RETRO_DEVICE_ID_JOYPAD_UP && upPressed)
         return 1;
@@ -242,6 +253,86 @@ void testLibretroInputChangesPongGameplayFrame() {
            "holding Up moves the player's paddle from the middle to the top");
 }
 
+void testLibretroPongInputResponse() {
+    // Compare identical saved game states, restricting observations to the
+    // player's paddle so ball/score animation cannot count as input response.
+    const auto rom = readBinary(std::string(LOTUSGB_LIBRETRO_TEST_ASSET_DIR) +
+                                "/gb-pong/gb-pong.gb");
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    constexpr unsigned WINDOW = 6;
+    constexpr unsigned SAMPLES = 24;
+    using Paddle = std::array<uint32_t, 8 * HEIGHT>;
+    const auto paddle = [] {
+        Paddle result{};
+        for (unsigned y = 0; y < HEIGHT; ++y)
+            std::copy_n(observedFrame.begin() + y * WIDTH + 4, 8,
+                        result.begin() + y * 8);
+        return result;
+    };
+    for (bool xrgb : {true, false}) {
+        retro_unload_game();
+        retro_deinit();
+        frontendAcceptsXrgb8888 = xrgb;
+        retro_init();
+        expect(retro_load_game(&game), "Pong loads for input response measurement");
+        logLevels.clear();
+        latchUpOnPoll = true;
+        pendingUpPressed = false;
+        for (unsigned i = 0; i < 60; ++i) retro_run();
+        std::array<unsigned, WINDOW + 1> pressHistogram{};
+        std::array<unsigned, WINDOW + 1> releaseHistogram{};
+        for (unsigned sample = 0; sample < SAMPLES; ++sample) {
+            std::vector<uint8_t> saved(retro_serialize_size());
+            expect(retro_serialize(saved.data(), saved.size()), "save neutral Pong checkpoint");
+            std::array<std::array<Paddle, WINDOW>, 3> branches{};
+            for (unsigned branch = 0; branch < branches.size(); ++branch) {
+                expect(retro_unserialize(saved.data(), saved.size()), "restore input comparison checkpoint");
+                for (unsigned frame = 0; frame < WINDOW; ++frame) {
+                    // Neutral, held Up, and a one-poll Up pulse followed by release.
+                    pendingUpPressed = branch == 1 || (branch == 2 && frame == 0);
+                    const unsigned polls = inputPollCount;
+                    const unsigned videos = videoRefreshCount;
+                    retro_run();
+                    expect(inputPollCount == polls + 1 && videoRefreshCount == videos + 1,
+                           "input measurement receives one fresh poll and video per run");
+                    branches[branch][frame] = paddle();
+                }
+            }
+            unsigned press = 0, pulse = 0, release = 0;
+            for (unsigned frame = 0; frame < WINDOW; ++frame) {
+                if (!press && branches[1][frame] != branches[0][frame]) press = frame + 1;
+                if (!pulse && branches[2][frame] != branches[0][frame]) pulse = frame + 1;
+                if (frame > 0 && !release && branches[2][frame] != branches[1][frame])
+                    release = frame; // Calls counted from the release poll.
+            }
+            expect(press > 0 && press <= 3, "Pong paddle responds within three calls including press");
+            expect(pulse == press, "one-poll Up pulse is visible at the same time as held Up");
+            expect(release > 0 && release <= 3, "Pong responds within three calls including release");
+            ++pressHistogram[press];
+            ++releaseHistogram[release];
+            expect(retro_unserialize(saved.data(), saved.size()), "return to neutral sample timeline");
+            pendingUpPressed = false;
+            retro_run();
+        }
+        std::cout << "Pong input response (" << (xrgb ? "XRGB8888" : "0RGB1555")
+                  << "): " << SAMPLES << " checkpoints, press/release call histograms:";
+        for (unsigned call = 1; call <= WINDOW; ++call)
+            std::cout << ' ' << call << '=' << pressHistogram[call] << '/'
+                      << releaseHistogram[call];
+        std::cout << "; one-poll pulses preserved\n";
+        expect(std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_ERROR) == logLevels.end(),
+               "Pong input measurement executes without core errors");
+        latchUpOnPoll = false;
+        pendingUpPressed = upPressed = false;
+        retro_unload_game();
+    }
+    retro_deinit();
+    frontendAcceptsXrgb8888 = true;
+    retro_init();
+}
+
 void testLibretroPublishesPulseChannelAudio() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -272,12 +363,79 @@ void testLibretroPublishesPulseChannelAudio() {
            "core submits one audio batch per video frame");
     expect(audioFrameCount > 0,
            "core submits audio frames to the frontend");
-    expect(audioBatchSizes.size() == 2 && audioBatchSizes[0] == 803 &&
-               audioBatchSizes[1] == 804 && audioFrameCount == 1607,
+#ifndef LOTUSGB_TEST_FIXED_FRAME_STEP
+    constexpr size_t FIRST_AUDIO_BATCH = 751, FIRST_TWO_TOTAL = 1555;
+#else
+    constexpr size_t FIRST_AUDIO_BATCH = 803, FIRST_TWO_TOTAL = 1607;
+#endif
+    expect(audioBatchSizes.size() == 2 && audioBatchSizes[0] == FIRST_AUDIO_BATCH &&
+               audioBatchSizes[1] == 804 && audioFrameCount == FIRST_TWO_TOTAL,
            "audio sample batches follow the 48 kHz clock across video frames");
     expect(nonzeroAudioSampleCount > 0,
            "channel 1 ROM output reaches the frontend as non-silent PCM");
+    constexpr uint64_t CALLS = 240, FRAME_T = 70224;
+    for (unsigned call = 2; call < CALLS; ++call) {
+        retro_run();
+        expect(audioBatchSizes.back() == 803 || audioBatchSizes.back() == 804,
+               "steady LCD-on callbacks keep the nominal 803/804 PCM cadence");
+    }
+#ifndef LOTUSGB_TEST_FIXED_FRAME_STEP
+    constexpr uint64_t TOTAL_T = 65664 + (CALLS - 1) * FRAME_T;
+#else
+    constexpr uint64_t TOTAL_T = CALLS * FRAME_T;
+#endif
+    expect(audioBatchCallCount == CALLS && audioFrameCount == TOTAL_T * 48000 / 4194304,
+           "longer audio run has no cumulative sample drift for its emulated time");
+    std::cout << "Steady audio: " << CALLS << " callbacks, " << audioFrameCount
+              << " stereo frames, exact 48 kHz clock total\n";
     retro_unload_game();
+}
+
+void testLibretroLcdRestartKeepsProgressAndCoherentCallbacks() {
+    const auto rom = TestRom::lcdRestartCadence();
+    retro_game_info game{}; game.data = rom.data(); game.size = rom.size();
+    for (bool xrgb : {true, false}) {
+        retro_deinit(); frontendAcceptsXrgb8888 = xrgb; retro_init();
+        expect(retro_load_game(&game), "LCD restart cadence ROM loads");
+        logLevels.clear(); audioFrameCount = 0;
+        unsigned black = 0, white = 0;
+        for (unsigned call = 0; call < 60; ++call) {
+            const auto polls = inputPollCount, videos = videoRefreshCount;
+            retro_run();
+            expect(inputPollCount == polls + 1 && videoRefreshCount == videos + 1,
+                   "LCD restart keeps one input poll and video callback per run");
+            const auto color = observedFrame.front();
+            expect((color == 0 || color == 0xFFFFFF) &&
+                       std::all_of(observedFrame.begin(), observedFrame.end(),
+                                   [color](uint32_t pixel) { return pixel == color; }),
+                   "LCD restart never submits a mixed unfinished frame");
+            black += color == 0; white += color == 0xFFFFFF;
+        }
+        const auto *ram = static_cast<const uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+        expect(ram && ram[0] > 10 && white > 0,
+               "LCD restart keeps CPU progress and observes LCD-off output");
+        expect(std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_ERROR) == logLevels.end(),
+               "LCD restart does not fault emulation");
+#ifndef LOTUSGB_TEST_FIXED_FRAME_STEP
+        expect(black > 0, "VBlank stepping observes the completed black frames before LCD-off clears them");
+        expect(audioFrameCount < 60 * 70224ULL * 48000 / 4194304,
+               "VBlank restart exposes shorter time per callback instead of hiding it with padded PCM");
+        expect(logLevels.empty(),
+               "bounded presentation repeats during LCD restart are expected and produce no fault diagnostics");
+#else
+        // A fixed callback need not intersect the short interval between
+        // completion and LCD-off clearing the snapshot. Record the observed
+        // colors instead of asserting it sees each intermediate LCD state.
+        expect(audioFrameCount == 60 * 70224ULL * 48000 / 4194304,
+               "fixed stepping retains nominal audio/time cadence through LCD restart");
+#endif
+        std::cout << "LCD restart (" << (xrgb ? "XRGB8888" : "0RGB1555")
+                  << "): 60 callbacks, " << audioFrameCount << " audio frames, "
+                  << static_cast<unsigned>(ram[0]) << " restart iterations, black/white="
+                  << black << '/' << white << '\n';
+        retro_unload_game();
+    }
+    retro_deinit(); frontendAcceptsXrgb8888 = true; retro_init();
 }
 
 void testLibretroLoadsMaximumMbc5RomSize() {
@@ -736,8 +894,8 @@ void testLibretroReportsApiAndVideoTiming() {
     retro_system_info info{};
     retro_get_system_info(&info);
     expect(info.valid_extensions != nullptr &&
-               std::string(info.valid_extensions) == "gb",
-           "core advertises Game Boy ROM content");
+               std::string(info.valid_extensions) == "gb|gbc",
+           "core advertises both Game Boy and Game Boy Color ROM content");
     expect(!info.need_fullpath,
            "core accepts frontend-provided in-memory ROM data");
 
@@ -840,6 +998,94 @@ std::vector<uint8_t> makeFrameCoherenceRom(uint16_t startupDelay) {
     };
     std::copy(program.begin(), program.end(), rom.begin() + 0x150);
     return rom;
+}
+
+std::vector<uint8_t> makeInputPaletteRom(uint16_t delay, bool vblankOnly) {
+    // Original ROM, no external assets. JOYP Up selects white, release black.
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x100] = 0xC3;
+    rom[0x101] = 0x50;
+    rom[0x102] = 0x01;
+    std::vector<uint8_t> program = {
+        0xF3,                         // DI
+        0xF0, 0x44, 0xFE, 0x90, 0x38, 0xFA, // wait for VBlank
+        0xAF, 0xE0, 0x40,             // disable LCD
+        0x3E, 0xFF, 0xE0, 0x47,       // neutral palette: all black
+        0x3E, 0x20, 0xE0, 0x00,       // JOYP: select directions
+        0x01, static_cast<uint8_t>(delay), static_cast<uint8_t>(delay >> 8),
+        0x0B, 0x78, 0xB1, 0x20, 0xFB, // delay LCD startup
+        0x3E, 0x91, 0xE0, 0x40,       // enable LCD + BG
+    };
+    if (vblankOnly) {
+        const std::vector<uint8_t> wait = {
+            0xF0, 0x44, 0xFE, 0x90, 0x30, 0xFA, // wait for visible frame
+            0xF0, 0x44, 0xFE, 0x90, 0x38, 0xFA, // wait for VBlank
+        };
+        program.insert(program.end(), wait.begin(), wait.end());
+    }
+    const std::vector<uint8_t> sample = {
+        0xF0, 0x00, 0xE6, 0x04,       // read Up (active low)
+        0x28, 0x04,                   // JR Z, pressed
+        0x3E, 0xFF, 0x18, 0x01,       // neutral: black; JR write
+        0xAF,                         // pressed: white
+        0xE0, 0x47,                   // write BGP
+        0x18, static_cast<uint8_t>(vblankOnly ? -27 : -15),
+    };
+    program.insert(program.end(), sample.begin(), sample.end());
+    std::copy(program.begin(), program.end(), rom.begin() + 0x150);
+    return rom;
+}
+
+void testLibretroInputPulseAcrossLcdPhases() {
+    for (bool xrgb : {true, false}) {
+        retro_unload_game();
+        retro_deinit();
+        frontendAcceptsXrgb8888 = xrgb;
+        retro_init();
+        latchUpOnPoll = true;
+        for (bool vblankOnly : {false, true}) {
+            std::array<unsigned, 3> pressHistogram{}, releaseHistogram{};
+            for (uint16_t delay : {1, 127, 512, 1024, 2047}) {
+                const auto rom = makeInputPaletteRom(delay, vblankOnly);
+                retro_game_info game{};
+                game.data = rom.data();
+                game.size = rom.size();
+                expect(retro_load_game(&game), "input palette probe loads");
+                logLevels.clear();
+                pendingUpPressed = false;
+                for (unsigned i = 0; i < 10; ++i) retro_run();
+                expect(std::all_of(observedFrame.begin(), observedFrame.end(),
+                                  [](uint32_t p) { return p == 0; }),
+                       "neutral input probe settles to black");
+                unsigned press = 0, release = 0;
+                // A single poll of Up, immediately followed by neutral polls.
+                for (unsigned call = 1; call <= 4; ++call) {
+                    pendingUpPressed = call == 1;
+                    retro_run();
+                    const bool white = std::any_of(observedFrame.begin(), observedFrame.end(),
+                                                  [](uint32_t p) { return p != 0; });
+                    if (!press && white) press = call;
+                    if (press && !release && !white) release = call - 1;
+                }
+                expect(press > 0 && press <= 2, "one-poll input reaches video within two calls including press");
+                expect(release > 0 && release <= 2, "input release reaches video within two calls including release");
+                ++pressHistogram[press];
+                ++releaseHistogram[release];
+                expect(std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_ERROR) == logLevels.end(),
+                       "input probe executes without core errors");
+                retro_unload_game();
+            }
+            std::cout << "Input palette response (" << (xrgb ? "XRGB8888" : "0RGB1555")
+                      << ", " << (vblankOnly ? "VBlank" : "continuous")
+                      << "): press calls 1/2=" << pressHistogram[1] << '/' << pressHistogram[2]
+                      << ", release calls 1/2=" << releaseHistogram[1] << '/' << releaseHistogram[2] << '\n';
+        }
+        latchUpOnPoll = false;
+        pendingUpPressed = upPressed = false;
+    }
+    retro_deinit();
+    frontendAcceptsXrgb8888 = true;
+    retro_init();
 }
 
 void testLibretroPublishesCoherentFramesAcrossLcdStartupPhases() {
@@ -960,7 +1206,326 @@ void testLibretroSaveStateRoundTrip() {
 }
 }
 
-int main() {
+void testLibretroRepeatedRewindReplay() {
+    const auto rom = readBinary(std::string(LOTUSGB_LIBRETRO_TEST_ASSET_DIR) + "/gb-pong/gb-pong.gb");
+    retro_game_info game{}; game.data = rom.data(); game.size = rom.size();
+    for (bool xrgb : {true, false}) {
+        retro_deinit(); frontendAcceptsXrgb8888 = xrgb; retro_init();
+        expect(retro_load_game(&game), "Pong loads for rewind protocol regression");
+        upPressed = false;
+        for (unsigned i = 0; i < 60; ++i) retro_run();
+        const auto save = [] {
+            std::vector<uint8_t> state(retro_serialize_size());
+            expect(!state.empty() && retro_serialize(state.data(), state.size()), "rewind checkpoint saves");
+            return state;
+        };
+        const auto input = [](unsigned frame) {
+            return (frame >= 5 && frame < 9) || (frame >= 15 && frame < 19) ||
+                   (frame >= 22 && frame < 25);
+        };
+        std::vector<std::vector<uint8_t>> history;
+        std::vector<std::array<uint32_t, WIDTH * HEIGHT>> frames;
+        std::vector<std::vector<int16_t>> pcm;
+        for (unsigned frame = 0; frame < 30; ++frame) {
+            history.push_back(save());
+            upPressed = input(frame); retro_run();
+            frames.push_back(observedFrame); pcm.push_back(latestAudio);
+        }
+        const auto future = save();
+        for (unsigned target : {20, 10, 0, 25}) {
+            expect(retro_unserialize(history[target].data(), history[target].size()),
+                   "rewind restores a non-monotonic history checkpoint");
+            for (unsigned frame = target; frame < 30; ++frame) {
+                upPressed = input(frame); retro_run();
+                expect(observedFrame == frames[frame] && latestAudio == pcm[frame],
+                       "rewind/replay reproduces every video frame and PCM batch");
+            }
+            expect(save() == future, "repeated rewind/replay reaches the identical final state");
+        }
+        // Resume with new input instead of replaying recorded input.
+        std::vector<std::array<uint32_t, WIDTH * HEIGHT>> neutral;
+        upPressed = false;
+        for (unsigned frame = 0; frame < 4; ++frame) { retro_run(); neutral.push_back(observedFrame); }
+        expect(retro_unserialize(future.data(), future.size()), "restore before new post-rewind input");
+        upPressed = true;
+        bool paddleMoved = false;
+        for (unsigned frame = 0; frame < 4; ++frame) {
+            retro_run();
+            for (unsigned y = 0; y < HEIGHT; ++y)
+                for (unsigned x = 4; x < 12; ++x)
+                    paddleMoved |= observedFrame[y * WIDTH + x] != neutral[frame][y * WIDTH + x];
+        }
+        expect(paddleMoved, "new directional input controls the paddle after repeated rewind");
+        retro_unload_game();
+    }
+    retro_deinit(); frontendAcceptsXrgb8888 = true; upPressed = false; retro_init();
+    std::cout << "Rewind protocol: 4 history restores/replays, exact video/PCM/state, "
+                 "and resumed input passed in both pixel formats\n";
+}
+
+void testLibretroCgbColorInputStateAndReset() {
+    const auto acid = readBinary(std::string(LOTUSGB_LIBRETRO_TEST_ASSET_DIR)+"/cgb-acid2/cgb-acid2.gbc");
+    const auto expected = readBinary(std::string(LOTUSGB_LIBRETRO_TEST_ASSET_DIR)+"/cgb-acid2/reference-rgb555.bin");
+    for (bool xrgb : {true,false}) {
+        frontendAcceptsXrgb8888=xrgb;
+        retro_deinit(); retro_init();
+        buttonsPressed=0; upPressed=false;
+        retro_game_info game{}; game.path="test.gbc"; game.data=acid.data(); game.size=acid.size();
+        expect(retro_load_game(&game),"core loads CGB acid2 through .gbc content path");
+        for(unsigned i=0;i<20;++i) retro_run();
+        expect(expected.size()==observedFrame.size()*2,"CGB reference is a full color frame");
+        for(size_t i=0;i<observedFrame.size();++i) {
+            const unsigned c=expected[i*2]|(expected[i*2+1]<<8);
+            const auto expand=[](unsigned v) { return (v<<3)|(v>>2); };
+            const unsigned rgb=(expand(c&31)<<16)|(expand((c>>5)&31)<<8)|expand((c>>10)&31);
+            expect(observedFrame[i]==rgb,"CGB acid2 pixels match in both negotiated output formats");
+        }
+        retro_unload_game();
+        auto rom=LOTUSGB::Test::makeCgbExerciseRom();
+        game.path="dual.gb"; game.data=rom.data(); game.size=rom.size();
+        expect(retro_load_game(&game),"CGB header selects color hardware even with .gb extension");
+        for(unsigned i=0;i<6;++i) retro_run();
+        auto *ram=static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+        expect(ram && ram[0]==0x11 && ram[1]==0x33 && ram[2]==0xFE,"libretro executes CGB startup, DMA and speed switch");
+        expect(observedFrame[80*WIDTH+80]==0xFF0000,"CGB neutral frame is red");
+        auto save=[] {
+            std::vector<uint8_t> state(retro_serialize_size());
+            expect(!state.empty() && retro_serialize(state.data(),state.size()),"CGB libretro checkpoint serializes");
+            return state;
+        };
+        const auto saved=save();
+        std::vector<std::array<uint32_t,WIDTH*HEIGHT>> video;
+        std::vector<std::vector<int16_t>> audio;
+        for(unsigned i=0;i<12;++i) {
+            buttonsPressed=i>=2 ? 1u<<RETRO_DEVICE_ID_JOYPAD_RIGHT : 0;
+            retro_run(); video.push_back(observedFrame); audio.push_back(latestAudio);
+        }
+        expect(observedFrame[80*WIDTH+80]==0x0000FF,"RetroArch joypad input changes CGB output to blue");
+        const auto future=save();
+        for(unsigned replay=0;replay<3;++replay) {
+            expect(retro_unserialize(saved.data(),saved.size()),"CGB rewind restores earlier checkpoint");
+            expect(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM)==ram,"CGB restore keeps SRAM address stable");
+            for(unsigned i=0;i<12;++i) {
+                buttonsPressed=i>=2 ? 1u<<RETRO_DEVICE_ID_JOYPAD_RIGHT : 0;
+                retro_run();
+                expect(observedFrame==video[i] && latestAudio==audio[i],"CGB rewind replays exact video and PCM");
+            }
+            expect(save()==future,"CGB repeated rewind reaches identical complete state");
+        }
+        ram[0x123]=0xA5; buttonsPressed=0;
+        retro_reset();
+        expect(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM)==ram && ram[0x123]==0xA5,"CGB reset preserves SRAM contents and pointers");
+        for(unsigned i=0;i<6;++i) retro_run();
+        expect(ram[0]==0x11 && observedFrame[80*WIDTH+80]==0xFF0000,"CGB reset retains model, speed and color startup");
+        retro_unload_game();
+    }
+    frontendAcceptsXrgb8888=true;
+    retro_deinit(); retro_init();
+    std::cout<<"CGB libretro: acid2 color, .gb/.gbc header detection, input, reset and exact state/rewind pass in both formats\n";
+}
+
+void testLibretroMbc30BatteryAndState() {
+    for(size_t bytes : {size_t(0x200000),size_t(0x400000)}) {
+        auto rom=LOTUSGB::Test::makeCgbMbc30ExerciseRom();rom.resize(bytes);
+        rom[0x148]=bytes==0x200000?6:7;
+        retro_game_info game{};game.path="original-mbc30.gbc";game.data=rom.data();game.size=rom.size();
+        buttonsPressed=0;
+        expect(retro_load_game(&game),"libretro accepts 2/4-MiB MBC30 with 64-KiB SRAM");
+        for(unsigned frame=0;frame<6;++frame)retro_run();
+        auto *ram=static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+        auto *rtc=static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_RTC));
+        expect(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM)==65536 && retro_get_memory_size(RETRO_MEMORY_RTC)==24 && ram && rtc,
+               "frontend receives full MBC30 SRAM and separate RTC storage");
+        expect(ram[0]==0x11 && ram[4]==(bytes==0x400000?0x80:0) && ram[7*0x2000]==0x77,
+               "CPU accesses MBC30 ROM bank $80 and SRAM bank 7 without aliasing classic MBC3");
+        ram[6*0x2000+123]=0x6C;
+        const std::vector<uint8_t> battery(ram,ram+65536),clock(rtc,rtc+24);
+        std::vector<uint8_t> saved(retro_serialize_size());
+        expect(retro_serialize(saved.data(),saved.size()),"MBC30 bank $80 snapshot serializes");
+        buttonsPressed=1u<<RETRO_DEVICE_ID_JOYPAD_RIGHT;
+        for(unsigned frame=0;frame<4;++frame)retro_run();
+        const auto frame=observedFrame;const auto pcm=latestAudio;
+        std::vector<uint8_t> future(saved.size());expect(retro_serialize(future.data(),future.size()),"MBC30 future state saves");
+        expect(retro_unserialize(saved.data(),saved.size()),"MBC30 snapshot restores high ROM bank");
+        expect(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM)==ram && retro_get_memory_data(RETRO_MEMORY_RTC)==rtc,
+               "MBC30 restore preserves SRAM and RTC pointers");
+        for(unsigned n=0;n<4;++n)retro_run();
+        std::vector<uint8_t> replay(saved.size());expect(retro_serialize(replay.data(),replay.size()),"MBC30 replay state saves");
+        expect(frame==observedFrame && pcm==latestAudio && replay==future,"MBC30 replay has exact color, audio and hardware state");
+        retro_unload_game();
+        expect(retro_load_game(&game),"MBC30 reloads for frontend battery import");
+        ram=static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));rtc=static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_RTC));
+        std::copy(battery.begin(),battery.end(),ram);std::copy(clock.begin(),clock.end(),rtc);
+        buttonsPressed=0;for(unsigned n=0;n<6;++n)retro_run();
+        expect(ram[6*0x2000+123]==0x6C,"MBC30 upper-bank battery data survives a fresh content load");
+        expect(retro_unserialize(saved.data(),saved.size()),"MBC30 snapshot loads after fresh content load");
+        retro_unload_game();
+    }
+    buttonsPressed=0;
+    std::cout<<"MBC30 libretro ROM/RAM/RTC, battery reload and state replay passed\n";
+}
+
+void measureTobuInput(const std::string &romPath, const std::filesystem::path &output, bool deluxe = false) {
+    const unsigned firstCheckpoint = deluxe ? 1780 : 1840;
+    const auto rom = readBinary(romPath);
+    expect(rom.size() == 0x40000, "Tobu measurement expects the pinned 256 KiB ROM");
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game), "Tobu Tobu Girl loads for input measurement");
+    logLevels.clear();
+    const auto button = [](unsigned id) { return 1u << id; };
+    for (unsigned frame = 0; frame < firstCheckpoint; ++frame) {
+        buttonsPressed = 0;
+        if (deluxe) {
+            if ((frame >= 900 && frame < 904) || (frame >= 1200 && frame < 1204) || (frame >= 1500 && frame < 1504))
+                buttonsPressed = button(RETRO_DEVICE_ID_JOYPAD_START);
+        } else {
+            if (frame >= 180 && frame < 1445 && frame % 180 < 5)
+                buttonsPressed = button(RETRO_DEVICE_ID_JOYPAD_START);
+            if ((frame >= 1620 && frame < 1625) || (frame >= 1800 && frame < 1805))
+                buttonsPressed = button(RETRO_DEVICE_ID_JOYPAD_A);
+        }
+        retro_run();
+    }
+    std::filesystem::create_directories(output);
+    const auto writeFrame = [&](const std::string &name,
+                                const std::array<uint32_t, WIDTH * HEIGHT> &frame) {
+        std::ofstream file(output / (name + ".ppm"), std::ios::binary);
+        file << "P6\n160 144\n255\n";
+        for (auto pixel : frame) {
+            const char rgb[] = {static_cast<char>(pixel >> 16),
+                                static_cast<char>(pixel >> 8), static_cast<char>(pixel)};
+            file.write(rgb, 3);
+        }
+        expect(static_cast<bool>(file), "Tobu evidence frame writes successfully");
+    };
+    const auto differs = [](const auto &a, const auto &b) {
+        // Central playfield around the character; exclude the right-hand HUD.
+        for (unsigned y = 40; y < 136; ++y)
+            for (unsigned x = 40; x < 120; ++x)
+                if (a[y * WIDTH + x] != b[y * WIDTH + x]) return true;
+        return false;
+    };
+    struct Case { const char *name; unsigned mask; };
+    const std::array<Case, 6> cases{{
+        {"left", button(RETRO_DEVICE_ID_JOYPAD_LEFT)},
+        {"right", button(RETRO_DEVICE_ID_JOYPAD_RIGHT)},
+        {"a-no-direction", button(RETRO_DEVICE_ID_JOYPAD_A)},
+        {"flap-b", button(RETRO_DEVICE_ID_JOYPAD_B)},
+        {"right-dash", button(RETRO_DEVICE_ID_JOYPAD_RIGHT) | button(RETRO_DEVICE_ID_JOYPAD_A)},
+        {"right-flap", button(RETRO_DEVICE_ID_JOYPAD_RIGHT) | button(RETRO_DEVICE_ID_JOYPAD_B)},
+    }};
+    constexpr unsigned WINDOW = 8, SAMPLES = 12;
+    using Sequence = std::array<std::array<uint32_t, WIDTH * HEIGHT>, WINDOW>;
+    // Heap storage avoids multi-megabyte test-stack allocations.
+    auto neutral = std::make_unique<Sequence>();
+    auto pulse = std::make_unique<Sequence>();
+    auto held = std::make_unique<Sequence>();
+    auto rightPulse = std::make_unique<Sequence>();
+    auto leftPulse = std::make_unique<Sequence>();
+    std::ofstream report(output / "measurements.json");
+    report << "{\"first_checkpoint\":" << firstCheckpoint << ",\"samples\":12,\"window\":8,"
+              "\"roi\":[40,40,120,136],\"step_mode\":\""
+#ifndef LOTUSGB_TEST_FIXED_FRAME_STEP
+           << "vblank-presentation"
+#else
+           << "fixed-tcycles"
+#endif
+           << "\",\"results\":[\n";
+    bool first = true;
+    for (unsigned sample = 0; sample < SAMPLES; ++sample) {
+        std::vector<uint8_t> saved(retro_serialize_size());
+        expect(!saved.empty() && retro_serialize(saved.data(), saved.size()), "save Tobu checkpoint");
+        if (sample == 0) {
+            writeFrame("before", observedFrame);
+            if (deluxe) {
+                std::ofstream stateFile(output / "gameplay.state",std::ios::binary);
+                stateFile.write(reinterpret_cast<const char *>(saved.data()),saved.size());
+                expect(static_cast<bool>(stateFile),"Deluxe gameplay state writes for a fresh frontend session");
+            }
+        }
+        std::vector<std::vector<int16_t>> branchPcm;
+        std::vector<uint8_t> branchState(saved.size());
+        const auto runBranch = [&](unsigned mask, bool onePoll, Sequence &frames) {
+            branchPcm.clear();
+            expect(retro_unserialize(saved.data(), saved.size()), "restore Tobu comparison checkpoint");
+            for (unsigned frame = 0; frame < WINDOW; ++frame) {
+                buttonsPressed = !onePoll || frame == 0 ? mask : 0;
+                const auto polls = inputPollCount, videos = videoRefreshCount;
+                retro_run();
+                expect(inputPollCount == polls + 1 && videoRefreshCount == videos + 1,
+                       "Tobu comparison gets one input poll and video callback per run");
+                frames[frame] = observedFrame;
+                branchPcm.push_back(latestAudio);
+            }
+            expect(retro_serialize(branchState.data(),branchState.size()),"Tobu branch end state saves");
+        };
+        runBranch(0, false, *neutral);
+        const auto neutralPcm=branchPcm;
+        const auto neutralState=branchState;
+        // Repeated neutral replay must be identical before attributing differences to input.
+        runBranch(0, false, *pulse);
+        expect(*neutral == *pulse && neutralPcm==branchPcm && neutralState==branchState,
+               "Tobu neutral replay reproduces exact frames, PCM and full state");
+        for (const auto &item : cases) {
+            runBranch(item.mask, true, *pulse);
+            runBranch(item.mask, false, *held);
+            if (item.mask == button(RETRO_DEVICE_ID_JOYPAD_LEFT)) *leftPulse = *pulse;
+            if (item.mask == button(RETRO_DEVICE_ID_JOYPAD_RIGHT)) {
+                *rightPulse = *pulse;
+                expect(*leftPulse != *rightPulse, "Tobu Left and Right produce distinct responses");
+            }
+            unsigned press = 0, tap = 0, release = 0;
+            unsigned compoundEffect = 0;
+            for (unsigned frame = 0; frame < WINDOW; ++frame) {
+                if (!press && differs((*held)[frame], (*neutral)[frame])) press = frame + 1;
+                if (!tap && differs((*pulse)[frame], (*neutral)[frame])) tap = frame + 1;
+                if (frame > 0 && !release && differs((*pulse)[frame], (*held)[frame])) release = frame;
+                if ((item.mask & button(RETRO_DEVICE_ID_JOYPAD_RIGHT)) &&
+                    item.mask != button(RETRO_DEVICE_ID_JOYPAD_RIGHT) &&
+                    !compoundEffect && differs((*pulse)[frame], (*rightPulse)[frame]))
+                    compoundEffect = frame + 1;
+                if (sample == 0) {
+                    writeFrame(std::string(item.name) + "-pulse-" + std::to_string(frame + 1), (*pulse)[frame]);
+                    writeFrame(std::string(item.name) + "-held-" + std::to_string(frame + 1), (*held)[frame]);
+                }
+            }
+            const bool directionalOrFlap = item.mask != button(RETRO_DEVICE_ID_JOYPAD_A);
+            if (directionalOrFlap && (!press || !tap))
+                std::cerr << "Tobu checkpoint=" << firstCheckpoint + sample << " action=" << item.name
+                          << " held=" << press << " pulse=" << tap << '\n';
+            // A without a direction is diagnostic: do not equate absence of a
+            // directionless dash with lost input. Direction+A is tested below.
+            expect(!directionalOrFlap || (press > 0 && tap > 0),
+                   "Tobu movement, flap and directional dash visibly respond to held and one-poll input");
+            if ((item.mask & button(RETRO_DEVICE_ID_JOYPAD_RIGHT)) &&
+                item.mask != button(RETRO_DEVICE_ID_JOYPAD_RIGHT))
+                expect(compoundEffect > 0, "Tobu direction plus A/B differs from direction alone");
+            if (!first) report << ",\n";
+            first = false;
+            report << "{\"checkpoint\":" << firstCheckpoint + sample << ",\"action\":\"" << item.name
+                   << "\",\"held_press_call\":" << press << ",\"pulse_press_call\":" << tap
+                   << ",\"release_difference_call\":" << release
+                   << ",\"compound_effect_call\":" << compoundEffect << '}';
+        }
+        if (sample == 0)
+            for (unsigned frame = 0; frame < WINDOW; ++frame)
+                writeFrame("neutral-" + std::to_string(frame + 1), (*neutral)[frame]);
+        expect(retro_unserialize(saved.data(), saved.size()), "restore neutral Tobu timeline");
+        buttonsPressed = 0;
+        retro_run();
+    }
+    expect(std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_ERROR) == logLevels.end(),
+           "Tobu input measurement reports no core errors");
+    report << "\n]}\n";
+    report.close();
+    expect(static_cast<bool>(report), "Tobu measurement report writes successfully");
+    std::cout << "Tobu input measurement: 12 checkpoints x 6 actions; neutral replay, "
+                 "held input and one-poll response checks passed\n";
+}
+
+int main(int argc, char **argv) {
     retro_set_environment(environmentCallback);
     retro_set_video_refresh(videoRefreshCallback);
     retro_set_audio_sample_batch(audioSampleBatchCallback);
@@ -968,12 +1533,30 @@ int main() {
     retro_set_input_state(inputStateCallback);
     retro_init();
 
+    if (argc != 1) {
+        expect(argc == 4 && (std::string(argv[1]) == "--tobu-input" || std::string(argv[1]) == "--tobudx-check"),
+               "usage: libretro_core_test [--tobu-input|--tobudx-check ROM OUTPUT_DIR]");
+        try {
+            measureTobuInput(argv[2], argv[3], std::string(argv[1]) == "--tobudx-check");
+        } catch (const std::exception &error) {
+            std::cerr << "Tobu input measurement failed: " << error.what() << '\n';
+            retro_unload_game();
+            retro_deinit();
+            return EXIT_FAILURE;
+        }
+        retro_unload_game();
+        retro_deinit();
+        return EXIT_SUCCESS;
+    }
+
     testLibretroReportsApiAndVideoTiming();
     testLibretroLoadsOptionalBootRomFromSystemDirectory();
     testLibretroLoadsAcid2AndPublishesReferenceFrame();
     testLibretroLoadsMaximumMbc5RomSize();
     testLibretroInputChangesPongGameplayFrame();
+    testLibretroPongInputResponse();
     testLibretroPublishesPulseChannelAudio();
+    testLibretroLcdRestartKeepsProgressAndCoherentCallbacks();
     testLibretroExposesMbc1BatteryRam();
     testLibretroExecutesMbc1BankAndRestoresBatteryRam();
     testLibretroExposesMbc2BatteryRam();
@@ -984,7 +1567,11 @@ int main() {
     testLibretroReportsUnsupportedOpcodeAndCanReset();
     testLibretroCallbackExceptionBoundaryFaultsOnce();
     testLibretroPublishesCoherentFramesAcrossLcdStartupPhases();
+    testLibretroInputPulseAcrossLcdPhases();
     testLibretroSaveStateRoundTrip();
+    testLibretroRepeatedRewindReplay();
+    testLibretroCgbColorInputStateAndReset();
+    testLibretroMbc30BatteryAndState();
 
     retro_unload_game();
     retro_deinit();

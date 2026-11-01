@@ -22,6 +22,8 @@ public:
     void advanceTCycles(uint64_t tCycles) override;
     void initializeDmgPostBootState();
     void initializeDmgBootRomState();
+    void initializeCgbPostBootState();
+    void setDoubleSpeed(bool enabled) { doubleSpeed = enabled; }
     // Called on a falling edge of internal divider bit 12 (DIV bit 4 on DMG).
     void setDividerApuClockCallback(std::function<void()> callback);
 
@@ -33,6 +35,7 @@ private:
     void applyDividerApuTransition(bool oldInput);
 
     IInterruptController &interrupts;
+    bool doubleSpeed = false;
     uint16_t systemCounter = 0;
     uint8_t tima = 0;
     uint8_t tma = 0;

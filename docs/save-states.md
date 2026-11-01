@@ -1,10 +1,10 @@
-# DMG save states
+# Game Boy save states
 
-LotusGB implements versioned DMG snapshots through `GameBoySystem::saveState()` /
+LotusGB implements versioned DMG and native CGB snapshots through `GameBoySystem::saveState()` /
 `loadState()` and libretro's serialization callbacks. A snapshot restores the
 machine's execution state, including cartridge RAM. It is separate from the
 game's own battery-save mechanism. Current validation is recorded in the
-[DMG validation matrix](dmg-validation.md).
+[DMG validation matrix](dmg-validation.md) and [CGB guide](cgb-development.md).
 
 ## Using a snapshot in RetroArch
 
@@ -127,6 +127,12 @@ snapshot. A halted RTC remains halted. Lazy, not-yet-loaded RTC persistence
 blocks are preserved as well. Exact replay across different wall times is
 therefore only claimed for non-RTC or halted-RTC scenarios, not a running RTC.
 
+MBC30 uses the existing cartridge-state fields and variant-specific bank
+validation, retaining eight ROM-bank bits and 64-KiB battery SRAM. The variant
+is reconstructed from the same ROM geometry/header, not a serialized host
+pointer or a new game-specific flag. Original CGB tests cover high-bank replay
+and fresh SRAM/RTC imports. These tests use original CGB fixtures and do not establish commercial-game compatibility.
+
 ## Format and compatibility
 
 Version 1 uses a 116-byte header: eight-byte magic `LOTUSST\0`, 32-bit version,
@@ -147,7 +153,21 @@ zero-fills the remainder. Pending PCM is bounded to 96,000 interleaved samples
 (one second); standalone callers must drain audio regularly. Exceeding that
 limit fails explicitly. `retro_run()` already drains PCM every frame.
 
-Future CGB support can use a new model identifier and a revised schema.
+Native CGB uses **version 2 / model 2**, with the same header layout and base
+component sections followed by an ordered CGB extension: WRAM/VRAM banks and
+selectors; KEY1/speed-pause and native I/O state; VRAM DMA; live/completed
+RGB555 buffers; palette RAM/indices; BG fetch attributes/row; OBJ palette and
+OAM-priority metadata. The timer/APU tap and scheduler speed are rebound from
+the validated speed flag. Host callbacks, pointers and model wiring are never
+serialized. DMG continues to write/read version 1/model 1 with its original
+field order. Model mismatches are rejected before applying state.
+
+CGB checks cover in-flight DMA, speed-switch pause, color fetches and exact
+future PCM/state, repeated libretro rewind in both pixel formats, typed bad
+bank selectors with a valid recomputed checksum, and an actual macOS RetroArch
+Deluxe gameplay-state load. See the [CGB evidence](cgb-development.md).
+The synthetic LCD-off CGB boot fixture remains excluded from snapshots.
+
 Changes to field meaning/order require a version change or explicit migration.
 There is no promise of compatibility with arbitrary future core versions.
 [Rewind](rewind.md) passed its bounded macOS checkpoint and the Deck

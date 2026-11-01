@@ -1,5 +1,23 @@
 # Steam Deck acceptance checks
 
+## Current Linux x86-64 core package (2026-11-01)
+
+The current cross-compiled core is available as
+[`LotusGB-Steam-Deck-x86_64.zip`](../build/packages/LotusGB-Steam-Deck-x86_64.zip)
+for local installation, containing only the libretro core, matching `.info`,
+project license, package manifest and instructions. Core SHA-256:
+`9f30e847537148820c333f74a6615afcadb10c016e28ca5daf45b6b74bf813cb`.
+The artifact is ELF64 x86-64 for `.gb` and `.gbc` content; it contains no game
+ROMs or captures. Cross-compilation and file inspection passed. This updated
+candidate has not yet been checked on the Deck; earlier device results apply
+to the specific older hashes recorded below.
+
+On SteamOS Desktop Mode, copy `core/lotusgb_libretro.so` into the configured
+RetroArch core directory and `core/lotusgb_libretro.info` into its info
+directory, refresh core information or restart RetroArch, then load a licensed
+homebrew ROM. RetroArch's configured paths may differ from defaults.
+
+
 ## M6 rewind checkpoint — user-reported pass (2026-10-31)
 
 The user reports that enabling rewind on Deck allows R to rewind Ping Pong,
@@ -75,7 +93,7 @@ this save-state checkpoint. See the [M5 design and macOS result](save-states.md)
 
 **Status: five-minute manual checkpoint passed; tearing report closed for now in M4.**
 The 2026-10-26 report confirms that an x86-64 LotusGB core loaded in Steam
-RetroArch and ran F-1 Race and Pokémon Yellow. It does not identify that older
+RetroArch and ran two commercial Game Boy titles. It does not identify that older
 build's hash or RetroArch version. No direct Steam Deck connection is available
 from this task.
 
@@ -100,18 +118,17 @@ glibc, pthread, and dl runtime libraries. The user confirmed that the loaded
 core's SHA-256 matches this candidate. Headless host runs do not replace the
 device acceptance check.
 
-Rebuild the candidate after extracting the official [Zig 0.17.0 macOS ARM64
-archive](https://ziglang.org/download/0.17.0/zig-aarch64-macos-0.17.0.tar.xz)
+Rebuild the core and package after extracting the official [Zig 0.17.0 macOS
+ARM64 archive](https://ziglang.org/download/0.17.0/zig-aarch64-macos-0.17.0.tar.xz)
 under `build/toolchains/zig-0.17.0`:
 
 ```sh
-ZIG_GLOBAL_CACHE_DIR="$PWD/build/zig-cache/global" \
-ZIG_LOCAL_CACHE_DIR="$PWD/build/zig-cache/local" \
-make -C src/libretro \
-  CXX="$PWD/build/toolchains/zig-0.17.0/zig c++ -target x86_64-linux-gnu" \
-  build_dir="$PWD/build/steam-deck" \
-  "$PWD/build/steam-deck/lotusgb_libretro.so"
+make package-retroarch-steam-deck
 ```
+
+Set `STEAM_DECK_ZIG`, `STEAM_DECK_TARGET`, `STEAM_DECK_PACKAGE_BUILD_DIR` or
+`STEAM_DECK_PACKAGE_DIR` to override the defaults. macOS Universal packaging
+uses `make package-retroarch-macos`.
 
 ## Session procedure
 
@@ -166,7 +183,7 @@ Tearing and scaling on this build: Occasional tearing reported; not seen in the 
 SRAM after game reopen: Pass; full RetroArch relaunch not specified
 Content unload/reload: Pass after reopening game
 
-Issues and reproduction steps: Occasional tearing report associated with Pokémon Yellow opening Pikachu lightning; not reproduced in the latest Deck check; Mac testing also shows no tearing; no cause confirmed
+Issues and reproduction steps: Occasional scene-specific tearing report; not reproduced in the latest Deck check or Mac testing; no cause confirmed
 Overall M3 result: Pass for bounded checkpoint; M4 tearing report closed for now
 ```
 
@@ -187,10 +204,7 @@ checks images delivered to a frontend and detects the earlier mixed-frame
 submission bug in a negative control. Its passing synthetic case does not
 establish the cause of the current game-specific report.
 
-The user identified Pokémon Yellow's opening Pikachu lightning animation on
-2026-10-29. The user later reported no tearing during the Deck check and no
-tearing during Mac testing. No production core or Deck binary changed during
-the investigation. See the [scene investigation](dmg-validation.md#yellow-intro-lightning-investigation-2026-10-29).
+The original scene-specific observation remains in private validation notes. The user later reported no recurrence during the Deck check or Mac testing. No production core or Deck binary changed during the investigation.
 
 If it returns, record the Deck model, SteamOS and RetroArch
 versions, video driver, display refresh/synchronization settings, ROM and exact

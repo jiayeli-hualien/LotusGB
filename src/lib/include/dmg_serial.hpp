@@ -14,7 +14,7 @@ namespace LOTUSGB {
 class DmgSerial final : public IAddressRegion, public IClockedComponent {
     friend class StateCodec;
 public:
-    explicit DmgSerial(IInterruptController &interrupts);
+    explicit DmgSerial(IInterruptController &interrupts, bool cgbMode = false);
     void initializeDmgPostBootState();
     void initializeDmgBootRomState();
     uint8_t read(uint16_t address) override;
@@ -25,6 +25,7 @@ private:
     void clockBit();
 
     IInterruptController &interrupts;
+    bool cgbMode;
     uint8_t data = 0;
     uint8_t control = 0;
     unsigned bitsTransferred = 0;
