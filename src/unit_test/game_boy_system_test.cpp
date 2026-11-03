@@ -7,6 +7,7 @@
 
 #include "game_boy_system.hpp"
 #include "../../tests/include/lcd_cadence_rom.hpp"
+#include "../../tests/include/mbc1_multicart_rom.hpp"
 
 namespace {
 
@@ -415,7 +416,7 @@ void testVblankSteppingUsesFrameEventsAndSurvivesRestore() {
     }
 }
 
-void testVblankSteppingBoundsDisabledStoppedAndFaultedSystems() {
+void testVblankSteppingBoundsDisabledStoppedAndLockedSystems() {
     auto off = GameBoySystem::createForTest(std::vector<uint8_t>(0x8000, 0));
     auto result = off.stepUntilVBlank(256);
     expect(result.success && !result.frameCompleted && result.tCyclesElapsed == 256,
@@ -427,14 +428,12 @@ void testVblankSteppingBoundsDisabledStoppedAndFaultedSystems() {
     result = stopped.stepUntilVBlank();
     expect(result.success && !result.frameCompleted && result.tCyclesElapsed < 70224,
            "STOP returns before a VBlank without an unbounded wait");
-    rom[0] = 0xD3; // Unsupported opcode
-    auto faulted = GameBoySystem::createForTest(rom);
-    bool propagated = false;
-    try { faulted.stepUntilVBlank(); }
-    catch (const std::runtime_error &error) {
-        propagated = std::string(error.what()).find("unsupported opcode 0xD3") != std::string::npos;
-    }
-    expect(propagated, "CPU exceptions during VBlank stepping propagate to the caller");
+    rom[0] = 0xD3; // Invalid opcode hard-locks the CPU, not the PPU clock.
+    auto locked = GameBoySystem::createForTest(rom);
+    result = locked.stepUntilVBlank(256);
+    expect(result.success && !result.frameCompleted && result.tCyclesElapsed == 256 &&
+               locked.getCpuRegisters().getRefPC() == 1,
+           "bounded VBlank stepping keeps system clocks running with a locked CPU");
 
     rom[0] = 0;
     rom[0x100] = 0xF3; // DI
@@ -597,6 +596,57 @@ void testSelectedJoypadLineWakesStopWithoutInterruptAcceptance() {
            "the same selected line transition requests the joypad IF bit");
     expect(registers.getRefPC() >= 0x0100 && system.getElapsedTCycles() > stoppedAt,
            "wake resumes cartridge execution without interrupt-vector service");
+}
+
+void testStopRequiresFreshFallingJoypadEdgeWhenLineWasAlreadyLow() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x10,       // Select action buttons only.
+        0xE0, 0x00,       // LDH [JOYP], A
+        0xAF,             // XOR A
+        0xE0, 0x0F,       // Clear the Joypad IF raised before STOP.
+        0x10, 0x00,       // STOP while A is already held on a selected line.
+        0xF0, 0x0F,       // Read IF after a fresh press wakes the CPU.
+        0x06, 0x42,       // LD B, $42
+        0x18, 0xFE,       // Loop
+    };
+    for (size_t i = 0; i < sizeof(program); ++i)
+        rom[0x100 + i] = program[i];
+
+    GameBoySystem system(std::move(rom));
+    system.setButtonState(JoypadButton::A, true);
+    bool stopped = false;
+    for (unsigned cycle = 0; cycle < 32; ++cycle) {
+        const auto step = system.stepOneCycle();
+        expect(step.success, "held-input STOP setup executes successfully");
+        if (step.tCyclesElapsed == 0) {
+            stopped = true;
+            break;
+        }
+    }
+    expect(stopped, "a selected line already low does not prevent entering STOP");
+
+    const uint64_t stoppedAt = system.getElapsedTCycles();
+    expect(system.stepOneCycle().tCyclesElapsed == 0 &&
+               system.getElapsedTCycles() == stoppedAt,
+           "an already-low selected line does not wake STOP retroactively");
+
+    system.setButtonState(JoypadButton::A, false);
+    expect(system.stepOneCycle().tCyclesElapsed == 0,
+           "releasing the held key raises the selected line without waking STOP");
+    system.setButtonState(JoypadButton::A, true);
+    const auto wakeFetch = system.stepOneCycle();
+    expect(wakeFetch.success && wakeFetch.fetchedNewInst &&
+               wakeFetch.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+           "a new selected-line falling edge wakes STOP and resumes instruction fetch");
+    for (unsigned cycle = 0;
+         cycle < 12 && system.getCpuRegisters().getRefB() != 0x42; ++cycle)
+        expect(system.stepOneCycle().success,
+               "CPU continues executing after a fresh edge wakes STOP");
+    auto registers = system.getCpuRegisters();
+    expect(registers.getRefB() == 0x42 &&
+               (registers.getRefA() & INTERRUPT_JOYPAD) != 0,
+           "the fresh wake edge requests Joypad IF and executes the next instruction");
 }
 
 void testPostBootInterruptsWaitForEi() {
@@ -801,6 +851,176 @@ void testPpuAccessWindowsSupportSafeCpuUpdates() {
            "CPU writes to VRAM and OAM succeed after polling until Mode 0");
 }
 
+std::vector<uint8_t> makeSerialPeerRom(uint8_t outgoing, bool master, bool fast, bool doubleSpeed) {
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x100] = 0xC3; rom[0x101] = 0x50; rom[0x102] = 1;
+    rom[0x143] = 0x80; rom[0x147] = 3; rom[0x149] = 2;
+    const uint8_t program[] = {
+        0xF3, 0x3E, 0x0A, 0xEA, 0, 0, // Enable battery RAM; keep IME off.
+        0xAF, 0xE0, 0x0F, 0x3E, 8, 0xEA, 0xFF, 0xFF, // Clear IF; IE=serial.
+        0x3E, outgoing, 0xE0, 1,
+        0x3E, static_cast<uint8_t>(master ? (fast ? 0x83 : 0x81) : 0x80), 0xE0, 2,
+        0x76,                         // HALT until the eighth serial edge.
+        0xF0, 1, 0xEA, 0x30, 0xA0,   // Received byte.
+        0xF0, 2, 0xEA, 0x31, 0xA0,   // Transfer-complete SC state.
+        0x18, 0xFE
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x150);
+    if (doubleSpeed) {
+        rom[0x101] = 0; rom[0x102] = 3;
+        const uint8_t speedSwitch[] = {0xF3, 0x3E, 1, 0xE0, 0x4D, 0x10, 0, 0xC3, 0x50, 1};
+        std::copy(std::begin(speedSwitch), std::end(speedSwitch), rom.begin() + 0x300);
+    }
+    return rom;
+}
+
+void testTwoSystemsSerialExchangeAndPairedRestore() {
+    struct Mode { HardwareModel model; bool fast, doubleSpeed; };
+    for (const auto mode : {Mode{HardwareModel::Dmg, false, false},
+                           Mode{HardwareModel::CgbE, false, false},
+                           Mode{HardwareModel::CgbE, true, false},
+                           Mode{HardwareModel::CgbE, false, true},
+                           Mode{HardwareModel::CgbE, true, true}}) {
+        const auto model = mode.model;
+        const auto masterRom = makeSerialPeerRom(0xA5, true, mode.fast, mode.doubleSpeed);
+        const auto slaveRom = makeSerialPeerRom(0x3C, false, mode.fast, mode.doubleSpeed);
+        GameBoySystem master(masterRom, model), slave(slaveRom, model);
+        GameBoySystem replayMaster(masterRom, model), replaySlave(slaveRom, model);
+        unsigned edges = 0, replayEdges = 0;
+        std::vector<uint64_t> edgeTimes;
+        uint64_t masterSteps = 0;
+        const auto stepMaster = [&] { ++masterSteps; return master.stepOneCycle().success; };
+        master.setSerialClockCallback([&](bool outgoing) {
+            const bool incoming = slave.getSerialOutgoingBit();
+            slave.clockSerialExternalBit(outgoing); ++edges;
+            // All tested edges align to M-cycle ends. Count host-driven steps:
+            // getElapsedTCycles is updated at different points for bus and HALT steps.
+            edgeTimes.push_back(masterSteps); return incoming;
+        });
+        // Install before load: committing guest state must not replace host wiring.
+        replayMaster.setSerialClockCallback([&](bool outgoing) {
+            const bool incoming = replaySlave.getSerialOutgoingBit();
+            replaySlave.clockSerialExternalBit(outgoing); ++replayEdges; return incoming;
+        });
+        unsigned cycles = 0;
+        for (; cycles < 10000 && edges < 3; ++cycles)
+            expect(slave.stepOneCycle().success && stepMaster(),
+                   "paired CPU programs arm external slave before internal master");
+        expect(edges == 3, "two-system link reaches a partial-byte snapshot boundary");
+        const auto masterState = master.saveState(), slaveState = slave.saveState();
+        auto *masterRam = replayMaster.getSaveRamData();
+        auto *slaveRam = replaySlave.getSaveRamData();
+        replayMaster.loadState(masterState.data(), masterState.size());
+        replaySlave.loadState(slaveState.data(), slaveState.size());
+        expect(masterRam == replayMaster.getSaveRamData() && slaveRam == replaySlave.getSaveRamData(),
+               "paired link restore preserves published SRAM pointers");
+        for (unsigned cycle = 0; cycle < 2048; ++cycle)
+            expect(slave.stepOneCycle().success && stepMaster() &&
+                       replaySlave.stepOneCycle().success && replayMaster.stepOneCycle().success,
+                   "original and restored pairs run serial IRQ/HALT wake to completion");
+        expect(edges == 8 && replayEdges == 5 && masterRam[0x30] == 0x3C && slaveRam[0x30] == 0xA5 &&
+                   !(masterRam[0x31] & 0x80) && !(slaveRam[0x31] & 0x80),
+               "both CPUs wake HALT after byte exchange and restored host wiring supplies exactly five remaining edges");
+        const uint64_t bitPeriod = (mode.fast ? 16 : 512) / (mode.doubleSpeed ? 2 : 1);
+        for (size_t edge = 1; edge < edgeTimes.size(); ++edge)
+            expect((edgeTimes[edge] - edgeTimes[edge - 1]) * (mode.doubleSpeed ? 2 : 4) == bitPeriod,
+                   "linked CGB normal/fast clocks retain all four documented base-time rates");
+        expect(master.takeAudioSamples() == replayMaster.takeAudioSamples() &&
+                   slave.takeAudioSamples() == replaySlave.takeAudioSamples() &&
+                   master.saveState() == replayMaster.saveState() && slave.saveState() == replaySlave.saveState(),
+               "paired partial-transfer snapshots replay exact PCM and complete state");
+    }
+}
+
+void testMbc1MulticartCpuAndSnapshots() {
+    auto rom = Test::makeMbc1MulticartRom();
+    std::vector<uint8_t> program;
+    const auto emit = [&](std::initializer_list<uint8_t> bytes) { program.insert(program.end(), bytes); };
+    emit({0xF3, 0x31, 0xFE, 0xFF, 0x3E, 0x0A, 0xEA, 0, 0});
+    emit({0x3E, 1, 0xEA, 0, 0x60, 0x3E, 3, 0xEA, 0, 0x40});
+    const size_t loop = 0x150 + program.size();
+    for (const auto value : {0x10, 0, 0x1F}) {
+        emit({0x3E, static_cast<uint8_t>(value), 0xEA, 0, 0x20, 0xFA, 0, 0x40});
+        emit({0xEA, static_cast<uint8_t>(value == 0x10 ? 0x30 : value == 0 ? 0x31 : 0x32), 0xA0});
+    }
+    emit({0x21, 0x10, 0xA0, 0x34, 0xC3, static_cast<uint8_t>(loop), static_cast<uint8_t>(loop >> 8)});
+    for (unsigned game = 0; game < 4; ++game)
+        std::copy(program.begin(), program.end(), rom.begin() + game * 0x40000 + 0x150);
+    for (auto model : {HardwareModel::Dmg, HardwareModel::CgbE}) {
+        GameBoySystem original(rom, model), restored(rom, model);
+        auto *stable = restored.getSaveRamData();
+        for (unsigned checkpoint = 0; checkpoint < 24; ++checkpoint) {
+            for (unsigned cycle = 0; cycle < 17; ++cycle)
+                expect(original.stepOneCycle().success, "multicart CPU crosses subgame bank changes");
+            const auto state = original.saveState();
+            restored.loadState(state.data(), state.size());
+            expect(restored.getSaveRamData() == stable, "multicart snapshot preserves SRAM pointer");
+            for (unsigned cycle = 0; cycle < 11; ++cycle)
+                expect(original.stepOneCycle().success && restored.stepOneCycle().success,
+                       "multicart CPU executes remapped lower window after restore");
+            expect(original.takeAudioSamples() == restored.takeAudioSamples() && original.saveState() == restored.saveState(),
+                   "MBC1M wiring reconstructed from ROM replays exact PCM and full state");
+        }
+        const auto *ram = original.getSaveRamData();
+        expect(ram[0x30] == 0x30 && ram[0x31] == 0x31 && ram[0x32] == 0x3F,
+               "guest observes MBC1M bit-four masking, zero translation and selected subgame banks");
+        const auto progress = ram[0x10];
+        auto battery = std::make_shared<std::vector<uint8_t>>(*original.getSaveRamStorage());
+        GameBoySystem fresh(rom, model, battery);
+        for (unsigned cycle = 0; cycle < 200; ++cycle)
+            expect(fresh.stepOneCycle().success, "fresh multicart content resumes imported SRAM");
+        expect(fresh.getSaveRamData()[0x10] > progress && fresh.getSaveRamData()[0x31] == 0x31,
+               "multicart guest reads and advances imported battery progress on both hardware models");
+    }
+}
+
+void testCpuIduCorruptsOamAndReplays() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    rom[0x100] = 0xC3; rom[0x101] = 0x50; rom[0x102] = 1;
+    rom[0x143] = 0x80; rom[0x147] = 3; rom[0x149] = 2;
+    size_t at = 0x150;
+    const auto emit = [&](std::initializer_list<uint8_t> bytes) { for (auto b : bytes) rom[at++] = b; };
+    emit({0xF3, 0xAF, 0xE0, 0x40, 0x3E, 0x0A, 0xEA, 0, 0});
+    emit({0x21, 0, 0xFE, 0x06, 160, 0x3E, 0x51});
+    emit({0x22, 0xC6, 37, 0x05, 0x20, 0xFA}); // Fill OAM while LCD off.
+    emit({0x01, 0xFF, 0xFE, 0x3E, 0x91, 0xE0, 0x40});
+    emit({0xF0, 0x44, 0xFE, 1, 0x20, 0xFA}); // Reach mode 2 on line 1.
+    emit({0x03}); const uint16_t afterInc = at;
+    emit({0xF0, 0x44, 0xFE, 144, 0x20, 0xFA, 0xAF, 0xE0, 0x40});
+    emit({0x21, 0, 0xFE, 0x11, 0, 0xA1, 0x06, 160});
+    emit({0x2A, 0x12, 0x13, 0x05, 0x20, 0xFA, 0x18, 0xFE}); // Copy OAM to SRAM after scan.
+    for (auto model : {HardwareModel::Dmg, HardwareModel::CgbE}) {
+        GameBoySystem original(rom, model), restored(rom, model);
+        unsigned cycles = 0;
+        for (; cycles < 5000 && original.getCpuRegisters().getRefPC() != afterInc; ++cycles)
+            expect(original.stepOneCycle().success, "CPU OAM probe fills data and fetches mode-two INC BC");
+        expect(cycles < 5000 && original.getCpuRegisters().getRefBC() == 0xFEFF,
+               "OAM probe snapshots before the IDU update crosses FEFF to FF00");
+        const auto before = original.saveState(); restored.loadState(before.data(), before.size());
+        for (unsigned n = 0; n < 25000; ++n)
+            expect(original.stepOneCycle().success && restored.stepOneCycle().success,
+                   "OAM probe runs IDU corruption and copies observable bytes through CPU");
+        const auto *ram = original.getSaveRamData();
+        unsigned changedRows = 0;
+        for (unsigned row = 0; row < 20; ++row) {
+            bool changed = false;
+            for (unsigned byte = 0; byte < 8; ++byte)
+                changed |= ram[0x100 + row * 8 + byte] != static_cast<uint8_t>((row * 8 + byte) * 37 + 0x51);
+            if (changed) {
+                ++changedRows;
+                expect(row > 0 && row < 19, "CPU IDU corruption affects one visible scan row, not protected first objects");
+                for (unsigned byte = 2; byte < 8; ++byte)
+                    expect(ram[0x100 + row * 8 + byte] == static_cast<uint8_t>(((row - 1) * 8 + byte) * 37 + 0x51),
+                           "CPU IDU write corruption copies the preceding row's last three words");
+            }
+        }
+        expect(changedRows == (model == HardwareModel::Dmg ? 1u : 0u),
+               "internal INC BC causes DMG OAM corruption while native CGB remains intact");
+        expect(original.takeAudioSamples() == restored.takeAudioSamples() && original.saveState() == restored.saveState(),
+               "pre-IDU snapshot reproduces exact OAM, CPU observation, PCM and complete state");
+    }
+}
+
 }
 
 int main() {
@@ -823,10 +1043,14 @@ int main() {
     testDmgPostBootStartupAndFrameStepping();
     testFrameSteppingReturnsWhenCpuStops();
     testVblankSteppingUsesFrameEventsAndSurvivesRestore();
-    testVblankSteppingBoundsDisabledStoppedAndFaultedSystems();
+    testVblankSteppingBoundsDisabledStoppedAndLockedSystems();
     testAudioCountsActualCyclesAcrossLcdRestartStepping();
     testPresentationReasonsSeparateHostRepeatFromHardwareVblank();
     testDmgSystemDoesNotExposeCgbBankRegisters();
     testSelectedJoypadLineWakesStopWithoutInterruptAcceptance();
+    testStopRequiresFreshFallingJoypadEdgeWhenLineWasAlreadyLow();
+    testTwoSystemsSerialExchangeAndPairedRestore();
+    testMbc1MulticartCpuAndSnapshots();
+    testCpuIduCorruptsOamAndReplays();
     std::cout << "Headless system tests passed\n";
 }

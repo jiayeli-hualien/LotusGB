@@ -12,10 +12,12 @@ namespace {
 void requireState(bool condition, const char *message) {
     if (!condition) throw std::invalid_argument(message);
 }
-constexpr uint32_t STATE_VERSION = 1;
+constexpr uint32_t DMG_STATE_VERSION = 11;
+constexpr uint32_t CGB_STATE_VERSION = 13;
 constexpr uint32_t DMG_MODEL = 1;
 constexpr size_t HEADER_SIZE = 8 + 4 + 4 + 4 + 32 + 32 + 32;
 constexpr size_t MAX_AUDIO_SAMPLES = 96000;
+constexpr uint8_t PPU_OAM_SCAN_IN_PROGRESS = 0x80;
 }
 
 // Explicit value-only schema: bus maps, references, callbacks, decoders, ROM
@@ -116,6 +118,35 @@ public:
                         v.ramBankingMode,
                         v.externalRam,
                         v.rtcStorage);
+    }
+    static auto mbc7Fields(Cartridge &v) {
+        return std::tie(v.mbc7RamEnable1,
+                        v.mbc7ControlRegister,
+                        v.mbc7RomBank,
+                        v.mbc7AccelerometerX,
+                        v.mbc7AccelerometerY,
+                        v.mbc7LatchedAccelerometerX,
+                        v.mbc7LatchedAccelerometerY,
+                        v.mbc7AccelerometerLatchArmed,
+                        v.mbc7AccelerometerLatched,
+                        v.mbc7EepromWriteEnabled,
+                        v.mbc7EepromChipSelect,
+                        v.mbc7EepromClock,
+                        v.mbc7EepromDataIn,
+                        v.mbc7EepromDataOut,
+                        v.mbc7EepromPhase,
+                        v.mbc7EepromShiftRegister,
+                        v.mbc7EepromReadWord,
+                        v.mbc7EepromBitCount,
+                        v.mbc7EepromAddress,
+                        v.mbc7EepromReadBitsRemaining);
+    }
+    static auto mbc7EepromTimingFields(Cartridge &v) {
+        return std::tie(v.mbc7EepromPendingOperation,
+                        v.mbc7EepromPendingWord,
+                        v.mbc7EepromBusyTCycles,
+                        v.mbc7EepromChipSelectLowTCycles,
+                        v.mbc7EepromChipSelectQualified);
     }
     static auto fields(DmgPpu &v) {
         return std::tie(v.videoRam,
@@ -430,15 +461,25 @@ void StateCodec::validate(GameBoySystem &v) {
                  c.instStat.memCycleCnt >= 0 && c.instStat.memCycleCnt <= 6 &&
                  c.instStat.memMode >= MEM_MODE_FETCH && c.instStat.memMode <= MEM_MODE_SLEEP &&
                  c.instStat.imeAction >= IME_ACTION_NONE && c.instStat.imeAction <= IME_ACTION_DISABLE &&
-                 c.instStat.clockAction >= CLOCK_ACTION_NONE && c.instStat.clockAction <= CLOCK_ACTION_STOP,
+                 c.instStat.clockAction >= CLOCK_ACTION_NONE && c.instStat.clockAction <= CLOCK_ACTION_LOCKUP,
                  "Invalid CPU snapshot state");
     if (c.pInst) {
         const auto *inst = static_cast<Instruction *>(c.pInst);
         requireState(c.instStat.memCycleCnt < inst->memCycles ||
-                     ((c.isStopped || c.fetchAfterStopWake) && c.instStat.memCycleCnt == inst->memCycles),
+                     ((c.isStopped || c.fetchAfterStopWake || c.isLocked) &&
+                      c.instStat.memCycleCnt == inst->memCycles),
                      "Invalid instruction cycle in snapshot");
     } else requireState(c.initialFetchPending || c.interruptSequenceActive,
                         "Snapshot has no executable CPU instruction");
+    requireState(!c.isLocked ||
+                     (c.pInst && !c.isHalt && !c.isStopped &&
+                      !c.interruptSequenceActive &&
+                      c.instStat.clockAction == CLOCK_ACTION_LOCKUP &&
+                      c.instStat.memMode == MEM_MODE_SLEEP &&
+                      static_cast<Instruction *>(c.pInst)->name == "ILLEGAL_OPCODE"),
+                 "Invalid locked CPU snapshot state");
+    requireState(c.isLocked || c.instStat.clockAction != CLOCK_ACTION_LOCKUP,
+                 "CPU lock-up action without a locked CPU");
     requireState(v.timer.overflowReloadTCycles >= 0 && v.timer.overflowReloadTCycles <= 4 &&
                  v.timer.reloadWindowTCycles >= 0 && v.timer.reloadWindowTCycles <= 4 && v.timer.tac <= 7,
                  "Invalid timer snapshot state");
@@ -450,6 +491,9 @@ void StateCodec::validate(GameBoySystem &v) {
     auto &m = p.mode3;
     requireState(p.dot < 456 && p.ly < 154 && m.outputX <= 160 &&
                  m.duration >= 172 && m.duration <= 376 && m.fineScroll < 8 &&
+                 (m.windowPenaltyDotsRemaining <= 5 ||
+                  (m.windowPenaltyDotsRemaining == PPU_OAM_SCAN_IN_PROGRESS &&
+                   p.ly < 144 && p.dot <= 80)) &&
                  m.backgroundFifo.readIndex < 16 && m.backgroundFifo.size <= 8 &&
                  m.objectFifo.readIndex < 16 && m.objectFetchEventCount <= 10 &&
                  m.nextObjectFetchEvent <= m.objectFetchEventCount && m.activeObjectFetchEvent < 10 &&
@@ -458,8 +502,16 @@ void StateCodec::validate(GameBoySystem &v) {
                  static_cast<unsigned>(m.fetcher.phase) <= 7 &&
                  static_cast<unsigned>(m.objectFetcher.phase) <= 3,
                  "Invalid PPU snapshot state");
-    for (const auto &event : m.objectFetchEvents)
-        requireState(event.tileRow < 16 && event.firstPixelIndex <= 8, "Invalid object fetch state");
+    for (const auto &event : m.objectFetchEvents) {
+        const bool rawRow = (event.tileRow & 0x80) != 0;
+        const uint8_t row = event.tileRow & 0x0F;
+        requireState((rawRow ? (event.tileRow & 0x30) == 0 &&
+                                 row < ((event.tileRow & 0x40) ? 16 : 8)
+                              : event.tileRow < 16) &&
+                         event.firstPixelIndex <= 8 &&
+                         (!rawRow || event.oamIndex < 40),
+                     "Invalid object fetch state");
+    }
     const auto shadesValid = [](const auto &pixels) {
         return std::all_of(pixels.begin(), pixels.end(), [](uint8_t x) { return x < 4; });
     };
@@ -475,10 +527,14 @@ void StateCodec::validate(GameBoySystem &v) {
     for (const auto &event : m.objectFetchEvents)
         for (const auto &pixel : event.pixels)
             requireState(pixel.colorIndex < 4, "Invalid object fetch color");
+    requireState(v.ppu.statWriteOverrideTCycles <= 4 &&
+                 (v.model == HardwareModel::Dmg || v.ppu.statWriteOverrideTCycles == 0),
+                 "Invalid STAT write override state");
     auto &a = v.apu;
     requireState(a.dutyPosition < 8 && a.dutyPosition2 < 8 && a.waveSampleIndex < 32 &&
                  a.frameSequencerStep < 8 && a.sampleAccumulator < 4194304 &&
                  a.envelopeVolume < 16 && a.envelopeVolume2 < 16 && a.envelopeVolume4 < 16 &&
+                 a.envelopeTimer <= 9 && a.envelopeTimer2 <= 9 && a.envelopeTimer4 <= 9 &&
                  a.previousLeftInput >= -1024 && a.previousLeftInput <= 1024 &&
                  a.previousRightInput >= -1024 && a.previousRightInput <= 1024 &&
                  a.previousLeftOutputQ16 >= -(1LL << 32) && a.previousLeftOutputQ16 <= (1LL << 32) &&
@@ -487,7 +543,13 @@ void StateCodec::validate(GameBoySystem &v) {
                  "Invalid APU snapshot state or undrained audio queue exceeds one second");
     if (v.model == HardwareModel::CgbE) {
         requireState(v.cgbWorkRam->bankSelect < 8 && v.cgbVideoRam->bankSelect < 2
-            && v.cgbIo->speedPauseMCycles <= 2050 && p.cgbFetchRow < 8
+            && (v.cgbIo->key0 & ~4) == 0 && v.cgbIo->opri <= 1
+            && v.cgbIo->speedPauseMCycles <= 2050 && p.speedSwitchPpuMode <= 3
+            && v.cgbIo->infraredSettleTCycles <= CgbIo::IR_RECEIVER_SETTLE_T_CYCLES
+            && (v.cgbIo->infraredSettleTCycles == 0 || (v.cgbIo->infrared & 0xC0) == 0xC0)
+            && ((v.cgbIo->infrared & 0xC0) == 0xC0 || !v.cgbIo->infraredInputLatched)
+            && (v.cgbIo->infraredSettleTCycles == 0 || !v.cgbIo->infraredInputLatched)
+            && (v.cgbIo->speedPauseMCycles || p.speedSwitchPpuMode == 3) && p.cgbFetchRow < 8
             && (p.cgbBgIndex & 0x40) == 0 && (p.cgbObjIndex & 0x40) == 0,
             "Invalid CGB banks, speed or palette index");
         const auto &d = *v.cgbVramDma;
@@ -512,7 +574,23 @@ void StateCodec::validate(GameBoySystem &v) {
     requireState(cart.mbc3RtcLastUnixTime >= 0 && cart.mbc5RomBank < 512 &&
                  cart.mbc5RamBank < 16 && cart.bankHigh < 4 && cart.romBankLow < 32 &&
                  cart.mbc2RomBank > 0 && cart.mbc2RomBank < 16 && cart.mbc3RomBank > 0 &&
-                 (cart.mbc30 || cart.mbc3RomBank < 128), "Invalid cartridge snapshot state");
+                 (cart.mbc30 || cart.mbc3RomBank < 128) && cart.mbc7RomBank < 128 &&
+                 static_cast<uint8_t>(cart.mbc7EepromPhase) <=
+                     static_cast<uint8_t>(Cartridge::Mbc7EepromPhase::WriteAllData) &&
+                 static_cast<uint8_t>(cart.mbc7EepromPendingOperation) <=
+                     static_cast<uint8_t>(Cartridge::Mbc7EepromPendingOperation::WriteAll) &&
+                 cart.mbc7EepromBitCount <= 15 && cart.mbc7EepromAddress < 128 &&
+                 cart.mbc7EepromReadBitsRemaining <= 16 &&
+                 cart.mbc7EepromBusyTCycles <= Cartridge::MBC7_WRITE_ALL_TCYCLES &&
+                 cart.mbc7EepromChipSelectLowTCycles <= 2 &&
+                 (cart.mbc7EepromBusyTCycles == 0 ||
+                  cart.mbc7EepromPendingOperation !=
+                      Cartridge::Mbc7EepromPendingOperation::None) &&
+                 (cart.mbc7EepromChipSelect ||
+                  !cart.mbc7EepromChipSelectQualified) &&
+                 (cart.mapper != Cartridge::Mapper::Mbc7 ||
+                  (cart.externalRam && cart.externalRam->size() == 0x100)),
+                 "Invalid cartridge snapshot state");
 }
 
 std::vector<uint8_t> StateCodec::save(GameBoySystem &v) {
@@ -529,9 +607,20 @@ std::vector<uint8_t> StateCodec::save(GameBoySystem &v) {
         std::apply(payload, cgbFields(v));
         visitCgbPixels(v, [&](auto &...x) { payload(x...); });
     }
+    payload(v.apu.firstDutySuppressed, v.apu.firstDutySuppressed2, v.ppu.statWriteOverrideTCycles);
+    payload(v.apu.envelopeRunning, v.apu.envelopeRunning2, v.apu.envelopeRunning4);
+    if (v.model == HardwareModel::CgbE)
+        payload(v.ppu.speedSwitchPpuMode, v.cgbIo->key0, v.cgbIo->opri,
+                v.cgbIo->infraredSettleTCycles, v.cgbIo->infraredInputLatched);
+    std::apply(payload, mbc7Fields(v.cartridge));
+    std::apply(payload, mbc7EepromTimingFields(v.cartridge));
+    if (v.model == HardwareModel::Dmg)
+        for (const auto &event : v.ppu.mode3.objectFetchEvents)
+            payload(event.oamIndex);
+    payload(v.cpu.isLocked);
     Writer header;
     std::array<uint8_t,8> magic{'L','O','T','U','S','S','T',0};
-    uint32_t version = v.model == HardwareModel::CgbE ? 2 : STATE_VERSION;
+    uint32_t version = v.model == HardwareModel::CgbE ? CGB_STATE_VERSION : DMG_STATE_VERSION;
     uint32_t model = v.model == HardwareModel::CgbE ? 2 : DMG_MODEL;
     uint32_t length = static_cast<uint32_t>(HEADER_SIZE + payload.bytes.size());
     auto bootHash = StateInternal::sha256(v.bootRom.bootRom.data(), v.bootRom.bootRom.size());
@@ -553,8 +642,8 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
     std::array<uint8_t,32> romHash{}, bootHash{}, payloadHash{};
     header(magic, version, model, length, romHash, bootHash, payloadHash);
     requireState(magic == std::array<uint8_t,8>{'L','O','T','U','S','S','T',0}, "Not a LotusGB snapshot");
-    requireState((v.model == HardwareModel::Dmg && version == STATE_VERSION && model == DMG_MODEL)
-        || (v.model == HardwareModel::CgbE && version == 2 && model == 2),
+    requireState((v.model == HardwareModel::Dmg && (version == 1 || version == 3 || version == 4 || version == 6 || version == 7 || version == 8 || version == 9 || version == 10 || version == DMG_STATE_VERSION) && model == DMG_MODEL)
+        || (v.model == HardwareModel::CgbE && (version == 2 || version == 3 || version == 4 || version == 5 || version == 6 || version == 7 || version == 8 || version == 9 || version == 10 || version == 11 || version == 12 || version == CGB_STATE_VERSION) && model == 2),
         "Unsupported snapshot version or model");
     requireState(length >= HEADER_SIZE && length <= size && length <= GameBoySystem::MAX_STATE_SIZE, "Truncated snapshot payload");
     requireState(romHash == v.cartridge.romHash, "Snapshot ROM mismatch");
@@ -588,6 +677,62 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
         candidate.systemClock.setDoubleSpeed(candidate.cgbIo->doubleSpeed);
         candidate.timer.setDoubleSpeed(candidate.cgbIo->doubleSpeed);
     }
+    if (version >= 3) {
+        payload(candidate.apu.firstDutySuppressed, candidate.apu.firstDutySuppressed2);
+    } else {
+        // Legacy snapshots did not model first-step suppression. Preserve
+        // their recorded observable output rather than guessing trigger history.
+        candidate.apu.firstDutySuppressed = candidate.apu.firstDutySuppressed2 = false;
+    }
+    if (version >= 4) payload(candidate.ppu.statWriteOverrideTCycles);
+    if (version >= 6) {
+        payload(candidate.apu.envelopeRunning, candidate.apu.envelopeRunning2, candidate.apu.envelopeRunning4);
+    } else {
+        // Older versions kept attempting volume changes at the bounds. No
+        // stop history is available, so retain their active-envelope semantics.
+        candidate.apu.envelopeRunning = candidate.apu.channel1Enabled;
+        candidate.apu.envelopeRunning2 = candidate.apu.channel2Enabled;
+        candidate.apu.envelopeRunning4 = candidate.apu.channel4Enabled;
+    }
+    if (v.model == HardwareModel::CgbE && version >= 5) payload(candidate.ppu.speedSwitchPpuMode);
+    if (v.model == HardwareModel::CgbE) {
+        if (version >= 7) payload(candidate.cgbIo->key0, candidate.cgbIo->opri);
+        else candidate.cgbIo->key0 = candidate.cgbIo->opri = 0;
+        if (version >= 8)
+            payload(candidate.cgbIo->infraredSettleTCycles, candidate.cgbIo->infraredInputLatched);
+        else {
+            candidate.cgbIo->infraredSettleTCycles = 0;
+            candidate.cgbIo->infraredInputLatched = false;
+        }
+        candidate.applyCgbMode();
+    }
+    const bool hasMbc7State =
+        (v.model == HardwareModel::Dmg && version >= 7) ||
+        (v.model == HardwareModel::CgbE && version >= 9);
+    if (hasMbc7State)
+        std::apply(payload, mbc7Fields(candidate.cartridge));
+    const bool hasMbc7EepromTimingState =
+        (v.model == HardwareModel::Dmg && version >= 8) ||
+        (v.model == HardwareModel::CgbE && version >= 10);
+    if (hasMbc7EepromTimingState)
+        std::apply(payload, mbc7EepromTimingFields(candidate.cartridge));
+    const bool hasMbc7RumbleControlState =
+        (v.model == HardwareModel::Dmg && version >= 9) ||
+        (v.model == HardwareModel::CgbE && version >= 11);
+    if (hasMbc7State && !hasMbc7RumbleControlState) {
+        requireState(candidate.cartridge.mbc7ControlRegister <= 1,
+                     "Invalid legacy MBC7 RAM gate state");
+        candidate.cartridge.mbc7ControlRegister =
+            candidate.cartridge.mbc7ControlRegister ? 0x40 : 0;
+    }
+    if (v.model == HardwareModel::Dmg && version >= 10)
+        for (auto &event : candidate.ppu.mode3.objectFetchEvents)
+            payload(event.oamIndex);
+    const bool hasIllegalOpcodeLockState =
+        (v.model == HardwareModel::Dmg && version >= 11) ||
+        (v.model == HardwareModel::CgbE && version >= 13);
+    if (hasIllegalOpcodeLockState)
+        payload(candidate.cpu.isLocked);
     requireState(payload.position == payload.size, "Unexpected snapshot payload data");
     bindInstruction(candidate.cpu, kind);
     validate(candidate);
@@ -598,6 +743,26 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
         ? v.cpu.decoder.decode(candidate.cpu.instStat.opcode)
         : v.cpu.decoderCB.decode(candidate.cpu.instStat.opcode);
     commitValue(v, candidate);
+    v.cpu.isLocked = candidate.cpu.isLocked;
+    auto dstMbc7 = mbc7Fields(v.cartridge);
+    auto srcMbc7 = mbc7Fields(candidate.cartridge);
+    commitTuple(dstMbc7, srcMbc7,
+                std::make_index_sequence<std::tuple_size_v<decltype(dstMbc7)>>{});
+    auto dstMbc7Timing = mbc7EepromTimingFields(v.cartridge);
+    auto srcMbc7Timing = mbc7EepromTimingFields(candidate.cartridge);
+    commitTuple(dstMbc7Timing, srcMbc7Timing,
+                std::make_index_sequence<std::tuple_size_v<decltype(dstMbc7Timing)>>{});
+    v.apu.firstDutySuppressed = candidate.apu.firstDutySuppressed;
+    v.apu.firstDutySuppressed2 = candidate.apu.firstDutySuppressed2;
+    v.ppu.statWriteOverrideTCycles = candidate.ppu.statWriteOverrideTCycles;
+    v.ppu.speedSwitchPpuMode = candidate.ppu.speedSwitchPpuMode;
+    v.apu.envelopeRunning = candidate.apu.envelopeRunning;
+    v.apu.envelopeRunning2 = candidate.apu.envelopeRunning2;
+    v.apu.envelopeRunning4 = candidate.apu.envelopeRunning4;
+    if (v.model == HardwareModel::Dmg)
+        for (size_t i = 0; i < v.ppu.mode3.objectFetchEvents.size(); ++i)
+            v.ppu.mode3.objectFetchEvents[i].oamIndex =
+                candidate.ppu.mode3.objectFetchEvents[i].oamIndex;
     if (v.model == HardwareModel::CgbE) {
         auto d = cgbFields(v), s = cgbFields(candidate);
         commitTuple(d, s, std::make_index_sequence<std::tuple_size_v<decltype(d)>>{});
@@ -614,6 +779,11 @@ void StateCodec::load(GameBoySystem &v, const void *data, size_t size) {
         }
         v.systemClock.setDoubleSpeed(v.cgbIo->doubleSpeed);
         v.timer.setDoubleSpeed(v.cgbIo->doubleSpeed);
+        v.cgbIo->key0 = candidate.cgbIo->key0;
+        v.cgbIo->opri = candidate.cgbIo->opri;
+        v.cgbIo->infraredSettleTCycles = candidate.cgbIo->infraredSettleTCycles;
+        v.cgbIo->infraredInputLatched = candidate.cgbIo->infraredInputLatched;
+        v.applyCgbMode();
     }
     v.cpu.pInst = instruction;
     v.systemClock.currentStepTCyclesAdvanced = 0;

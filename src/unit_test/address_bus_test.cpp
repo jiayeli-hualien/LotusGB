@@ -8,6 +8,7 @@
 #include "address_bus.hpp"
 #include "cartridge.hpp"
 #include "memory_region.hpp"
+#include "../../tests/include/mbc1_multicart_rom.hpp"
 
 namespace {
 
@@ -180,7 +181,7 @@ void testCartridgeRejectsUnsupportedSizesAndTypes() {
     expect(bankedSizeRejected, "ROM-only cartridge rejects ROMs requiring banking");
 
     std::vector<uint8_t> unsupportedRom(0x8000, 0);
-    unsupportedRom[0x0147] = 0x22; // MBC7 is not implemented yet.
+    unsupportedRom[0x0147] = 0x20; // MBC6 remains unsupported.
     bool unsupportedTypeRejected = false;
     try {
         Cartridge cartridge(std::move(unsupportedRom));
@@ -342,6 +343,231 @@ void testMbc2RomAndNibbleRam() {
                volatileCartridge.getExternalRamSize() == 0x0200 &&
                !volatileCartridge.getBatteryRamStorage(),
            "MBC2 without a battery has temporary RAM but no save block");
+}
+
+void writeMbc7EepromPins(AddressBus &bus, uint8_t value) {
+    bus.write(0xA08F, value); // Low address bits alias the EEPROM register.
+}
+
+void pulseMbc7EepromClock(AddressBus &bus, bool data) {
+    writeMbc7EepromPins(bus, static_cast<uint8_t>(0x80 | (data ? 0x02 : 0)));
+    writeMbc7EepromPins(bus, static_cast<uint8_t>(0xC0 | (data ? 0x02 : 0)));
+}
+
+void shiftMbc7EepromBits(AddressBus &bus, uint16_t value, unsigned count) {
+    for (unsigned bit = count; bit > 0; --bit)
+        pulseMbc7EepromClock(bus, (value & (uint16_t{1} << (bit - 1))) != 0);
+}
+
+void beginMbc7EepromTransaction(AddressBus &bus, Cartridge &cartridge) {
+    writeMbc7EepromPins(bus, 0x00);
+    cartridge.advanceTCycles(2); // 93LC56 minimum CS-low interval.
+    writeMbc7EepromPins(bus, 0x80);
+}
+
+void endMbc7EepromTransaction(AddressBus &bus) {
+    writeMbc7EepromPins(bus, 0x00);
+}
+
+uint16_t readMbc7EepromWord(AddressBus &bus, Cartridge &cartridge,
+                            uint8_t address) {
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, static_cast<uint16_t>(0x300 | address), 10);
+    expect((bus.read(0xAF8F) & 1) == 0,
+           "MBC7 serial READ presents the EEPROM dummy zero before data");
+    uint16_t value = 0;
+    for (unsigned bit = 0; bit < 16; ++bit) {
+        pulseMbc7EepromClock(bus, false);
+        value = static_cast<uint16_t>((value << 1) |
+                                      (bus.read(0xAF8F) & 1));
+    }
+    endMbc7EepromTransaction(bus);
+    return value;
+}
+
+std::array<uint16_t, 2> readTwoMbc7EepromWords(AddressBus &bus,
+                                               Cartridge &cartridge,
+                                               uint8_t address) {
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, static_cast<uint16_t>(0x300 | address), 10);
+    expect((bus.read(0xAF8F) & 1) == 0,
+           "MBC7 sequential READ begins with its dummy zero");
+    std::array<uint16_t, 2> values{};
+    for (auto &value : values) {
+        for (unsigned bit = 0; bit < 16; ++bit) {
+            pulseMbc7EepromClock(bus, false);
+            value = static_cast<uint16_t>((value << 1) |
+                                          (bus.read(0xAF8F) & 1));
+        }
+    }
+    endMbc7EepromTransaction(bus);
+    return values;
+}
+
+void issueMbc7EepromCommand(AddressBus &bus, Cartridge &cartridge,
+                           uint16_t command) {
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, command, 10);
+    endMbc7EepromTransaction(bus);
+}
+
+void completeMbc7EepromProgram(AddressBus &bus, Cartridge &cartridge,
+                               uint32_t programTCycles) {
+    expect(programTCycles >= 3, "MBC7 program duration includes poll setup");
+    cartridge.advanceTCycles(2);
+    writeMbc7EepromPins(bus, 0x80);
+    expect((bus.read(0xAF8F) & 1) == 0,
+           "MBC7 EEPROM DO reports busy after a qualified CS poll");
+    cartridge.advanceTCycles(programTCycles - 3);
+    expect((bus.read(0xAF8F) & 1) == 0,
+           "MBC7 EEPROM remains busy through the last pre-completion T-cycle");
+    cartridge.advanceTCycles(1);
+    expect((bus.read(0xAF8F) & 1) != 0,
+           "MBC7 EEPROM DO reports ready when its self-timed cycle ends");
+    endMbc7EepromTransaction(bus);
+}
+
+void testMbc7BankingRegistersAndEeprom() {
+    constexpr size_t ROM_BANKS = 128;
+    std::vector<uint8_t> rom(ROM_BANKS * 0x4000, 0);
+    for (size_t bank = 0; bank < ROM_BANKS; ++bank)
+        std::fill(rom.begin() + bank * 0x4000,
+                  rom.begin() + (bank + 1) * 0x4000,
+                  static_cast<uint8_t>(bank));
+    rom[0x0147] = 0x22; // MBC7 + sensor + rumble + EEPROM + battery.
+    rom[0x0148] = 0x06; // 2 MiB, 128 banks.
+    rom[0x0149] = 0x00; // MBC7's EEPROM size is fixed by the mapper.
+
+    Cartridge cartridge(std::move(rom));
+    AddressBus bus;
+    bus.map(0x0000, 0x7FFF, cartridge);
+    bus.map(0xA000, 0xBFFF, cartridge);
+    expect(cartridge.hasBattery() && cartridge.getExternalRamSize() == 0x100 &&
+               cartridge.getBatteryRamStorage() &&
+               cartridge.getBatteryRamStorage()->size() == 0x100,
+           "MBC7 exposes its 256-byte EEPROM through battery storage");
+    expect(bus.read(0x0000) == 0 && bus.read(0x4000) == 1,
+           "MBC7 begins with bank zero fixed and bank one selected");
+    bus.write(0x2100, 0xFF);
+    expect(bus.read(0x4000) == 127,
+           "MBC7 masks the ROM bank register to seven bits");
+    bus.write(0x2000, 1);
+
+    bus.write(0x0000, 0x0A);
+    expect(bus.read(0xA060) == 0xFF,
+           "MBC7 register access stays disabled until both gates are open");
+    bus.write(0x4000, 0x48);
+    expect(bus.read(0xA060) == 0x00 && bus.read(0xA070) == 0xFF &&
+               bus.read(0xB080) == 0xFF && cartridge.isRumbleActive(),
+           "MBC7 RAM gate bit 6 and rumble bit 3 operate independently");
+    bus.write(0x4000, 0x08);
+    expect(cartridge.isRumbleActive() && bus.read(0xA060) == 0xFF,
+           "MBC7 rumble can be active while the RAM-register gate is closed");
+    bus.write(0x4000, 0x40);
+    expect(!cartridge.isRumbleActive() && bus.read(0xA060) == 0x00,
+           "MBC7 can stop rumble without closing the RAM-register gate");
+
+    cartridge.setMbc7AccelerometerData(0x8234, 0x7F90);
+    expect(bus.read(0xA02F) == 0x00 && bus.read(0xA03F) == 0x80 &&
+               bus.read(0xA04F) == 0x00 && bus.read(0xA05F) == 0x80,
+           "MBC7 accelerometer registers read 0x8000 before a sample is latched");
+    bus.write(0xA01F, 0xAA);
+    expect(bus.read(0xA03F) == 0x80,
+           "MBC7 ignores accelerometer latch completion without the 0x55 clear");
+    bus.write(0xA00F, 0x55);
+    cartridge.setMbc7AccelerometerData(0x8234, 0x7F90);
+    bus.write(0xA01F, 0xAA);
+    expect(bus.read(0xA02F) == 0x34 && bus.read(0xA03F) == 0x82 &&
+               bus.read(0xA04F) == 0x90 && bus.read(0xA05F) == 0x7F,
+           "MBC7 latches independent little-endian X and Y sensor values");
+    cartridge.setMbc7AccelerometerData(0x1111, 0x2222);
+    bus.write(0xA010, 0xAA);
+    expect(bus.read(0xA02F) == 0x34 && bus.read(0xA04F) == 0x90,
+           "MBC7 requires another clear before a new sensor sample");
+
+    const auto eeprom = cartridge.getBatteryRamStorage();
+    expect(std::all_of(eeprom->begin(), eeprom->end(),
+                       [](uint8_t value) { return value == 0xFF; }),
+           "MBC7 EEPROM powers up erased");
+    issueMbc7EepromCommand(bus, cartridge, 0x260); // EWEN: start, opcode 00, address 11xxxxx.
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, 0x280 | 0x35, 10); // WRITE word $35.
+    shiftMbc7EepromBits(bus, 0xA55A, 16);
+    expect((*eeprom)[0x6A] == 0xFF && (*eeprom)[0x6B] == 0xFF,
+           "MBC7 keeps EEPROM contents unchanged until CS starts programming");
+    endMbc7EepromTransaction(bus);
+    completeMbc7EepromProgram(bus, cartridge,
+                              Cartridge::MBC7_WORD_PROGRAM_TCYCLES);
+    expect((*eeprom)[0x6A] == 0xA5 && (*eeprom)[0x6B] == 0x5A,
+           "MBC7 commits MSB-first EEPROM word data when programming completes");
+    expect(readMbc7EepromWord(bus, cartridge, 0x35) == 0xA55A,
+           "MBC7 serial READ returns all sixteen programmed EEPROM bits");
+
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, 0x280 | 0x36, 10);
+    shiftMbc7EepromBits(bus, 0xC3D2, 16);
+    endMbc7EepromTransaction(bus);
+    completeMbc7EepromProgram(bus, cartridge,
+                              Cartridge::MBC7_WORD_PROGRAM_TCYCLES);
+    const auto sequential = readTwoMbc7EepromWords(bus, cartridge, 0x35);
+    expect(sequential[0] == 0xA55A && sequential[1] == 0xC3D2,
+           "MBC7 sequential READ advances to the next 16-bit word without a new command");
+
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, 0x280 | 0x7F, 10);
+    shiftMbc7EepromBits(bus, 0x1357, 16);
+    endMbc7EepromTransaction(bus);
+    completeMbc7EepromProgram(bus, cartridge,
+                              Cartridge::MBC7_WORD_PROGRAM_TCYCLES);
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, 0x280, 10);
+    shiftMbc7EepromBits(bus, 0x2468, 16);
+    endMbc7EepromTransaction(bus);
+    completeMbc7EepromProgram(bus, cartridge,
+                              Cartridge::MBC7_WORD_PROGRAM_TCYCLES);
+    const auto wrapped = readTwoMbc7EepromWords(bus, cartridge, 0x7F);
+    expect(wrapped[0] == 0x1357 && wrapped[1] == 0x2468,
+           "MBC7 sequential READ wraps from the final EEPROM word to address zero");
+
+    issueMbc7EepromCommand(bus, cartridge, 0x200); // EWDS.
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, 0x280 | 0x35, 10);
+    shiftMbc7EepromBits(bus, 0x1234, 16);
+    endMbc7EepromTransaction(bus);
+    expect(readMbc7EepromWord(bus, cartridge, 0x35) == 0xA55A,
+           "MBC7 ignores writes after erase/write is disabled");
+
+    issueMbc7EepromCommand(bus, cartridge, 0x260); // EWEN.
+    issueMbc7EepromCommand(bus, cartridge, 0x380 | 0x35); // ERASE word $35.
+    completeMbc7EepromProgram(bus, cartridge,
+                              Cartridge::MBC7_WORD_PROGRAM_TCYCLES);
+    expect(readMbc7EepromWord(bus, cartridge, 0x35) == 0xFFFF,
+           "MBC7 ERASE fills one enabled EEPROM word with ones");
+    beginMbc7EepromTransaction(bus, cartridge);
+    shiftMbc7EepromBits(bus, 0x220, 10); // WRAL.
+    shiftMbc7EepromBits(bus, 0x1234, 16);
+    endMbc7EepromTransaction(bus);
+    expect((*eeprom)[0] == 0x24 && (*eeprom)[1] == 0x68 &&
+               (*eeprom)[0xFE] == 0x13 && (*eeprom)[0xFF] == 0x57,
+           "MBC7 WRAL data stays pending until the longer all-word cycle completes");
+    completeMbc7EepromProgram(bus, cartridge,
+                              Cartridge::MBC7_WRITE_ALL_TCYCLES);
+    expect(readMbc7EepromWord(bus, cartridge, 0) == 0x1234 &&
+               readMbc7EepromWord(bus, cartridge, 0x7F) == 0x1234,
+           "MBC7 WRAL programs the first and final words");
+    issueMbc7EepromCommand(bus, cartridge, 0x240); // ERAL.
+    completeMbc7EepromProgram(bus, cartridge,
+                              Cartridge::MBC7_WORD_PROGRAM_TCYCLES);
+    expect(readMbc7EepromWord(bus, cartridge, 0) == 0xFFFF &&
+               readMbc7EepromWord(bus, cartridge, 0x7F) == 0xFFFF,
+           "MBC7 ERAL restores all EEPROM words to the erased value");
+
+    bus.write(0x4000, 0x00);
+    expect(bus.read(0xA080) == 0xFF,
+           "MBC7 EEPROM port closes when its second register gate is disabled");
+    expect(std::all_of(eeprom->begin(), eeprom->end(),
+                       [](uint8_t value) { return value == 0xFF; }),
+           "MBC7 battery storage retains the guest-programmed EEPROM contents");
 }
 
 void testMbc3RomAndRamBanking() {
@@ -577,9 +803,15 @@ void testMbc5RomAndRamBanking() {
            "MBC5 rumble cartridges use the supported 32 KiB RAM header size");
     rumbleCartridge.write(0x0000, 0x0A);
     rumbleCartridge.write(0x4000, 0x0B); // Motor bit set, RAM bank 3.
+    expect(rumbleCartridge.isRumbleActive(),
+           "MBC5 rumble register bit 3 activates the cartridge motor output");
     rumbleCartridge.write(0xA000, 0x6C);
     expect(rumbleCartridge.read(0xA000) == 0x6C,
            "MBC5 rumble control bit does not become part of the RAM bank");
+    rumbleCartridge.write(0x4000, 0x03);
+    expect(!rumbleCartridge.isRumbleActive() &&
+               rumbleCartridge.read(0xA000) == 0x6C,
+           "clearing the motor bit preserves the selected MBC5 RAM bank");
 
     std::vector<uint8_t> volatileRom(0x8000, 0);
     volatileRom[0x0147] = 0x1A; // MBC5 + RAM, without battery
@@ -661,9 +893,37 @@ void testMbc3SupportsSmallExternalRamSizes() {
     }
 }
 
+void testMbc1MulticartWiringAndDetection() {
+    for (unsigned variant = 0; variant < 4; ++variant) {
+        auto rom = Test::makeMbc1MulticartRom();
+        if (variant == 1) rom[0x40104] ^= 1;
+        if (variant == 2) std::fill(rom.begin() + 0x104, rom.begin() + 0x134, 0);
+        if (variant == 3) rom.resize(0x80000);
+        Cartridge cart(rom);
+        const bool multicart = variant == 0;
+        const unsigned banks = rom.size() / 0x4000;
+        for (unsigned mode = 0; mode < 2; ++mode) {
+            cart.write(0x6000, mode);
+            for (unsigned high = 0; high < 4; ++high) {
+                cart.write(0x4000, high);
+                for (unsigned value = 0; value < 256; ++value) {
+                    cart.write(0x2000, value);
+                    const unsigned low = (value & 31) ? value & 31 : 1;
+                    const unsigned upper = high << (multicart ? 4 : 5);
+                    expect(cart.read(0) == (mode ? upper % banks : 0),
+                           "MBC1M mode-one lower window selects subgame banks $00/$10/$20/$30");
+                    expect(cart.read(0x4000) == ((upper | (low & (multicart ? 15 : 31))) % banks),
+                           "MBC1M ignores low-register bit 4 after five-bit zero translation; ordinary MBC1 is retained");
+                }
+            }
+        }
+    }
+}
+
 }
 
 int main() {
+    testMbc1MulticartWiringAndDetection();
     testBusArbitrationFollowsCpuTimeAndDmaBypassesIt();
     testAddressBusRoutesMappedRanges();
     testAddressBusRoutesAliasedRanges();
@@ -672,6 +932,7 @@ int main() {
     testCartridgeRejectsUnsupportedSizesAndTypes();
     testMbc1RomAndRamBanking();
     testMbc2RomAndNibbleRam();
+    testMbc7BankingRegistersAndEeprom();
     testMbc3RomAndRamBanking();
     testMbc3RtcLatchingAndTimekeeping();
     testMbc3RtcHaltAndDayCounterOverflow();

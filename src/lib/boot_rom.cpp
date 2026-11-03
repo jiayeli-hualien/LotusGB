@@ -32,16 +32,15 @@ uint8_t BootRom::read(uint16_t address) {
 
 void BootRom::write(uint16_t address, uint8_t value) {
     if (address == BOOT_ROM_DISABLE_ADDRESS) {
-        if (value != 0)
+        if (value != 0 && mapped) {
             mapped = false;
+            if (unmappedCallback) unmappedCallback();
+        }
         return;
     }
     if (address <= 0x7FFF)
         cartridge.write(address, value);
 }
 
-bool BootRom::isMapped() const {
-    return mapped;
-}
 
 }

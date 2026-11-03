@@ -18,6 +18,7 @@ constexpr size_t MAXIMUM_MBC_ROM_SIZE = 2 * 1024 * 1024;
 constexpr size_t MAXIMUM_MBC30_ROM_SIZE = 4 * 1024 * 1024;
 constexpr size_t MAXIMUM_MBC5_ROM_SIZE = 8 * 1024 * 1024;
 constexpr size_t MBC2_RAM_SIZE = 0x0200;
+constexpr size_t MBC7_EEPROM_SIZE = 0x0100;
 constexpr size_t MBC3_RTC_STORAGE_SIZE = 24;
 constexpr size_t CARTRIDGE_TYPE_OFFSET = 0x0147;
 constexpr size_t RAM_SIZE_OFFSET = 0x0149;
@@ -29,6 +30,20 @@ constexpr size_t RTC_LIVE_REGISTERS_OFFSET = 5;
 constexpr size_t RTC_LATCHED_REGISTERS_OFFSET = 10;
 constexpr size_t RTC_LAST_LATCH_VALUE_OFFSET = 15;
 constexpr size_t RTC_LAST_UNIX_TIME_OFFSET = 16;
+
+// Standard 1-MiB MBC1M multicarts carry another cartridge header in bank $10.
+// Checking a repeated header signature avoids mistaking repeated blank data for one.
+bool isMbc1Multicart(const std::vector<uint8_t> &rom) {
+    static constexpr uint8_t headerSignature[] = {
+        0x5A, 0x7F, 0x10, 0x35, 0xCE, 0xE3, 0x84, 0x59, 0x72, 0x17, 0x28, 0xCD,
+    0xE6, 0xBB, 0x5C, 0x71, 0x0A, 0x2F, 0xC0, 0xE5, 0xBE, 0x53, 0x74, 0x09,
+    0x22, 0xC7, 0x98, 0xBD, 0x56, 0x6B, 0x0C, 0x21, 0xFA, 0x9F, 0xB0, 0x55,
+    0x6E, 0x03, 0x24, 0xF9, 0x92, 0xB7, 0x48, 0x6D, 0x06, 0xDB, 0xFC, 0x91,
+    };
+    return rom.size() == 0x100000 &&
+        std::equal(std::begin(headerSignature), std::end(headerSignature), rom.begin() + 0x104) &&
+        std::equal(std::begin(headerSignature), std::end(headerSignature), rom.begin() + 0x40104);
+}
 
 int64_t getUnixTimeNow() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -144,6 +159,7 @@ Cartridge::Cartridge(std::vector<uint8_t> rom,
             this->rom.size() % ROM_BANK_SIZE != 0)
             throw std::invalid_argument("MBC1 cartridge must contain 32 KiB to 2 MiB of banked ROM");
         mapper = Mapper::Mbc1;
+        mbc1Multicart = isMbc1Multicart(this->rom);
         battery = type == 0x03;
         if (type == 0x02 || type == 0x03) {
             const uint8_t sizeCode = this->rom.size() > RAM_SIZE_OFFSET
@@ -233,6 +249,22 @@ Cartridge::Cartridge(std::vector<uint8_t> rom,
         }
         return;
     }
+    case 0x22:
+        if (this->rom.size() < MINIMUM_BANKED_ROM_SIZE ||
+            this->rom.size() > MAXIMUM_MBC_ROM_SIZE ||
+            this->rom.size() % ROM_BANK_SIZE != 0)
+            throw std::invalid_argument("MBC7 cartridge must contain 32 KiB to 2 MiB of banked ROM");
+        mapper = Mapper::Mbc7;
+        battery = true;
+        if (saveRam) {
+            if (saveRam->size() != MBC7_EEPROM_SIZE)
+                throw std::invalid_argument("MBC7 EEPROM save data must be 256 bytes");
+            externalRam = std::move(saveRam);
+        } else {
+            externalRam = std::make_shared<std::vector<uint8_t>>(
+                MBC7_EEPROM_SIZE, 0xFF);
+        }
+        return;
     default:
         throw std::invalid_argument("unsupported Game Boy cartridge type");
     }
@@ -260,9 +292,26 @@ void Cartridge::write(uint16_t address, uint8_t value) {
             mbc5RomBank = (mbc5RomBank & 0x00FF) |
                           ((value & 0x01) << 8);
         } else if (address <= 0x5FFF) {
-            // Rumble cartridges use bit 3 for the motor and only bits 0-2
-            // for RAM banking. The motor signal is not exposed by this core.
-            mbc5RamBank = value & (mbc5HasRumble ? 0x07 : 0x0F);
+            const uint8_t previous = mbc5RamBank;
+            // Rumble cartridges reserve bit 3 for the motor, leaving bits
+            // 0-2 for RAM banking. Keep all four register bits in snapshots.
+            mbc5RamBank = value & 0x0F;
+            if (mbc5HasRumble && ((previous ^ mbc5RamBank) & 0x08) &&
+                rumbleCallback)
+                rumbleCallback(isRumbleActive());
+        } else if (address >= 0xA000 && address <= 0xBFFF) {
+            writeExternalRam(address, value);
+        }
+    } else if (mapper == Mapper::Mbc7) {
+        if (address <= 0x1FFF) {
+            mbc7RamEnable1 = (value & 0x0F) == 0x0A;
+        } else if (address <= 0x3FFF) {
+            mbc7RomBank = value & 0x7F;
+        } else if (address <= 0x5FFF) {
+            const bool previousRumble = isRumbleActive();
+            mbc7ControlRegister = value;
+            if (previousRumble != isRumbleActive() && rumbleCallback)
+                rumbleCallback(isRumbleActive());
         } else if (address >= 0xA000 && address <= 0xBFFF) {
             writeExternalRam(address, value);
         }
@@ -318,6 +367,52 @@ const uint8_t *Cartridge::getExternalRamData() const {
 
 size_t Cartridge::getExternalRamSize() const {
     return externalRam ? externalRam->size() : 0;
+}
+
+void Cartridge::setMbc7AccelerometerData(uint16_t x, uint16_t y) {
+    if (mapper != Mapper::Mbc7)
+        return;
+    mbc7AccelerometerX = x;
+    mbc7AccelerometerY = y;
+}
+
+bool Cartridge::isRumbleActive() const {
+    if (mapper == Mapper::Mbc5)
+        return mbc5HasRumble && (mbc5RamBank & 0x08) != 0;
+    if (mapper == Mapper::Mbc7)
+        return (mbc7ControlRegister & 0x08) != 0;
+    return false;
+}
+
+void Cartridge::setRumbleCallback(std::function<void(bool)> callback) {
+    rumbleCallback = std::move(callback);
+    notifyRumbleState();
+}
+
+void Cartridge::notifyRumbleState() {
+    if (rumbleCallback)
+        rumbleCallback(isRumbleActive());
+}
+
+void Cartridge::advanceTCycles(uint64_t tCycles) {
+    if (mapper != Mapper::Mbc7 || tCycles == 0)
+        return;
+
+    if (!mbc7EepromChipSelect && mbc7EepromChipSelectLowTCycles < 2) {
+        const auto remaining = static_cast<uint64_t>(
+            2 - mbc7EepromChipSelectLowTCycles);
+        mbc7EepromChipSelectLowTCycles = static_cast<uint8_t>(
+            mbc7EepromChipSelectLowTCycles + std::min(tCycles, remaining));
+    }
+
+    if (mbc7EepromBusyTCycles == 0)
+        return;
+    if (tCycles < mbc7EepromBusyTCycles) {
+        mbc7EepromBusyTCycles -= static_cast<uint32_t>(tCycles);
+        return;
+    }
+    mbc7EepromBusyTCycles = 0;
+    finishMbc7EepromProgramming();
 }
 
 std::shared_ptr<std::vector<uint8_t>> Cartridge::getBatteryRamStorage() const {
@@ -503,6 +598,12 @@ uint8_t Cartridge::readRom(uint16_t address) const {
 }
 
 uint8_t Cartridge::readExternalRam(uint16_t address) {
+    if (mapper == Mapper::Mbc7) {
+        if (address > 0xAFFF || !mbc7RamEnable1 ||
+            !(mbc7ControlRegister & 0x40))
+            return 0xFF;
+        return readMbc7Register(address);
+    }
     if (mapper == Mapper::Mbc3 && mbc3RamBank >= 0x08 &&
         mbc3RamBank <= 0x0C) {
         if (!ramEnabled || !mbc3HasRtc)
@@ -526,6 +627,12 @@ uint8_t Cartridge::readExternalRam(uint16_t address) {
 }
 
 void Cartridge::writeExternalRam(uint16_t address, uint8_t value) {
+    if (mapper == Mapper::Mbc7) {
+        if (address <= 0xAFFF && mbc7RamEnable1 &&
+            (mbc7ControlRegister & 0x40))
+            writeMbc7Register(address, value);
+        return;
+    }
     if (mapper == Mapper::Mbc3 && mbc3RamBank >= 0x08 &&
         mbc3RamBank <= 0x0C) {
         if (ramEnabled && mbc3HasRtc)
@@ -548,6 +655,254 @@ void Cartridge::writeExternalRam(uint16_t address, uint8_t value) {
     (*externalRam)[offset % externalRam->size()] = value;
 }
 
+uint8_t Cartridge::readMbc7Register(uint16_t address) const {
+    switch (address & 0x00F0) {
+    case 0x20:
+        return mbc7LatchedAccelerometerX & 0xFF;
+    case 0x30:
+        return mbc7LatchedAccelerometerX >> 8;
+    case 0x40:
+        return mbc7LatchedAccelerometerY & 0xFF;
+    case 0x50:
+        return mbc7LatchedAccelerometerY >> 8;
+    case 0x60:
+        return 0x00;
+    case 0x70:
+        return 0xFF;
+    case 0x80:
+        return static_cast<uint8_t>((mbc7EepromChipSelect ? 0x80 : 0) |
+                                    (mbc7EepromClock ? 0x40 : 0) |
+                                    (mbc7EepromDataIn ? 0x02 : 0) |
+                                    ((mbc7EepromBusyTCycles > 0 &&
+                                      mbc7EepromChipSelectQualified)
+                                         ? 0 : (mbc7EepromDataOut ? 1 : 0)));
+    default:
+        return 0xFF;
+    }
+}
+
+void Cartridge::writeMbc7Register(uint16_t address, uint8_t value) {
+    switch (address & 0x00F0) {
+    case 0x00:
+        if (value == 0x55) {
+            mbc7LatchedAccelerometerX = 0x8000;
+            mbc7LatchedAccelerometerY = 0x8000;
+            mbc7AccelerometerLatched = false;
+            mbc7AccelerometerLatchArmed = true;
+        }
+        break;
+    case 0x10:
+        if (value == 0xAA && mbc7AccelerometerLatchArmed &&
+            !mbc7AccelerometerLatched) {
+            mbc7LatchedAccelerometerX = mbc7AccelerometerX;
+            mbc7LatchedAccelerometerY = mbc7AccelerometerY;
+            mbc7AccelerometerLatchArmed = false;
+            mbc7AccelerometerLatched = true;
+        }
+        break;
+    case 0x80:
+        clockMbc7Eeprom(value);
+        break;
+    default:
+        break;
+    }
+}
+
+void Cartridge::clockMbc7Eeprom(uint8_t value) {
+    const bool chipSelect = (value & 0x80) != 0;
+    const bool clock = (value & 0x40) != 0;
+    mbc7EepromDataIn = (value & 0x02) != 0;
+
+    if (!chipSelect) {
+        if (mbc7EepromChipSelect) {
+            beginMbc7EepromProgramming();
+            mbc7EepromPhase = Mbc7EepromPhase::Command;
+            mbc7EepromShiftRegister = 0;
+            mbc7EepromBitCount = 0;
+            mbc7EepromReadBitsRemaining = 0;
+            mbc7EepromDataOut = true;
+            mbc7EepromChipSelectLowTCycles = 0;
+            mbc7EepromChipSelectQualified = false;
+        }
+        mbc7EepromChipSelect = false;
+        mbc7EepromClock = clock;
+        return;
+    }
+
+    if (!mbc7EepromChipSelect) {
+        mbc7EepromChipSelect = true;
+        mbc7EepromPhase = Mbc7EepromPhase::Command;
+        mbc7EepromShiftRegister = 0;
+        mbc7EepromBitCount = 0;
+        mbc7EepromReadBitsRemaining = 0;
+        mbc7EepromDataOut = true;
+        mbc7EepromChipSelectQualified =
+            mbc7EepromChipSelectLowTCycles >= 2;
+    }
+
+    if (clock && !mbc7EepromClock && mbc7EepromChipSelectQualified &&
+        mbc7EepromBusyTCycles == 0) {
+        switch (mbc7EepromPhase) {
+        case Mbc7EepromPhase::Command:
+            if (mbc7EepromBitCount == 0) {
+                if (mbc7EepromDataIn) {
+                    mbc7EepromShiftRegister = 1;
+                    mbc7EepromBitCount = 1;
+                }
+            } else {
+                mbc7EepromShiftRegister = static_cast<uint16_t>(
+                    (mbc7EepromShiftRegister << 1) | mbc7EepromDataIn);
+                if (++mbc7EepromBitCount == 10)
+                    decodeMbc7EepromCommand();
+            }
+            break;
+        case Mbc7EepromPhase::ReadData:
+            if (mbc7EepromReadBitsRemaining > 0) {
+                --mbc7EepromReadBitsRemaining;
+                mbc7EepromDataOut =
+                    (mbc7EepromReadWord >> mbc7EepromReadBitsRemaining) & 1;
+            } else {
+                mbc7EepromAddress = (mbc7EepromAddress + 1) & 0x7F;
+                const size_t offset =
+                    static_cast<size_t>(mbc7EepromAddress) * 2;
+                mbc7EepromReadWord = static_cast<uint16_t>(
+                    ((*externalRam)[offset] << 8) |
+                    (*externalRam)[offset + 1]);
+                mbc7EepromReadBitsRemaining = 15;
+                mbc7EepromDataOut = (mbc7EepromReadWord >> 15) & 1;
+            }
+            break;
+        case Mbc7EepromPhase::WriteData:
+        case Mbc7EepromPhase::WriteAllData:
+            mbc7EepromShiftRegister = static_cast<uint16_t>(
+                (mbc7EepromShiftRegister << 1) | mbc7EepromDataIn);
+            if (++mbc7EepromBitCount == 16) {
+                if (mbc7EepromWriteEnabled) {
+                    mbc7EepromPendingOperation =
+                        mbc7EepromPhase == Mbc7EepromPhase::WriteAllData
+                            ? Mbc7EepromPendingOperation::WriteAll
+                            : Mbc7EepromPendingOperation::WriteWord;
+                    mbc7EepromPendingWord = mbc7EepromShiftRegister;
+                }
+                mbc7EepromPhase = Mbc7EepromPhase::Command;
+                mbc7EepromShiftRegister = 0;
+                mbc7EepromBitCount = 0;
+                mbc7EepromDataOut = true;
+            }
+            break;
+        }
+    }
+    mbc7EepromClock = clock;
+}
+
+void Cartridge::decodeMbc7EepromCommand() {
+    const uint8_t operation = (mbc7EepromShiftRegister >> 7) & 0x03;
+    const uint8_t address = mbc7EepromShiftRegister & 0x7F;
+    mbc7EepromAddress = address;
+    mbc7EepromBitCount = 0;
+    mbc7EepromShiftRegister = 0;
+    mbc7EepromDataOut = true;
+
+    switch (operation) {
+    case 0x00: {
+        switch ((address >> 5) & 0x03) {
+        case 0x00: // EWDS
+            mbc7EepromWriteEnabled = false;
+            mbc7EepromPhase = Mbc7EepromPhase::Command;
+            break;
+        case 0x01: // WRAL
+            mbc7EepromPhase = Mbc7EepromPhase::WriteAllData;
+            break;
+        case 0x02: // ERAL
+            if (mbc7EepromWriteEnabled)
+                mbc7EepromPendingOperation =
+                    Mbc7EepromPendingOperation::EraseAll;
+            mbc7EepromPhase = Mbc7EepromPhase::Command;
+            break;
+        case 0x03: // EWEN
+            mbc7EepromWriteEnabled = true;
+            mbc7EepromPhase = Mbc7EepromPhase::Command;
+            break;
+        }
+        break;
+    }
+    case 0x01: // WRITE
+        mbc7EepromPhase = Mbc7EepromPhase::WriteData;
+        break;
+    case 0x02: { // READ
+        const size_t offset = static_cast<size_t>(address) * 2;
+        mbc7EepromReadWord = static_cast<uint16_t>(
+            ((*externalRam)[offset] << 8) | (*externalRam)[offset + 1]);
+        // Microwire READ presents a dummy zero; the first rising clock edge
+        // then places the addressed word's MSB on DO.
+        mbc7EepromDataOut = false;
+        mbc7EepromReadBitsRemaining = 16;
+        mbc7EepromPhase = Mbc7EepromPhase::ReadData;
+        break;
+    }
+    case 0x03: // ERASE
+        if (mbc7EepromWriteEnabled)
+            mbc7EepromPendingOperation =
+                Mbc7EepromPendingOperation::EraseWord;
+        mbc7EepromPhase = Mbc7EepromPhase::Command;
+        break;
+    }
+}
+
+void Cartridge::beginMbc7EepromProgramming() {
+    if (mbc7EepromBusyTCycles != 0 ||
+        mbc7EepromPendingOperation == Mbc7EepromPendingOperation::None)
+        return;
+    if (!mbc7EepromWriteEnabled) {
+        mbc7EepromPendingOperation = Mbc7EepromPendingOperation::None;
+        mbc7EepromPendingWord = 0xFFFF;
+        return;
+    }
+
+    mbc7EepromBusyTCycles =
+        mbc7EepromPendingOperation == Mbc7EepromPendingOperation::WriteAll
+            ? MBC7_WRITE_ALL_TCYCLES
+            : MBC7_WORD_PROGRAM_TCYCLES;
+    mbc7EepromDataOut = true;
+}
+
+void Cartridge::finishMbc7EepromProgramming() {
+    switch (mbc7EepromPendingOperation) {
+    case Mbc7EepromPendingOperation::WriteWord:
+        completeMbc7EepromWrite(mbc7EepromPendingWord, false);
+        break;
+    case Mbc7EepromPendingOperation::EraseWord:
+        completeMbc7EepromWrite(0xFFFF, false);
+        break;
+    case Mbc7EepromPendingOperation::EraseAll:
+        completeMbc7EepromWrite(0xFFFF, true);
+        break;
+    case Mbc7EepromPendingOperation::WriteAll:
+        completeMbc7EepromWrite(mbc7EepromPendingWord, true);
+        break;
+    case Mbc7EepromPendingOperation::None:
+        return;
+    }
+    mbc7EepromPendingOperation = Mbc7EepromPendingOperation::None;
+    mbc7EepromPendingWord = 0xFFFF;
+    mbc7EepromDataOut = true;
+}
+
+void Cartridge::completeMbc7EepromWrite(uint16_t value, bool allWords) {
+    if (!mbc7EepromWriteEnabled)
+        return;
+    if (allWords) {
+        for (size_t address = 0; address < 128; ++address) {
+            (*externalRam)[address * 2] = static_cast<uint8_t>(value >> 8);
+            (*externalRam)[address * 2 + 1] = static_cast<uint8_t>(value);
+        }
+    } else {
+        const size_t offset = static_cast<size_t>(mbc7EepromAddress) * 2;
+        (*externalRam)[offset] = static_cast<uint8_t>(value >> 8);
+        (*externalRam)[offset + 1] = static_cast<uint8_t>(value);
+    }
+}
+
 size_t Cartridge::getRomBankCount() const {
     return rom.size() / ROM_BANK_SIZE;
 }
@@ -565,12 +920,17 @@ size_t Cartridge::getSelectedRomBank(uint16_t address) const {
     if (mapper == Mapper::Mbc5)
         return address < 0x4000 ? 0 : mbc5RomBank % getRomBankCount();
 
+    if (mapper == Mapper::Mbc7)
+        return address < 0x4000 ? 0 : mbc7RomBank % getRomBankCount();
+
+    const unsigned highShift = mbc1Multicart ? 4 : 5;
     size_t bank = 0;
     if (address < 0x4000) {
         if (ramBankingMode)
-            bank = static_cast<size_t>(bankHigh) << 5;
+            bank = static_cast<size_t>(bankHigh) << highShift;
     } else {
-        bank = (static_cast<size_t>(bankHigh) << 5) | romBankLow;
+        bank = (static_cast<size_t>(bankHigh) << highShift) |
+               (romBankLow & (mbc1Multicart ? 0x0F : 0x1F));
     }
     return bank % getRomBankCount();
 }
@@ -579,7 +939,7 @@ size_t Cartridge::getSelectedRamBank() const {
     if (mapper == Mapper::Mbc3)
         return mbc3RamBank;
     if (mapper == Mapper::Mbc5)
-        return mbc5RamBank;
+        return mbc5RamBank & (mbc5HasRumble ? 0x07 : 0x0F);
     if (!ramBankingMode || !externalRam ||
         externalRam->size() <= RAM_BANK_SIZE)
         return 0;

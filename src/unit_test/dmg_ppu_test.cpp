@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <array>
 #include <iostream>
 
 #include "dmg_ppu.hpp"
@@ -33,6 +34,25 @@ void expect(bool condition, const char *message) {
         std::exit(EXIT_FAILURE);
     }
 }
+
+class TestCgbVideoRam final : public IVideoRam {
+public:
+    uint8_t read(uint16_t address) override { return readBank(0, address); }
+    void write(uint16_t address, uint8_t value) override {
+        writeBank(0, address, value);
+    }
+    uint8_t readBank(uint8_t bank, uint16_t address) const override {
+        if (bank >= 2 || address < 0x8000 || address > 0x9FFF)
+            return 0xFF;
+        return bytes[bank * 0x2000 + (address - 0x8000)];
+    }
+private:
+    void writeBank(uint8_t bank, uint16_t address, uint8_t value) {
+        if (bank < 2 && address >= 0x8000 && address <= 0x9FFF)
+            bytes[bank * 0x2000 + (address - 0x8000)] = value;
+    }
+    std::array<uint8_t, 0x4000> bytes{};
+};
 
 void writeTileRow(DmgPpu &ppu, uint8_t tile, uint8_t row, uint8_t low, uint8_t high) {
     const uint16_t address = static_cast<uint16_t>(VRAM + tile * 16 + row * 2);
@@ -97,6 +117,35 @@ void testVisibleLineModesAndVideoMemoryAccess() {
     expect((ppu.read(STAT) & 3) == 0, "mode 0 remains active at the early LY edge");
     ppu.advanceTCycles(4);
     expect((ppu.read(STAT) & 0x03) == 2, "the next visible line begins in mode 2");
+}
+
+void testObjectSelectionSamplesOamDuringMode2() {
+    const auto renderedPixelAfterRewrite = [](uint8_t initialY,
+                                              uint8_t rewrittenY) {
+        InterruptRegisters interrupts;
+        DmgPpu ppu(interrupts);
+        writeTileRow(ppu, 1, 0, 0xFF, 0x00);
+        ppu.write(BGP, 0xE4);
+        ppu.write(OBP0, 0xE4);
+        ppu.write(OAM, initialY);
+        ppu.write(OAM + 1, 8);
+        ppu.write(OAM + 2, 1);
+        ppu.write(OAM + 3, 0);
+        ppu.write(LCDC, 0x93);
+
+        // Finish the startup line, then let OAM entry zero be sampled at dot 1
+        // of LY 1. The DMA-facing write models an OAM change after that sample.
+        ppu.advanceTCycles(454);
+        ppu.advanceTCycles(1);
+        ppu.writeOamFromDma(0, rewrittenY);
+        ppu.advanceTCycles(455);
+        return ppu.getFrameBuffer()[DmgPpu::FRAME_WIDTH];
+    };
+
+    expect(renderedPixelAfterRewrite(17, 0) == 1,
+           "an OAM Y value sampled during Mode 2 remains selected after DMA changes it");
+    expect(renderedPixelAfterRewrite(0, 17) == 0,
+           "a later DMA Y change cannot add an object after its Mode 2 scan slot");
 }
 
 void testLcdStartupLineBeginsInModeZero() {
@@ -602,6 +651,47 @@ void testModeTwoStatSourceAtVblankEntry() {
         expect(!(interrupts.read(IF) & (INTERRUPT_LCD_STAT | INTERRUPT_VBLANK)),
                "later VBlank lines do not repeat the entry interrupt");
     }
+}
+
+void testCgbModeTwoStatPrecedesVblank() {
+    for (bool compatibility : {false, true}) {
+        InterruptRegisters interrupts;
+        TestCgbVideoRam video;
+        DmgPpu ppu(interrupts, &video, true);
+        ppu.initializeCgbPostBootState();
+        if (compatibility)
+            ppu.setDmgCompatibility(true, false);
+
+        // Reach the final five dots of line 143 without enabling any STAT
+        // sources. Enable only Mode 2 there, matching Mooneye's CGB probe.
+        ppu.advanceTCycles(456U * 143U + 451U);
+        expect(ppu.read(LY) == 143 && (ppu.read(STAT) & 3) == 0,
+               "CGB remains on readable line 143 before the final LY transition");
+        ppu.write(STAT, STAT_MODE2_INTERRUPT);
+        ppu.advanceTCycles(1);
+        expect(ppu.read(LY) == 144 && (ppu.read(STAT) & 3) == 0 &&
+                   (interrupts.read(IF) & 2) != 0 &&
+                   (interrupts.read(IF) & 1) == 0,
+               compatibility
+                   ? "CGB compatibility raises Mode 2 STAT one M-cycle before VBlank"
+                   : "native CGB raises Mode 2 STAT one M-cycle before VBlank");
+        ppu.advanceTCycles(3);
+        expect((interrupts.read(IF) & 1) == 0,
+               "CGB VBlank interrupt remains clear until the line boundary");
+        ppu.advanceTCycles(1);
+        expect((interrupts.read(IF) & 3) == 3 &&
+                   (ppu.read(STAT) & 3) == 1,
+               "CGB VBlank interrupt follows the earlier Mode 2 STAT edge");
+    }
+
+    InterruptRegisters interrupts;
+    DmgPpu dmg(interrupts);
+    dmg.initializeDmgPostBootState();
+    dmg.advanceTCycles(456U * 143U + 451U);
+    dmg.write(STAT, STAT_MODE2_INTERRUPT);
+    dmg.advanceTCycles(5);
+    expect((interrupts.read(IF) & 3) == 3,
+           "DMG raises its Mode 2 STAT source at VBlank entry");
 }
 
 void testLycCoincidenceAndStatInterrupt() {
@@ -1217,6 +1307,7 @@ void testSixteenPixelObjectsUsePairedTiles() {
 int main() {
     testDisabledPpuRegistersAndVideoMemory();
     testVisibleLineModesAndVideoMemoryAccess();
+    testObjectSelectionSamplesOamDuringMode2();
     testLcdStartupLineBeginsInModeZero();
     testLyTransitionSeparatesComparisonAndOamReadAccess();
     testVramReadBlockPrecedesModeThree();
@@ -1235,6 +1326,7 @@ int main() {
     testModeOneStatBlocksLastLineLycZeroEdge();
     testStatInterruptUsesRisingEdgeOfCombinedSources();
     testModeTwoStatSourceAtVblankEntry();
+    testCgbModeTwoStatPrecedesVblank();
     testLycCoincidenceAndStatInterrupt();
     testLycComparisonStopsWhileLcdIsOff();
     testBackgroundTilesAndPaletteRenderToFrameBuffer();

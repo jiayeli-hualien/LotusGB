@@ -1,9 +1,6 @@
 #include <iostream>
 #include <cstddef>
 #include <cstdint>
-#include <iomanip>
-#include <sstream>
-#include <stdexcept>
 #include "include/instSubFunc.hpp"
 #include "include/instSubFuncCommon.hpp"
 #include "include/instruction.hpp"
@@ -22,16 +19,9 @@ static uint8_t* getRegLHS(const uint8_t &op, Reg *pReg) {
     return ret;
 }
 
-SUB_FUNC_IMPL(NOT_SUPPORT) {
-    const uint16_t opcodeAddress =
-        static_cast<uint16_t>(pReg->getRefPC() - 1);
-    std::ostringstream message;
-    message << "unsupported opcode 0x" << std::uppercase << std::hex
-            << std::setw(2) << std::setfill('0')
-            << static_cast<unsigned>(pInstState->opcode)
-            << " at 0x" << std::setw(4)
-            << static_cast<unsigned>(opcodeAddress);
-    throw std::runtime_error(message.str());
+SUB_FUNC_IMPL_STATE_ONLY(IllegalOpcode) {
+    pInstState->clockAction = CLOCK_ACTION_LOCKUP;
+    pInstState->memMode = MEM_MODE_SLEEP;
 }
 
 SUB_FUNC_IMPL(LDRR) {
@@ -63,6 +53,7 @@ SUB_FUNC_IMPL(PUSH_LD_A16_RR) {
     pInstState->memMode = MEM_MODE_SLEEP;
     pInstState->a16Addr = _getPushPopReg16(pInstState->opcode, pReg);
     // The IDU decrements SP in PUSH's internal M-cycle, before either write.
+    pInstState->iduActive = true; pInstState->iduAddress = pReg->getRefSP();
     --pReg->getRefSP();
 }
 
@@ -77,6 +68,7 @@ SUB_FUNC_IMPL(MemReadPC) {
     // notify CPU to read immediate value
     pInstState->memMode = MEM_MODE_READ;
     pInstState->memAddr = pReg->getRefPC()++;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
 }
 
 static uint16_t& _getIndreictRegBC_DE(InstState *pInstState, Reg *pReg) {
@@ -107,11 +99,13 @@ static uint16_t& _getCommonReg16(uint8_t opcode, Reg *pReg) {
 SUB_FUNC_IMPL(MemReadIndirectHLDec) {
     pInstState->memMode = MEM_MODE_READ;
     pInstState->memAddr = pReg->getRefHL()--;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
 }
 
 SUB_FUNC_IMPL(MemReadIndirectHLInc) {
     pInstState->memMode = MEM_MODE_READ;
     pInstState->memAddr = pReg->getRefHL()++;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
 }
 
 SUB_FUNC_IMPL(MemReadIndirectBC_DE) {
@@ -132,11 +126,13 @@ SUB_FUNC_IMPL(ReadHighC) {
 SUB_FUNC_IMPL(ReadA16LSB) {
     pInstState->memMode = MEM_MODE_READ_ADDR_LSB;
     pInstState->memAddr = pReg->getRefPC()++;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
 }
 
 SUB_FUNC_IMPL(ReadA16MSB) {
     pInstState->memMode = MEM_MODE_READ_ADDR_MSB;
     pInstState->memAddr = pReg->getRefPC()++;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
 }
 
 SUB_FUNC_IMPL(MemWriteIndirectHL) {
@@ -150,12 +146,14 @@ SUB_FUNC_IMPL(MemWriteIndirectHL) {
 SUB_FUNC_IMPL(MemWriteIndirectHLDec) {
     pInstState->memMode = MEM_MODE_WRITE;
     pInstState->memAddr = pReg->getRefHL()--;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
     pInstState->memValue = pReg->getRefA();
 }
 
 SUB_FUNC_IMPL(MemWriteIndirectHLInc) {
     pInstState->memMode = MEM_MODE_WRITE;
     pInstState->memAddr = pReg->getRefHL()++;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
     pInstState->memValue = pReg->getRefA();
 }
 
@@ -207,6 +205,7 @@ SUB_FUNC_IMPL(PUSH_A16_MSB) {
     pInstState->memMode = MEM_MODE_WRITE;
     pInstState->memAddr = pReg->getRefSP();
     // The high-byte write shares its M-cycle with the second IDU decrement.
+    pInstState->iduActive = true; pInstState->iduAddress = pReg->getRefSP();
     --pReg->getRefSP();
     pInstState->memValue = (pInstState->a16Addr>>8)&0xFF;
 }
@@ -220,6 +219,7 @@ SUB_FUNC_IMPL(PUSH_A16_LSB) {
 SUB_FUNC_IMPL(POP_LD_A16_LSB) {
     pInstState->memMode = MEM_MODE_READ_ADDR_LSB;
     pInstState->memAddr = pReg->getRefSP()++;
+    pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
 }
 
 SUB_FUNC_IMPL(POP_LD_A16_MSB) {
@@ -538,6 +538,7 @@ SUB_FUNC_IMPL(CondJR) {
 
 SUB_FUNC_IMPL(SwapPC_MEM16) {
     // CALL decrements SP in this internal M-cycle before the stack writes.
+    pInstState->iduActive = true; pInstState->iduAddress = pReg->getRefSP();
     --pReg->getRefSP();
     std::swap(pReg->getRefPC(),pInstState->a16Addr);
     pInstState->memMode = MEM_MODE_SLEEP;
@@ -548,6 +549,7 @@ SUB_FUNC_IMPL(CondSwapPC_MEM16) {
     pReg->getFlag(flag);
     if (_jpConditionTrue(pInstState->opcode, flag)) {
         // The taken CALL's internal M-cycle performs the first IDU decrement.
+        pInstState->iduActive = true; pInstState->iduAddress = pReg->getRefSP();
         --pReg->getRefSP();
         std::swap(pReg->getRefPC(), pInstState->a16Addr);
         pInstState->memMode = MEM_MODE_SLEEP;
@@ -564,6 +566,7 @@ SUB_FUNC_IMPL(CondPOP_LD_A16_LSB) {
     if (_jpConditionTrue(pInstState->opcode, flag)) {
         pInstState->memMode = MEM_MODE_READ_ADDR_LSB;
         pInstState->memAddr = pReg->getRefSP()++;
+        pInstState->iduActive = true; pInstState->iduAddress = pInstState->memAddr;
     }
 }
 
@@ -577,6 +580,7 @@ SUB_FUNC_IMPL(LD_MEM16_PC) {
     pInstState->a16Addr = pReg->getRefPC();
     pInstState->memMode = MEM_MODE_SLEEP;
     // RST decrements SP in its internal M-cycle before the stack writes.
+    pInstState->iduActive = true; pInstState->iduAddress = pReg->getRefSP();
     --pReg->getRefSP();
 }
 
@@ -608,12 +612,16 @@ SUB_FUNC_IMPL_STATE_ONLY(EI) {
 }
 
 SUB_FUNC_IMPL(IncRR) {
+    pInstState->iduActive = true;
+    pInstState->iduAddress = _getCommonReg16(pInstState->opcode, pReg);
     ++_getCommonReg16(pInstState->opcode, pReg);
     // The IDU updates the pair during the instruction's internal M-cycle.
     pInstState->memMode = MEM_MODE_SLEEP;
 }
 
 SUB_FUNC_IMPL(DecRR) {
+    pInstState->iduActive = true;
+    pInstState->iduAddress = _getCommonReg16(pInstState->opcode, pReg);
     --_getCommonReg16(pInstState->opcode, pReg);
     // The IDU updates the pair during the instruction's internal M-cycle.
     pInstState->memMode = MEM_MODE_SLEEP;

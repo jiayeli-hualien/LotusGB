@@ -2,12 +2,29 @@
 #include <iostream>
 
 #include "dmg_oam_dma.hpp"
+#include "cgb_memory.hpp"
 #include "interrupt_registers.hpp"
 #include "memory_region.hpp"
+#include "system_clock.hpp"
 
 namespace {
 
 using namespace LOTUSGB;
+
+class IdleCpu final : public ICPU {
+public:
+    void reset() override {}
+    void fetchFirstOpcode() override {}
+    RetStepOneCycle stepOneCycle() override { return {true, false, T_CYCLES_PER_M_CYCLE}; }
+    Reg getReg() override { return {}; }
+    void setReg(const Reg &) override {}
+    bool getIME() override { return false; }
+    void setIME(bool) override {}
+    bool getHALT() override { return false; }
+    void setHALT(bool) override {}
+    bool getStopped() override { return false; }
+    void wakeFromStop() override {}
+};
 
 void expect(bool condition, const char *message) {
     if (!condition) {
@@ -138,6 +155,47 @@ void testDmaProgressAndBusOwnership() {
            "VRAM DMA leaves the separate cartridge/WRAM bus accessible");
 }
 
+void testCgbOamDmaCompletesIn160CpuCyclesAtBothSpeeds() {
+    for (bool doubleSpeed : {false, true}) {
+        InterruptRegisters interrupts;
+        CgbVideoRam video;
+        DmgPpu ppu(interrupts, &video, true);
+        AddressBus bus;
+        RamRegion workRam(0xC000, 0x2000);
+        DmgOamDma dma(bus, ppu, true);
+        IdleCpu cpu;
+        SystemClock clock(cpu);
+        bus.map(0xC000, 0xDFFF, workRam);
+        bus.map(0xFE00, 0xFE9F, ppu);
+        bus.map(0xFF46, 0xFF46, dma);
+        bus.setCpuBusArbiter(dma);
+        for (size_t i = 0; i < DmgPpu::OAM_SIZE; ++i)
+            workRam.write(static_cast<uint16_t>(0xC000 + i),
+                          static_cast<uint8_t>(0x31 + i * 3));
+
+        clock.addClockedComponent(dma, true);
+        clock.setDoubleSpeed(doubleSpeed);
+        dma.write(0xFF46, 0xC0);
+        const auto first = clock.stepIdle();
+        expect(first.tCyclesElapsed == (doubleSpeed ? 2u : 4u) && !dma.isActive(),
+               "CGB OAM DMA retains its one-M-cycle startup delay at either speed");
+        const auto second = clock.stepIdle();
+        expect(second.tCyclesElapsed == (doubleSpeed ? 2u : 4u) && dma.isActive() &&
+                   ppu.read(0xFE00) == 0x31 && ppu.read(0xFE01) == 0,
+               "CGB OAM DMA copies its first byte at the M=2 boundary");
+        const uint64_t firstByteTime = clock.getElapsedTCycles();
+
+        for (size_t i = 1; i < DmgPpu::OAM_SIZE; ++i)
+            clock.stepIdle();
+        expect(dma.isActive() && ppu.read(0xFE9F) == static_cast<uint8_t>(0x31 + 159 * 3),
+               "CGB OAM DMA copies its last byte on the 160th transfer M-cycle");
+        clock.stepIdle();
+        expect(!dma.isActive() &&
+                   clock.getElapsedTCycles() - firstByteTime == (doubleSpeed ? 320u : 640u),
+               "CGB OAM DMA releases after 160 CPU M-cycles: 640 normal-speed or 320 double-speed dots");
+    }
+}
+
 void testDmaRestartKeepsOldTransferUntilNewStart() {
     InterruptRegisters interrupts;
     DmgPpu ppu(interrupts);
@@ -167,9 +225,57 @@ void testDmaRestartKeepsOldTransferUntilNewStart() {
     expect(ppu.read(0xFE01) == 0x88, "new DMA proceeds from the replacement page");
 }
 
+void testCgbSeparatesCartridgeAndWorkRamBuses() {
+    for (uint8_t sourcePage : {uint8_t(0x40), uint8_t(0xA0), uint8_t(0xC0), uint8_t(0xD0)}) {
+        InterruptRegisters interrupts;
+        DmgPpu ppu(interrupts);
+        AddressBus bus;
+        RamRegion rom(0, 0x8000), sram(0xA000, 0x2000), wram(0xC000, 0x2000);
+        DmgOamDma dma(bus, ppu, true);
+        bus.map(0, 0x7FFF, rom);
+        bus.map(0xA000, 0xBFFF, sram);
+        bus.map(0xC000, 0xDFFF, wram);
+        bus.mapAlias(0xE000, 0xFDFF, wram, 0xC000);
+        bus.map(0xFE00, 0xFE9F, ppu);
+        bus.setCpuBusArbiter(dma);
+        rom.write(0x4000, 0x42); sram.write(0xA000, 0xA5);
+        wram.write(0xC000, 0xC3); wram.write(0xD000, 0xD4);
+        dma.write(0xFF46, sourcePage);
+        dma.advanceTCycles(8);
+        const bool fromWram = sourcePage >= 0xC0;
+        expect(dma.ownsCpuAddress(0x4000) == !fromWram &&
+                   dma.ownsCpuAddress(0xA000) == !fromWram &&
+                   dma.ownsCpuAddress(0xC000) == fromWram &&
+                   dma.ownsCpuAddress(0xD000) == fromWram &&
+                   dma.ownsCpuAddress(0xE000) == fromWram &&
+                   dma.ownsCpuAddress(0xFDFF) == fromWram,
+               "CGB OAM DMA owns only its source bus, including WRAM echo");
+        if (fromWram) {
+            expect(bus.read(0x4000) == 0x42 && bus.read(0xA000) == 0xA5,
+                   "WRAM DMA leaves ROM and cartridge SRAM readable");
+            bus.write(0xA000, 0x77); bus.write(0xC000, 0x99);
+            expect(sram.read(0xA000) == 0x77 && wram.read(0xC000) == 0xC3,
+                   "WRAM DMA permits cartridge writes while blocking its own bus");
+        } else {
+            expect(bus.read(0xC000) == 0xC3 && bus.read(0xE000) == 0xC3,
+                   "cartridge DMA leaves WRAM and its echo readable");
+            bus.write(0xE000, 0x66); bus.write(0xA000, 0x99);
+            expect(wram.read(0xC000) == 0x66 && sram.read(0xA000) == 0xA5,
+                   "cartridge DMA permits WRAM writes while blocking cartridge writes");
+        }
+        expect(bus.read(0xFE00) == 0xFF && !dma.ownsCpuAddress(0xFF80),
+               "CGB DMA still blocks OAM and leaves HRAM accessible");
+        dma.advanceTCycles(640);
+        expect(!dma.ownsCpuAddress(0x4000) && !dma.ownsCpuAddress(0xC000),
+               "completed CGB DMA releases both buses");
+    }
+}
+
 }
 
 int main() {
+    testCgbSeparatesCartridgeAndWorkRamBuses();
+    testCgbOamDmaCompletesIn160CpuCyclesAtBothSpeeds();
     testDmaProgressAndBusOwnership();
     testDmaRestartKeepsOldTransferUntilNewStart();
     testDmgOamDmaCopies160BytesFromSelectedPage();

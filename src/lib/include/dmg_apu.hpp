@@ -10,11 +10,12 @@
 
 namespace LOTUSGB {
 
-// Initial DMG APU slice: all four DMG sound channels.
+// Shared four-channel DMG/CGB APU with model-specific register behavior.
 class DmgApu final : public IAddressRegion, public IClockedComponent {
     friend class StateCodec;
 public:
     static constexpr unsigned SAMPLE_RATE = 48000;
+    explicit DmgApu(bool cgbMode = false) : cgbMode(cgbMode) {}
 
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
@@ -26,6 +27,10 @@ public:
     std::vector<int16_t> takeAudioSamples();
 
 private:
+    bool envelopeRunning = false, envelopeRunning2 = false, envelopeRunning4 = false;
+    bool firstDutySuppressed = true;
+    bool firstDutySuppressed2 = true;
+    const bool cgbMode; // Immutable model configuration, identified by the snapshot model.
     void setPower(bool enabled);
     void triggerChannel1();
     void triggerChannel2();
@@ -45,10 +50,10 @@ private:
     uint16_t channel2Frequency() const;
     uint16_t channel3Frequency() const;
     uint32_t channel4Period() const;
-    int channel1Output() const;
-    int channel2Output() const;
-    int channel3Output() const;
-    int channel4Output() const;
+    uint8_t channel1DigitalOutput() const;
+    uint8_t channel2DigitalOutput() const;
+    uint8_t channel3DigitalOutput() const;
+    uint8_t channel4DigitalOutput() const;
     void clockChannel4Lfsr();
     void generateSample();
 

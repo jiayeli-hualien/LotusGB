@@ -60,6 +60,42 @@ inline std::vector<uint8_t> makeCgbMbc5BatteryExerciseRom() {
     rom[0x149] = 0x02; // 8 KiB external SRAM.
     return rom;
 }
+// Original 8-MiB MBC5 game: execute a routine above ROM bank $FF every
+// frame, advancing SRAM bank 15 independently of the bank-0 game progress.
+inline std::vector<uint8_t> makeCgbMbc5HighBankExerciseRom(uint16_t bank) {
+    auto rom = makeCgbMbc5BatteryExerciseRom();
+    rom.resize(0x800000, 0);
+    rom[0x148] = 8; // 512 ROM banks.
+    rom[0x149] = 4; // Sixteen 8-KiB SRAM banks.
+    rom[0x101] = 0; rom[0x102] = 3;
+    const uint8_t setup[] = {
+        0xF5, // Preserve the native CGB startup A/flags for the game probe.
+        0x3E, static_cast<uint8_t>(bank), 0xEA, 0, 0x20,
+        0x3E, static_cast<uint8_t>(bank >> 8), 0xEA, 0, 0x30,
+        0xF1, 0xC3, 0x50, 1
+    };
+    for (size_t i = 0; i < sizeof(setup); ++i) rom[0x300 + i] = setup[i];
+    const uint8_t routine[] = {
+        0xF5, 0xE5,                         // Preserve AF/HL.
+        0x3E, 15, 0xEA, 0, 0x40,          // Select SRAM bank 15.
+        0x21, 0x10, 0xA0, 0x34,            // Advance imported progress.
+        0x3E, static_cast<uint8_t>(bank), 0xEA, 0x11, 0xA0,
+        0x3E, static_cast<uint8_t>(bank >> 8), 0xEA, 0x12, 0xA0,
+        0xAF, 0xEA, 0, 0x40,               // Return to SRAM bank 0.
+        0x21, 0x10, 0xA0, 0x34,            // Original game progress.
+        0xE1, 0xF1, 0xC9
+    };
+    for (size_t i = 0; i < sizeof(routine); ++i) rom[bank * 0x4000 + i] = routine[i];
+    // Replace the original frame-loop increment with a call into banked ROM.
+    for (size_t at = 0x150; at < 0x2FC; ++at) {
+        if (rom[at] == 0x21 && rom[at + 1] == 0x10 &&
+            rom[at + 2] == 0xA0 && rom[at + 3] == 0x34) {
+            rom[at] = 0xCD; rom[at + 1] = 0; rom[at + 2] = 0x40; rom[at + 3] = 0;
+            break;
+        }
+    }
+    return rom;
+}
 // Original CGB-compatible MBC3+RTC game fixture. Its startup reads the
 // latched seconds register, increments it, writes it back, then exposes the
 // observed value in battery SRAM at offset $30.
@@ -93,6 +129,27 @@ inline std::vector<uint8_t> makeCgbMbc3RtcExerciseRom() {
     };
     for (size_t i = 0; i < sizeof(rtcExercise); ++i)
         rom[0x0300 + i] = rtcExercise[i];
+    return rom;
+}
+// Freeze an imported running clock, then copy all five guest-visible RTC
+// registers to SRAM $30-$34 before entering the color/input game loop.
+inline std::vector<uint8_t> makeCgbRtcOfflineResumeRom() {
+    auto rom = makeCgbMbc3RtcExerciseRom();
+    size_t at = 0x300;
+    auto emit = [&](std::initializer_list<uint8_t> bytes) {
+        for (auto byte : bytes) rom[at++] = byte;
+    };
+    emit({0xF3, 0x3E, 0x0A, 0xEA, 0, 0}); // Enable RAM/RTC.
+    emit({0xAF, 0xEA, 0, 0x60, 0x3C, 0xEA, 0, 0x60}); // Latch current flags.
+    emit({0x3E, 0x0C, 0xEA, 0, 0x40, 0xFA, 0, 0xA0});
+    emit({0xF6, 0x40, 0xEA, 0, 0xA0}); // Halt, preserving day bit and carry.
+    emit({0xAF, 0xEA, 0, 0x60, 0x3C, 0xEA, 0, 0x60}); // Latch.
+    for (uint8_t reg = 0; reg < 5; ++reg) {
+        emit({0x3E, static_cast<uint8_t>(8 + reg), 0xEA, 0, 0x40});
+        emit({0xFA, 0, 0xA0, 0x47, 0xAF, 0xEA, 0, 0x40});
+        emit({0x78, 0xEA, static_cast<uint8_t>(0x30 + reg), 0xA0});
+    }
+    emit({0xC3, 0x50, 1});
     return rom;
 }
 // Original MBC30 setup for expanded ROM/SRAM, frozen RTC and portable state.

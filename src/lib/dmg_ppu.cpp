@@ -46,6 +46,7 @@ constexpr uint16_t DOTS_PER_SCANLINE = 456;
 constexpr uint16_t LAST_LINE_153_COMPARISON_END_DOT = 4;
 constexpr uint16_t LAST_LINE_ZERO_COMPARISON_DOT = 8;
 constexpr uint16_t MODE2_DOTS = 80;
+constexpr uint8_t OAM_SCAN_IN_PROGRESS = 0x80;
 constexpr uint8_t WINDOW_PENALTY_DOTS = 6;
 constexpr uint8_t VISIBLE_SCANLINES = 144;
 constexpr uint8_t SCANLINES_PER_FRAME = 154;
@@ -74,9 +75,23 @@ uint16_t DmgPpu::cgbColor(bool object, uint8_t palette, uint8_t color) const {
     return static_cast<uint16_t>((ram[at] | (ram[at + 1] << 8)) & 0x7FFF);
 }
 
+void DmgPpu::setDmgCompatibility(bool enabled, bool xPriority) {
+    if (!cgbMode && enabled) throw std::logic_error("CGB compatibility requires CGB hardware");
+    dmgCompatibility = enabled;
+    cgbXPriority = xPriority;
+}
+
+void DmgPpu::beginSpeedSwitchPause() {
+    if (!cgbMode) throw std::logic_error("Speed switching requires CGB hardware");
+    speedSwitchPpuMode = read(0xFF41) & 3;
+}
+
+void DmgPpu::endSpeedSwitchPause() { speedSwitchPpuMode = 3; }
+
 uint8_t DmgPpu::readVideoBank(uint8_t bank, size_t offset) const {
     if (offset >= videoRam.size())
         throw std::out_of_range("PPU VRAM fetch offset exceeds 8 KiB");
+    if (cgbMode && speedSwitchPpuMode < 2) return 0xFF;
     if (externalVideoRam)
         return externalVideoRam->readBank(bank, static_cast<uint16_t>(VRAM_START + offset));
     if (bank != 0)
@@ -102,6 +117,7 @@ void DmgPpu::initializeDmgPostBootState() {
     windowYTriggered = windowY == ly;
     dot = 0;
     mode3.reset();
+    beginOamScanForLine();
     frameBuffer.fill(0);
     completedFrameBuffer.fill(0);
     lycCoincidence = true;
@@ -168,7 +184,7 @@ uint8_t DmgPpu::read(uint16_t address) {
 
 void DmgPpu::write(uint16_t address, uint8_t value) {
     if (address >= VRAM_START && address <= VRAM_END) {
-        if (!lcdEnabled() || getMode() != 3) {
+        if (!isVramWriteBlocked()) {
             if (externalVideoRam)
                 externalVideoRam->write(address, value);
             else
@@ -203,7 +219,11 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
     switch (address) {
         case LCDC_ADDRESS: {
             const bool wasEnabled = lcdEnabled();
+            const bool windowWasEnabled = (lcdControl & WINDOW_ENABLE_MASK) != 0;
             lcdControl = value;
+            if (nativeColorMode() && windowWasEnabled &&
+                (value & WINDOW_ENABLE_MASK) == 0)
+                windowYTriggered = false;
             if (wasEnabled != lcdEnabled()) {
                 startupScanline = lcdEnabled();
                 // LCD startup begins two dots into the normal scanline timeline.
@@ -212,18 +232,32 @@ void DmgPpu::write(uint16_t address, uint8_t value) {
                 ly = 0;
                 windowLineCounter = 0;
                 windowYTriggered = lcdEnabled() && windowY == 0;
-                mode3.reset();
+                if (lcdEnabled()) {
+                    mode3.reset();
+                    beginOamScanForLine();
+                    // LCD startup starts at dot 2, after the first OAM entry's
+                    // normal Mode 2 sampling point.
+                    scanOamObject(0);
+                } else {
+                    mode3.reset();
+                }
                 if (!lcdEnabled()) {
+                    statWriteOverrideTCycles = 0;
                     frameBuffer.fill(0);
                     completedFrameBuffer.fill(0);
                     colorFrameBuffer.fill(0x7FFF);
                     completedColorFrameBuffer.fill(0x7FFF);
                 }
                 updateStatInterruptLine();
+                if (!lcdEnabled() && lcdDisabledCallback)
+                    lcdDisabledCallback();
             }
             break;
         }
         case STAT_ADDRESS:
+            // DMG briefly enables every STAT source for one M-cycle. Native
+            // CGB has no write glitch. Readback retains the requested mask.
+            statWriteOverrideTCycles = !cgbMode && lcdEnabled() ? 4 : 0;
             statInterruptEnable = value & STAT_INTERRUPT_ENABLE_MASK;
             updateStatInterruptLine();
             break;
@@ -266,10 +300,38 @@ void DmgPpu::advanceTCycles(uint64_t tCycles) {
 
     for (uint64_t cycle = 0; cycle < tCycles; ++cycle) {
         const uint8_t previousMode = getMode();
+        if (statWriteOverrideTCycles) --statWriteOverrideTCycles;
         advanceDot();
         if (previousMode == 3 && getMode() == 0 && hblankCallback)
             hblankCallback();
     }
+}
+
+void DmgPpu::onCpuBusAccess(uint16_t address, CpuBusEvent event) {
+    if (cgbMode || (address & 0xFF00) != 0xFE00 || !lcdEnabled() || getMode() != 2)
+        return;
+    const unsigned row = dot / 4;
+    if (row == 0 || row >= 20) return; // The first two objects are protected.
+    const auto word = [&](unsigned r, unsigned w) {
+        const size_t at = r * 8 + w * 2;
+        return static_cast<uint16_t>(objectRam[at] | (objectRam[at + 1] << 8));
+    };
+    const auto putWord = [&](unsigned r, uint16_t value) {
+        objectRam[r * 8] = static_cast<uint8_t>(value);
+        objectRam[r * 8 + 1] = static_cast<uint8_t>(value >> 8);
+    };
+    if (event == CpuBusEvent::ReadIdu && row >= 4 && row < 19) {
+        const uint16_t a = word(row - 2, 0), b = word(row - 1, 0);
+        const uint16_t c = word(row, 0), d = word(row - 1, 2);
+        putWord(row - 1, (b & (a | c | d)) | (a & c & d));
+        std::copy_n(objectRam.begin() + (row - 1) * 8, 8, objectRam.begin() + (row - 2) * 8);
+        std::copy_n(objectRam.begin() + (row - 1) * 8, 8, objectRam.begin() + row * 8);
+    }
+    const uint16_t a = word(row, 0), b = word(row - 1, 0), c = word(row - 1, 2);
+    const bool read = event == CpuBusEvent::Read || event == CpuBusEvent::ReadIdu;
+    putWord(row, read ? static_cast<uint16_t>(b | (a & c))
+                     : static_cast<uint16_t>(((a ^ c) & (b ^ c)) ^ c));
+    std::copy_n(objectRam.begin() + (row - 1) * 8 + 2, 6, objectRam.begin() + row * 8 + 2);
 }
 
 void DmgPpu::writeOamFromDma(size_t offset, uint8_t value) {
@@ -326,10 +388,19 @@ bool DmgPpu::statInterruptSignal() const {
         return false;
 
     const uint8_t mode = getMode();
-    return ((mode == 0) && (statInterruptEnable & STAT_MODE0_INTERRUPT_MASK)) ||
-           ((mode == 1) && (statInterruptEnable & STAT_MODE1_INTERRUPT_MASK)) ||
-           ((mode == 2) && (statInterruptEnable & STAT_MODE2_INTERRUPT_MASK)) ||
-           (lyEqualsLyc() && (statInterruptEnable & STAT_LYC_INTERRUPT_MASK));
+    const uint8_t enabled = statWriteOverrideTCycles ? STAT_INTERRUPT_ENABLE_MASK : statInterruptEnable;
+    // On CGB hardware, the Mode 2 STAT source for line 144 asserts one
+    // machine cycle before the VBlank request. LY has already advanced to
+    // 144, while the visible line is still in its final HBlank dots. The
+    // monochrome DMG instead clocks this source at VBlank entry below.
+    const bool cgbVblankMode2 = cgbMode && ly == VISIBLE_SCANLINES - 1 &&
+        dot >= DOTS_PER_SCANLINE - 4 && dot < DOTS_PER_SCANLINE &&
+        (enabled & STAT_MODE2_INTERRUPT_MASK);
+    return cgbVblankMode2 ||
+           ((mode == 0) && (enabled & STAT_MODE0_INTERRUPT_MASK)) ||
+           ((mode == 1) && (enabled & STAT_MODE1_INTERRUPT_MASK)) ||
+           ((mode == 2) && (enabled & STAT_MODE2_INTERRUPT_MASK)) ||
+           (lyEqualsLyc() && (enabled & STAT_LYC_INTERRUPT_MASK));
 }
 
 void DmgPpu::updateStatInterruptLine() {
@@ -360,6 +431,14 @@ void DmgPpu::updateStatInterruptLine() {
 
 void DmgPpu::advanceDot() {
     ++dot;
+    const bool startupOamScan = startupScanline && ly == 0;
+    const bool oamScanDot = startupOamScan
+        ? dot >= 4 && dot <= MODE2_DOTS && (dot & 1) == 0
+        : dot >= 1 && dot < MODE2_DOTS && (dot & 1) != 0;
+    if (ly < VISIBLE_SCANLINES && oamScanDot &&
+        mode3.windowPenaltyDotsRemaining == OAM_SCAN_IN_PROGRESS)
+        scanOamObject(startupOamScan ? dot / 2 - 1 : dot / 2);
+
     if (ly < VISIBLE_SCANLINES && dot == MODE2_DOTS)
         prepareScanline();
 
@@ -384,7 +463,7 @@ void DmgPpu::advanceDot() {
             // DMG also clocks the Mode 2 STAT source at VBlank entry,
             // although STAT's mode field becomes 1. Respect the combined
             // line's existing level, just as for ordinary STAT edges.
-            if ((statInterruptEnable & STAT_MODE2_INTERRUPT_MASK) &&
+            if (((statWriteOverrideTCycles ? STAT_INTERRUPT_ENABLE_MASK : statInterruptEnable) & STAT_MODE2_INTERRUPT_MASK) &&
                 !statInterruptLine)
                 interrupts.requestInterrupt(INTERRUPT_LCD_STAT);
             interrupts.requestInterrupt(INTERRUPT_VBLANK);
@@ -393,6 +472,10 @@ void DmgPpu::advanceDot() {
             ly = 0;
             windowLineCounter = 0;
         }
+        if (ly < VISIBLE_SCANLINES)
+            beginOamScanForLine();
+        else
+            mode3.reset();
         // DMG retains this condition until VBlank, even if LCDC.5 is clear.
         if (ly < VISIBLE_SCANLINES && ly == windowY)
             windowYTriggered = true;
@@ -449,6 +532,7 @@ bool DmgPpu::advanceObjectFetchPipeline() {
                 mode3.objectFetchEvents[mode3.nextObjectFetchEvent];
             if (event.transferDots == 0) {
                 // Untimed events retain OBJ data for a later LCDC.1 enable.
+                resolveObjectDataForFetch(event);
                 readObjectTilePlane(event, false);
                 readObjectTilePlane(event, true);
                 decodeObjectTileRow(event);
@@ -490,6 +574,7 @@ void DmgPpu::advanceActiveObjectFetch() {
     case ObjectFetcherState::FetchAction::None:
         break;
     case ObjectFetcherState::FetchAction::ReadLowPlane:
+        resolveObjectDataForFetch(event);
         readObjectTilePlane(event, false);
         break;
     case ObjectFetcherState::FetchAction::ReadHighPlane:
@@ -520,11 +605,15 @@ void DmgPpu::emitMode3Pixel() {
 }
 
 void DmgPpu::prepareScanline() {
+    const bool progressiveOamScan =
+        mode3.windowPenaltyDotsRemaining == OAM_SCAN_IN_PROGRESS;
+    const auto scannedObjects = mode3.objectFetchEvents;
+    const uint8_t scannedObjectCount = mode3.objectFetchEventCount;
     mode3.reset();
     mode3.fineScroll = scrollX & 0x07;
     mode3.duration = MODE3_BASE_DOTS + mode3.fineScroll;
 
-    const bool bgWindowEnabled = cgbMode || (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
+    const bool bgWindowEnabled = nativeColorMode() || (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const uint16_t windowTileMapOffset =
         (lcdControl & WINDOW_TILE_MAP_MASK) ? 0x1C00 : 0x1800;
     const bool windowEnabled = bgWindowEnabled && (lcdControl & WINDOW_ENABLE_MASK) &&
@@ -550,7 +639,12 @@ void DmgPpu::prepareScanline() {
     // OAM has already been scanned for this line, so retain its object pixels
     // even when LCDC.1 currently hides them. A mid-Mode-3 write can enable the
     // object output again before its pixels are emitted.
-    prepareObjects((lcdControl & OBJECT_ENABLE_MASK) != 0);
+    // During Mode-2 OAM scan, active OAM DMA makes the PPU see every object as
+    // off-screen on most hardware revisions (Pan Docs, OAM DMA bus conflicts).
+    if (oamDmaActiveCallback && oamDmaActiveCallback())
+        return;
+    prepareObjects((lcdControl & OBJECT_ENABLE_MASK) != 0,
+                   progressiveOamScan, scannedObjects, scannedObjectCount);
 }
 
 uint16_t DmgPpu::backgroundBitplaneAddressOffset(bool high) const {
@@ -565,7 +659,7 @@ uint16_t DmgPpu::backgroundBitplaneAddressOffset(bool high) const {
     // On DMG, each bitplane samples SCY separately, while the tile number
     // remains latched from the preceding tile-map data phase. This address is
     // captured in the bitplane's T1 phase and read from VRAM in T2.
-    const uint8_t row = cgbMode ? static_cast<uint8_t>(cgbFetchRow ^ ((cgbFetchAttributes & 0x40) ? 7 : 0))
+    const uint8_t row = nativeColorMode() ? static_cast<uint8_t>(cgbFetchRow ^ ((cgbFetchAttributes & 0x40) ? 7 : 0))
         : static_cast<uint8_t>(scrollY + ly) & 7;
     return static_cast<uint16_t>(tileOffset + row * 2 + (high ? 1 : 0));
 }
@@ -594,7 +688,7 @@ void DmgPpu::advanceBackgroundFetch() {
     }
     case BackgroundFetcherState::Phase::TileMapData:
         fetcher.tile = readVideoBank(0, fetcher.tileMapAddress);
-        if (cgbMode) {
+        if (nativeColorMode()) {
             cgbFetchAttributes = readVideoBank(1, fetcher.tileMapAddress);
             cgbFetchRow = static_cast<uint8_t>(scrollY + ly) & 7;
         }
@@ -605,7 +699,7 @@ void DmgPpu::advanceBackgroundFetch() {
         fetcher.phase = BackgroundFetcherState::Phase::TileDataLow;
         break;
     case BackgroundFetcherState::Phase::TileDataLow:
-        fetcher.low = readVideoBank(cgbMode ? (cgbFetchAttributes >> 3) & 1 : 0, fetcher.lowPlaneAddress);
+        fetcher.low = readVideoBank(nativeColorMode() ? (cgbFetchAttributes >> 3) & 1 : 0, fetcher.lowPlaneAddress);
         fetcher.phase = BackgroundFetcherState::Phase::TileDataHighAddress;
         break;
     case BackgroundFetcherState::Phase::TileDataHighAddress:
@@ -613,13 +707,13 @@ void DmgPpu::advanceBackgroundFetch() {
         fetcher.phase = BackgroundFetcherState::Phase::TileDataHigh;
         break;
     case BackgroundFetcherState::Phase::TileDataHigh:
-        fetcher.high = readVideoBank(cgbMode ? (cgbFetchAttributes >> 3) & 1 : 0, fetcher.highPlaneAddress);
+        fetcher.high = readVideoBank(nativeColorMode() ? (cgbFetchAttributes >> 3) & 1 : 0, fetcher.highPlaneAddress);
         fetcher.phase = BackgroundFetcherState::Phase::Push;
         break;
     case BackgroundFetcherState::Phase::Push:
         // The FIFO accepts a decoded row only when empty. Keep the second
         // push-state dot separate from the row write, matching the old cadence.
-        if (!mode3.backgroundFifo.pushRow(fetcher.low, fetcher.high, cgbMode ? cgbFetchAttributes : 0))
+        if (!mode3.backgroundFifo.pushRow(fetcher.low, fetcher.high, nativeColorMode() ? cgbFetchAttributes : 0))
             return;
         fetcher.phase = BackgroundFetcherState::Phase::AdvanceTileColumn;
         break;
@@ -633,23 +727,30 @@ void DmgPpu::advanceBackgroundFetch() {
 void DmgPpu::renderPixel(size_t screenX, uint8_t backgroundColorIndex,
                          const ObjectPixel &objectPixel) {
     const size_t frameOffset = static_cast<size_t>(ly) * FRAME_WIDTH + screenX;
-    if (cgbMode) {
+    if (nativeColorMode()) {
+        if (speedSwitchPpuMode < 2) {
+            colorFrameBuffer[frameOffset] = 0;
+            frameBuffer[frameOffset] = 0;
+            return;
+        }
         const uint8_t color = backgroundColorIndex & 3;
         const bool bgWins = (lcdControl & 1) && color != 0
             && ((backgroundColorIndex & 0x20) || objectPixel.behindBackground);
-        const bool objWins = (lcdControl & OBJECT_ENABLE_MASK) && objectPixel.colorIndex != 0 && !bgWins;
+        const bool objWins = speedSwitchPpuMode == 3 && (lcdControl & OBJECT_ENABLE_MASK) && objectPixel.colorIndex != 0 && !bgWins;
         colorFrameBuffer[frameOffset] = objWins
             ? cgbColor(true, objectPixel.cgbPalette, objectPixel.colorIndex)
             : cgbColor(false, (backgroundColorIndex >> 2) & 7, color);
         frameBuffer[frameOffset] = objWins ? objectPixel.colorIndex : color;
         return;
     }
+    backgroundColorIndex &= 3;
     const bool backgroundEnabled = (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     if (!backgroundEnabled)
         backgroundColorIndex = 0;
     frameBuffer[frameOffset] =
         applyPalette(bgPalette, backgroundColorIndex);
 
+    if (cgbMode) colorFrameBuffer[frameOffset] = cgbColor(false, 0, frameBuffer[frameOffset]);
     if ((lcdControl & OBJECT_ENABLE_MASK) != 0 && objectPixel.colorIndex != 0 &&
         !(objectPixel.behindBackground && backgroundEnabled &&
           backgroundColorIndex != 0)) {
@@ -657,6 +758,7 @@ void DmgPpu::renderPixel(size_t screenX, uint8_t backgroundColorIndex,
                                     ? objectPalette1
                                     : objectPalette0;
         frameBuffer[frameOffset] = applyPalette(palette, objectPixel.colorIndex);
+        if (cgbMode) colorFrameBuffer[frameOffset] = cgbColor(true, objectPixel.usesPalette1 ? 1 : 0, frameBuffer[frameOffset]);
     }
 }
 
@@ -680,7 +782,7 @@ uint8_t DmgPpu::getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
 uint8_t DmgPpu::getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) const {
     const size_t mapIndex = static_cast<size_t>(y / 8) * 32 + x / 8;
     const uint8_t tileIndex = readVideoBank(0, tileMapOffset + mapIndex);
-    if (cgbMode) {
+    if (nativeColorMode()) {
         const uint8_t attr = readVideoBank(1, tileMapOffset + mapIndex);
         const uint8_t row = (y & 7) ^ ((attr & 0x40) ? 7 : 0);
         const uint8_t bit = (attr & 0x20) ? (x & 7) : 7 - (x & 7);
@@ -695,23 +797,74 @@ uint8_t DmgPpu::getTileMapPixel(uint16_t tileMapOffset, uint8_t x, uint8_t y) co
                         (lcdControl & TILE_DATA_SELECT_MASK) != 0);
 }
 
-void DmgPpu::prepareObjects(bool includeFetchPenalties) {
+void DmgPpu::beginOamScanForLine() {
+    mode3.objectFetchEvents.fill({});
+    mode3.objectFetchEventCount = 0;
+    mode3.nextObjectFetchEvent = 0;
+    mode3.activeObjectFetchEvent = 0;
+    mode3.windowPenaltyDotsRemaining = OAM_SCAN_IN_PROGRESS;
+}
+
+void DmgPpu::scanOamObject(size_t index) {
+    if (index >= OBJECT_COUNT ||
+        mode3.objectFetchEventCount >= MAX_OBJECTS_PER_SCANLINE)
+        return;
+
+    const size_t base = index * OBJECT_ENTRY_SIZE;
+    const uint8_t y = readObjectOamForPpu(base);
+    const int objectHeight = (lcdControl & OBJECT_SIZE_MASK) ? 16 : 8;
+    const int objectTop = static_cast<int>(y) - 16;
+    const int objectRow = static_cast<int>(ly) - objectTop;
+    if (objectRow < 0 || objectRow >= objectHeight)
+        return;
+
+    auto &candidate =
+        mode3.objectFetchEvents[mode3.objectFetchEventCount++];
+    // Until Mode 3 replaces this slot with a fetch event, tileIndex and
+    // tileRow hold the scan-time Y and row latches.
+    candidate.oamIndex = static_cast<uint8_t>(index);
+    candidate.tileIndex = y;
+    candidate.startX = readObjectOamForPpu(base + 1);
+    candidate.tileRow = static_cast<uint8_t>(objectRow);
+}
+
+void DmgPpu::prepareObjects(
+    bool includeFetchPenalties, bool progressiveOamScan,
+    const std::array<ObjectFetchEvent, MAX_OBJECTS_PER_SCANLINE> &scannedObjects,
+    uint8_t scannedObjectCount) {
+    if (nativeColorMode() && speedSwitchPpuMode != 3) return;
     struct Object {
         size_t oamIndex;
         uint8_t x;
+        uint8_t y;
     };
 
-    const int objectHeight = (lcdControl & OBJECT_SIZE_MASK) ? 16 : 8;
     std::array<Object, MAX_OBJECTS_PER_SCANLINE> selected{};
     size_t selectedCount = 0;
 
-    // The ten-object limit is selected in OAM order, before X-priority is applied.
-    for (size_t index = 0; index < OBJECT_COUNT && selectedCount < selected.size(); ++index) {
-        const size_t base = index * OBJECT_ENTRY_SIZE;
-        const int objectTop = static_cast<int>(objectRam[base]) - 16;
-        if (static_cast<int>(ly) < objectTop || static_cast<int>(ly) >= objectTop + objectHeight)
-            continue;
-        selected[selectedCount++] = {index, objectRam[base + 1]};
+    if (progressiveOamScan) {
+        for (size_t index = 0;
+             index < scannedObjectCount && selectedCount < selected.size();
+             ++index) {
+            const auto &candidate = scannedObjects[index];
+            selected[selectedCount++] = {
+                candidate.oamIndex, candidate.startX, candidate.tileIndex};
+        }
+    } else {
+        // Legacy snapshots predate progressive Mode 2 scanning. Retain their
+        // old bulk-selection behavior for the scanline they were saved in.
+        const int objectHeight = (lcdControl & OBJECT_SIZE_MASK) ? 16 : 8;
+        for (size_t index = 0;
+             index < OBJECT_COUNT && selectedCount < selected.size();
+             ++index) {
+            const size_t base = index * OBJECT_ENTRY_SIZE;
+            const int objectTop = static_cast<int>(objectRam[base]) - 16;
+            if (static_cast<int>(ly) < objectTop ||
+                static_cast<int>(ly) >= objectTop + objectHeight)
+                continue;
+            selected[selectedCount++] = {
+                index, objectRam[base + 1], objectRam[base]};
+        }
     }
 
     std::sort(selected.begin(), selected.begin() + selectedCount,
@@ -720,11 +873,14 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
                                            : left.x < right.x;
               });
 
-    const bool bgWindowEnabled = cgbMode || (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
+    const bool bgWindowEnabled = nativeColorMode() || (lcdControl & BG_WINDOW_ENABLE_MASK) != 0;
     const bool windowEnabled = bgWindowEnabled &&
                                (lcdControl & WINDOW_ENABLE_MASK) &&
                                windowYTriggered && windowX <= 166;
     const int windowLeft = static_cast<int>(windowX) - 7;
+    // The OAM search records Y/X eligibility per entry, while LCDC.2 is
+    // sampled when the selected object row is prepared for Mode 3.
+    const int objectHeight = (lcdControl & OBJECT_SIZE_MASK) ? 16 : 8;
     // Track BG and window tile columns separately. The first object that
     // interrupts a tile fetch pays the alignment wait; later objects in that
     // already-fetched tile pay only the fixed object-fetch cost.
@@ -793,34 +949,63 @@ void DmgPpu::prepareObjects(bool includeFetchPenalties) {
         }
 
         const size_t base = object.oamIndex * OBJECT_ENTRY_SIZE;
-        const uint8_t attributes = objectRam[base + 3];
-        int objectRow = static_cast<int>(ly) -
-                        (static_cast<int>(objectRam[base]) - 16);
-        if (attributes & 0x40)
-            objectRow = objectHeight - 1 - objectRow;
-
-        uint8_t tileIndex = objectRam[base + 2];
-        if (objectHeight == 16) {
-            tileIndex &= 0xFE;
-            tileIndex = static_cast<uint8_t>(tileIndex + objectRow / 8);
-            objectRow %= 8;
-        }
         event.oamIndex = static_cast<uint8_t>(object.oamIndex);
-        event.tileIndex = tileIndex;
-        event.tileRow = static_cast<uint8_t>(objectRow);
-        event.attributes = attributes;
+        event.tileIndex = objectRam[base + 2];
+        const int objectRow = static_cast<int>(ly) -
+                              (static_cast<int>(object.y) - 16);
+        event.tileRow = static_cast<uint8_t>(0x80 |
+            (objectHeight == 16 ? 0x40 : 0) |
+            (objectRow & (objectHeight - 1)));
+        event.attributes = objectRam[base + 3];
 
         mode3.objectFetchEvents[mode3.objectFetchEventCount++] = event;
     }
+}
+
+uint8_t DmgPpu::readObjectOamForPpu(size_t address) const {
+    if (address >= objectRam.size())
+        return 0xFF;
+    size_t readAddress = address;
+    if (oamDmaPpuReadAddressCallback) {
+        const size_t dmaAddress = oamDmaPpuReadAddressCallback(address);
+        if (dmaAddress < objectRam.size())
+            readAddress = dmaAddress;
+    }
+    return objectRam[readAddress];
+}
+
+void DmgPpu::resolveObjectDataForFetch(ObjectFetchEvent &event) {
+    constexpr uint8_t RAW_ROW_FLAG = 0x80;
+    constexpr uint8_t TALL_OBJECT_FLAG = 0x40;
+    constexpr uint8_t ROW_MASK = 0x0F;
+    if ((event.tileRow & RAW_ROW_FLAG) == 0)
+        return; // Legacy snapshots retain their already-resolved fetch data.
+
+    const size_t base = static_cast<size_t>(event.oamIndex) * OBJECT_ENTRY_SIZE;
+    const uint8_t attributes = readObjectOamForPpu(base + 3);
+    const uint8_t objectHeight = (event.tileRow & TALL_OBJECT_FLAG) ? 16 : 8;
+    int objectRow = event.tileRow & ROW_MASK;
+    if (attributes & 0x40)
+        objectRow = objectHeight - 1 - objectRow;
+
+    uint8_t tileIndex = readObjectOamForPpu(base + 2);
+    if (objectHeight == 16) {
+        tileIndex &= 0xFE;
+        tileIndex = static_cast<uint8_t>(tileIndex + objectRow / 8);
+        objectRow %= 8;
+    }
+    event.tileIndex = tileIndex;
+    event.tileRow = static_cast<uint8_t>(objectRow);
+    event.attributes = attributes;
 }
 
 void DmgPpu::readObjectTilePlane(ObjectFetchEvent &event, bool high) const {
     const size_t rowOffset = static_cast<size_t>(event.tileIndex) * 16 +
                              event.tileRow * 2 + (high ? 1 : 0);
     if (high)
-        event.high = readVideoBank(cgbMode ? (event.attributes >> 3) & 1 : 0, rowOffset);
+        event.high = readVideoBank(nativeColorMode() ? (event.attributes >> 3) & 1 : 0, rowOffset);
     else
-        event.low = readVideoBank(cgbMode ? (event.attributes >> 3) & 1 : 0, rowOffset);
+        event.low = readVideoBank(nativeColorMode() ? (event.attributes >> 3) & 1 : 0, rowOffset);
 }
 
 void DmgPpu::decodeObjectTileRow(ObjectFetchEvent &event) const {
@@ -833,8 +1018,8 @@ void DmgPpu::decodeObjectTileRow(ObjectFetchEvent &event) const {
             colorIndex,
             (event.attributes & 0x10) != 0,
             (event.attributes & 0x80) != 0,
-            static_cast<uint8_t>(cgbMode ? event.attributes & 7 : 0),
-            static_cast<uint8_t>(cgbMode ? event.oamIndex : 0xFF)};
+            static_cast<uint8_t>(nativeColorMode() ? event.attributes & 7 : 0),
+            static_cast<uint8_t>(cgbMode && !cgbXPriority ? event.oamIndex : 0xFF)};
     }
 }
 

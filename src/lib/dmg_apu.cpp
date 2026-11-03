@@ -32,6 +32,16 @@ constexpr uint16_t T_CYCLES_PER_APU_TICK = 2;
 constexpr uint16_t CH3_TRIGGER_STARTUP_APU_TICKS = 3;
 constexpr uint32_t DMG_MASTER_CLOCK = 4194304;
 constexpr uint8_t DUTY_PATTERNS[4] = {0x01, 0x81, 0x87, 0x7E};
+
+void applyZeroPaceEnvelopeWrite(uint8_t previous, uint8_t value,
+                                uint8_t &currentVolume, bool channelEnabled,
+                                bool envelopeRunning) {
+    // The documented cross-model zombie-mode case: an active increase
+    // envelope with period zero gains one volume step on an x8 -> x8 write.
+    if (channelEnabled && envelopeRunning &&
+        (previous & 0x0F) == 0x08 && (value & 0x0F) == 0x08)
+        currentVolume = static_cast<uint8_t>((currentVolume + 1) & 0x0F);
+}
 }
 
 uint8_t DmgApu::read(uint16_t address) {
@@ -39,13 +49,21 @@ uint8_t DmgApu::read(uint16_t address) {
         if (channel3Enabled) {
             const bool fetchCycle = hasWaveRamFetch &&
                                     elapsedTCycles == lastWaveRamFetchTCycle;
-            const uint8_t value = fetchCycle ? waveRam[waveSampleIndex / 2] : 0xFF;
+            const uint8_t value = (cgbMode || fetchCycle) ? waveRam[waveSampleIndex / 2] : 0xFF;
             return value;
         }
         return waveRam[address - WAVE_RAM_START];
     }
 
     switch (address) {
+        // Digital generator levels are observed before panning, master volume,
+        // DAC conversion and the high-pass filter. No extra state is needed.
+        case 0xFF76:
+            return cgbMode ? static_cast<uint8_t>(channel1DigitalOutput() |
+                               (channel2DigitalOutput() << 4)) : 0xFF;
+        case 0xFF77:
+            return cgbMode ? static_cast<uint8_t>(channel3DigitalOutput() |
+                               (channel4DigitalOutput() << 4)) : 0xFF;
         case NR10: return static_cast<uint8_t>(0x80 | nr10);
         case NR11: return static_cast<uint8_t>(0x3F | (nr11 & 0xC0));
         case NR12: return nr12;
@@ -85,8 +103,8 @@ void DmgApu::write(uint16_t address, uint8_t value) {
     if (address >= WAVE_RAM_START && address <= WAVE_RAM_END) {
         if (!channel3Enabled) {
             waveRam[address - WAVE_RAM_START] = value;
-        } else if (hasWaveRamFetch &&
-                   elapsedTCycles == lastWaveRamFetchTCycle) {
+        } else if (cgbMode || (hasWaveRamFetch &&
+                   elapsedTCycles == lastWaveRamFetchTCycle)) {
             waveRam[waveSampleIndex / 2] = value;
         }
         return;
@@ -94,6 +112,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
 
     // On DMG, the length data remains writable while the APU is powered off.
     if (!powered) {
+        if (cgbMode) return; // CGB has no writable length-register exception.
         if (address == NR11) {
             lengthCounter = static_cast<uint8_t>(64 - (value & 0x3F));
         } else if (address == NR21) {
@@ -106,6 +125,15 @@ void DmgApu::write(uint16_t address, uint8_t value) {
         return;
     }
 
+    // DMG and the selected CGB-E revision share this length-enable edge.
+    // frameSequencerStep identifies the next DIV-APU step.
+    const auto updateLengthEnable = [&](bool &enabled, auto &counter, bool &channel) {
+        const bool nextEnabled = (value & 0x40) != 0;
+        if (!enabled && nextEnabled && (frameSequencerStep & 1) && counter > 0) {
+            if (--counter == 0 && !(value & 0x80)) channel = false;
+        }
+        enabled = nextEnabled;
+    };
     switch (address) {
         case NR10:
             nr10 = value & 0x7F;
@@ -117,6 +145,8 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             lengthCounter = static_cast<uint8_t>(64 - (value & 0x3F));
             break;
         case NR12:
+            applyZeroPaceEnvelopeWrite(nr12, value, envelopeVolume,
+                                       channel1Enabled, envelopeRunning);
             nr12 = value;
             channel1DacEnabled = (value & 0xF8) != 0;
             if (!channel1DacEnabled)
@@ -127,7 +157,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             break;
         case NR14:
             nr14 = value & 0x47;
-            lengthEnabled = (value & 0x40) != 0;
+            updateLengthEnable(lengthEnabled, lengthCounter, channel1Enabled);
             if (value & 0x80)
                 triggerChannel1();
             break;
@@ -136,6 +166,8 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             lengthCounter2 = static_cast<uint8_t>(64 - (value & 0x3F));
             break;
         case NR22:
+            applyZeroPaceEnvelopeWrite(nr22, value, envelopeVolume2,
+                                       channel2Enabled, envelopeRunning2);
             nr22 = value;
             channel2DacEnabled = (value & 0xF8) != 0;
             if (!channel2DacEnabled)
@@ -146,7 +178,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             break;
         case NR24:
             nr24 = value & 0x47;
-            lengthEnabled2 = (value & 0x40) != 0;
+            updateLengthEnable(lengthEnabled2, lengthCounter2, channel2Enabled);
             if (value & 0x80)
                 triggerChannel2();
             break;
@@ -167,7 +199,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             break;
         case NR34:
             nr34 = value & 0x47;
-            lengthEnabled3 = (value & 0x40) != 0;
+            updateLengthEnable(lengthEnabled3, lengthCounter3, channel3Enabled);
             if (value & 0x80)
                 triggerChannel3();
             break;
@@ -175,6 +207,8 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             lengthCounter4 = static_cast<uint8_t>(64 - (value & 0x3F));
             break;
         case NR42:
+            applyZeroPaceEnvelopeWrite(nr42, value, envelopeVolume4,
+                                       channel4Enabled, envelopeRunning4);
             nr42 = value;
             channel4DacEnabled = (value & 0xF8) != 0;
             if (!channel4DacEnabled)
@@ -185,7 +219,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             break;
         case NR44:
             nr44 = value & 0x40;
-            lengthEnabled4 = (value & 0x40) != 0;
+            updateLengthEnable(lengthEnabled4, lengthCounter4, channel4Enabled);
             if (value & 0x80)
                 triggerChannel4();
             break;
@@ -245,6 +279,8 @@ void DmgApu::initializeDmgPostBootState() {
     lengthEnabled = false;
     lengthCounter = 1;
     dutyPosition = 0;
+    firstDutySuppressed = false; // Boot sound has already clocked channel 1.
+    firstDutySuppressed2 = true;
     frequencyTimer = 4;
     channel2Enabled = false;
     channel2DacEnabled = false;
@@ -277,6 +313,12 @@ void DmgApu::initializeDmgPostBootState() {
     sweepTimer = 8;
     nr50 = 0x77;
     nr51 = 0xF3;
+    envelopeRunning = envelopeRunning2 = envelopeRunning4 = false;
+    // Synthetic post-boot startup represents the already-settled boot tone.
+    // CH1's enabled DAC receives digital zero; initialize the HPF input bias
+    // rather than replaying its power-on charging transient at $0100.
+    previousLeftInput = previousRightInput = 15 * 8;
+    previousLeftOutputQ16 = previousRightOutputQ16 = 0;
 }
 
 std::vector<int16_t> DmgApu::takeAudioSamples() {
@@ -294,11 +336,17 @@ void DmgApu::setPower(bool enabled) {
         frameSequencerStep = 0;
         dutyPosition = 0;
         dutyPosition2 = 0;
+        firstDutySuppressed = firstDutySuppressed2 = true;
+        frequencyTimer = frequencyTimer2 = 0;
         waveSampleBuffer = 0;
         return;
     }
 
-    // Preserve the channel length data, which remains writable while powered off.
+    // Only DMG preserves length data across power-off.
+    if (cgbMode) {
+        lengthCounter = lengthCounter2 = lengthCounter4 = 0;
+        lengthCounter3 = 0;
+    }
     nr10 = 0;
     nr11 = 0;
     nr12 = 0;
@@ -329,6 +377,7 @@ void DmgApu::setPower(bool enabled) {
     lengthEnabled2 = false;
     lengthEnabled3 = false;
     lengthEnabled4 = false;
+    envelopeRunning = envelopeRunning2 = envelopeRunning4 = false;
     envelopeVolume = 0;
     envelopeTimer = 0;
     envelopeVolume2 = 0;
@@ -345,38 +394,40 @@ void DmgApu::setPower(bool enabled) {
 void DmgApu::triggerChannel1() {
     channel1Enabled = channel1DacEnabled;
     if (lengthCounter == 0)
-        lengthCounter = 64;
-    frequencyTimer = static_cast<uint16_t>(4 * (2048 - channel1Frequency()));
+        lengthCounter = 64 - (lengthEnabled && (frameSequencerStep & 1));
+    frequencyTimer = static_cast<uint16_t>(4 * (2048 - channel1Frequency()) | (frequencyTimer & 3));
+    envelopeRunning = true;
     envelopeVolume = nr12 >> 4;
     const uint8_t envelopePeriod = nr12 & 0x07;
-    envelopeTimer = envelopePeriod == 0 ? 8 : envelopePeriod;
+    envelopeTimer = (envelopePeriod == 0 ? 8 : envelopePeriod) + (frameSequencerStep == 7);
 
     sweepShadowFrequency = channel1Frequency();
     const uint8_t sweepPeriod = (nr10 >> 4) & 0x07;
     sweepTimer = sweepPeriod == 0 ? 8 : sweepPeriod;
     sweepEnabled = sweepPeriod != 0 || (nr10 & 0x07) != 0;
     sweepNegateUsed = false;
-    if ((nr10 & 0x07) != 0)
-        calculateSweepFrequency();
+    if ((nr10 & 0x07) != 0 && calculateSweepFrequency() > 2047)
+        channel1Enabled = false;
 }
 
 void DmgApu::triggerChannel2() {
     channel2Enabled = channel2DacEnabled;
     if (lengthCounter2 == 0)
-        lengthCounter2 = 64;
-    frequencyTimer2 = static_cast<uint16_t>(4 * (2048 - channel2Frequency()));
+        lengthCounter2 = 64 - (lengthEnabled2 && (frameSequencerStep & 1));
+    frequencyTimer2 = static_cast<uint16_t>(4 * (2048 - channel2Frequency()) | (frequencyTimer2 & 3));
+    envelopeRunning2 = true;
     envelopeVolume2 = nr22 >> 4;
     const uint8_t envelopePeriod = nr22 & 0x07;
-    envelopeTimer2 = envelopePeriod == 0 ? 8 : envelopePeriod;
+    envelopeTimer2 = (envelopePeriod == 0 ? 8 : envelopePeriod) + (frameSequencerStep == 7);
 }
 
 void DmgApu::triggerChannel3() {
-    if (channel3Enabled)
+    if (channel3Enabled && !cgbMode)
         corruptWaveRamOnChannel3Retrigger();
 
     channel3Enabled = channel3DacEnabled;
     if (lengthCounter3 == 0)
-        lengthCounter3 = 256;
+        lengthCounter3 = 256 - (lengthEnabled3 && (frameSequencerStep & 1));
     // The first wave fetch follows the trigger by three additional APU ticks.
     frequencyTimer3 = static_cast<uint16_t>(T_CYCLES_PER_APU_TICK *
                                             (2048 - channel3Frequency() +
@@ -412,33 +463,39 @@ void DmgApu::corruptWaveRamOnChannel3Retrigger() {
 void DmgApu::triggerChannel4() {
     channel4Enabled = channel4DacEnabled;
     if (lengthCounter4 == 0)
-        lengthCounter4 = 64;
+        lengthCounter4 = 64 - (lengthEnabled4 && (frameSequencerStep & 1));
     const uint8_t envelopePeriod = nr42 & 0x07;
+    envelopeRunning4 = true;
     envelopeVolume4 = nr42 >> 4;
-    envelopeTimer4 = envelopePeriod == 0 ? 8 : envelopePeriod;
+    envelopeTimer4 = (envelopePeriod == 0 ? 8 : envelopePeriod) + (frameSequencerStep == 7);
     channel4Lfsr = 0;
     frequencyTimer4 = channel4Period();
 }
 
 void DmgApu::advanceChannel1() {
-    if (!channel1Enabled)
+    // The duty divider starts at the first trigger and keeps running when
+    // length, DAC or sweep gates the channel output. Zero means untriggered;
+    // every running divider reloads before returning from this clock.
+    if (frequencyTimer == 0)
         return;
     if (frequencyTimer > 0)
         --frequencyTimer;
     if (frequencyTimer == 0) {
         frequencyTimer = static_cast<uint16_t>(4 * (2048 - channel1Frequency()));
         dutyPosition = static_cast<uint8_t>((dutyPosition + 1) & 0x07);
+        firstDutySuppressed = false;
     }
 }
 
 void DmgApu::advanceChannel2() {
-    if (!channel2Enabled)
+    if (frequencyTimer2 == 0)
         return;
     if (frequencyTimer2 > 0)
         --frequencyTimer2;
     if (frequencyTimer2 == 0) {
         frequencyTimer2 = static_cast<uint16_t>(4 * (2048 - channel2Frequency()));
         dutyPosition2 = static_cast<uint8_t>((dutyPosition2 + 1) & 0x07);
+        firstDutySuppressed2 = false;
     }
 }
 
@@ -536,53 +593,27 @@ void DmgApu::clockSweep() {
     sweepShadowFrequency = static_cast<uint16_t>(newFrequency);
     nr13 = static_cast<uint8_t>(newFrequency & 0xFF);
     nr14 = static_cast<uint8_t>((nr14 & 0x40) | ((newFrequency >> 8) & 0x07));
-    frequencyTimer = static_cast<uint16_t>(4 * (2048 - newFrequency));
+    // Sweep changes the reload value, not the running period divider.
+    // The new period takes effect when the current duty step ends.
     if (calculateSweepFrequency() > 2047)
         channel1Enabled = false;
 }
 
 void DmgApu::clockEnvelope() {
-    const uint8_t period = nr12 & 0x07;
-    if (channel1Enabled && period != 0) {
-        if (envelopeTimer > 0)
-            --envelopeTimer;
-        if (envelopeTimer == 0) {
-            envelopeTimer = period;
-            const bool increase = (nr12 & 0x08) != 0;
-            if (increase && envelopeVolume < 15)
-                ++envelopeVolume;
-            else if (!increase && envelopeVolume > 0)
-                --envelopeVolume;
-        }
-    }
-
-    const uint8_t period2 = nr22 & 0x07;
-    if (channel2Enabled && period2 != 0) {
-        if (envelopeTimer2 > 0)
-            --envelopeTimer2;
-        if (envelopeTimer2 == 0) {
-            envelopeTimer2 = period2;
-            const bool increase = (nr22 & 0x08) != 0;
-            if (increase && envelopeVolume2 < 15)
-                ++envelopeVolume2;
-            else if (!increase && envelopeVolume2 > 0)
-                --envelopeVolume2;
-        }
-    }
-
-    const uint8_t period4 = nr42 & 0x07;
-    if (channel4Enabled && period4 != 0) {
-        if (envelopeTimer4 > 0)
-            --envelopeTimer4;
-        if (envelopeTimer4 == 0) {
-            envelopeTimer4 = period4;
-            const bool increase = (nr42 & 0x08) != 0;
-            if (increase && envelopeVolume4 < 15)
-                ++envelopeVolume4;
-            else if (!increase && envelopeVolume4 > 0)
-                --envelopeVolume4;
-        }
-    }
+    const auto clock = [](uint8_t control, uint8_t &timer, uint8_t &volume, bool &running) {
+        // Period zero disables volume changes, not the period divider. Keep
+        // counting/reloading even after automatic updates have stopped.
+        if (timer == 0 || --timer != 0) return;
+        const uint8_t period = control & 7;
+        timer = period ? period : 8;
+        if (!running || period == 0) return;
+        const int next = static_cast<int>(volume) + ((control & 8) ? 1 : -1);
+        if (next < 0 || next > 15) running = false;
+        else volume = static_cast<uint8_t>(next);
+    };
+    clock(nr12, envelopeTimer, envelopeVolume, envelopeRunning);
+    clock(nr22, envelopeTimer2, envelopeVolume2, envelopeRunning2);
+    clock(nr42, envelopeTimer4, envelopeVolume4, envelopeRunning4);
 }
 
 int DmgApu::calculateSweepFrequency() {
@@ -616,42 +647,35 @@ uint32_t DmgApu::channel4Period() const {
     return period << clockShift;
 }
 
-int DmgApu::channel1Output() const {
+uint8_t DmgApu::channel1DigitalOutput() const {
     if (!channel1Enabled || !channel1DacEnabled || envelopeVolume == 0)
         return 0;
 
     const uint8_t duty = (nr11 >> 6) & 0x03;
-    const bool high = (DUTY_PATTERNS[duty] & (1U << (7 - dutyPosition))) != 0;
-    return high ? envelopeVolume : -static_cast<int>(envelopeVolume);
+    const bool high = !firstDutySuppressed && (DUTY_PATTERNS[duty] & (1U << (7 - dutyPosition))) != 0;
+    return high ? envelopeVolume : 0;
 }
 
-int DmgApu::channel2Output() const {
+uint8_t DmgApu::channel2DigitalOutput() const {
     if (!channel2Enabled || !channel2DacEnabled || envelopeVolume2 == 0)
         return 0;
 
     const uint8_t duty = (nr21 >> 6) & 0x03;
-    const bool high = (DUTY_PATTERNS[duty] & (1U << (7 - dutyPosition2))) != 0;
-    return high ? envelopeVolume2 : -static_cast<int>(envelopeVolume2);
+    const bool high = !firstDutySuppressed2 && (DUTY_PATTERNS[duty] & (1U << (7 - dutyPosition2))) != 0;
+    return high ? envelopeVolume2 : 0;
 }
 
-int DmgApu::channel3Output() const {
-    if (!channel3Enabled || !channel3DacEnabled)
-        return 0;
-
+uint8_t DmgApu::channel3DigitalOutput() const {
     const uint8_t outputLevel = (nr32 >> 5) & 0x03;
-    if (outputLevel == 0)
+    if (!channel3Enabled || !channel3DacEnabled || outputLevel == 0)
         return 0;
-    const uint8_t sample = static_cast<uint8_t>(waveSampleBuffer >> (outputLevel - 1));
-    return static_cast<int>(sample) * 2 - 15;
+    return static_cast<uint8_t>(waveSampleBuffer >> (outputLevel - 1));
 }
 
-int DmgApu::channel4Output() const {
-    if (!channel4Enabled || !channel4DacEnabled || envelopeVolume4 == 0)
+uint8_t DmgApu::channel4DigitalOutput() const {
+    if (!channel4Enabled || !channel4DacEnabled)
         return 0;
-
-    // Center the two NR42 DAC levels around zero for the existing high-pass mixer.
-    return (channel4Lfsr & 0x01) ? envelopeVolume4
-                                 : -static_cast<int>(envelopeVolume4);
+    return (channel4Lfsr & 0x01) ? envelopeVolume4 : 0;
 }
 
 void DmgApu::generateSample() {
@@ -665,10 +689,16 @@ void DmgApu::generateSample() {
         return;
     }
 
-    const int channel1 = channel1Output();
-    const int channel2 = channel2Output();
-    const int channel3 = channel3Output();
-    const int channel4 = channel4Output();
+    // An enabled DAC maps digital 0..15 to analog +15..-15. A stopped
+    // generator still supplies digital zero; only disabling its DAC removes
+    // that channel's bias. The HPF handles the resulting DC transitions.
+    const auto dac = [](bool enabled, uint8_t digital) {
+        return enabled ? 15 - 2 * static_cast<int>(digital) : 0;
+    };
+    const int channel1 = dac(channel1DacEnabled, channel1DigitalOutput());
+    const int channel2 = dac(channel2DacEnabled, channel2DigitalOutput());
+    const int channel3 = dac(channel3DacEnabled, channel3DigitalOutput());
+    const int channel4 = dac(channel4DacEnabled, channel4DigitalOutput());
     int left = 0;
     int right = 0;
     if (powered) {
@@ -692,17 +722,19 @@ void DmgApu::generateSample() {
         right *= (nr50 & 0x07) + 1;
     }
 
-    // Approximate the DMG output coupling capacitor, which removes DC offset.
+    // Approximate each model’s output coupling capacitor, which removes DC offset.
     // Keep fractional filter state so negative feedback can decay to zero
     // instead of sticking at a DC offset due to signed integer rounding.
     constexpr int64_t Q16_ONE = 1LL << 16;
-    constexpr int64_t HIGH_PASS_COEFFICIENT = 65296;
+    // round(65536 * charge^(4194304 / 48000)); charge per master clock:
+    // DMG=0.999958, CGB=0.998943 (Pan Docs Audio Details).
+    const int64_t highPassCoefficient = cgbMode ? 59751 : 65296;
     const int64_t filteredLeftQ16 =
         (static_cast<int64_t>(left - previousLeftInput) * Q16_ONE) +
-        (previousLeftOutputQ16 * HIGH_PASS_COEFFICIENT) / Q16_ONE;
+        (previousLeftOutputQ16 * highPassCoefficient) / Q16_ONE;
     const int64_t filteredRightQ16 =
         (static_cast<int64_t>(right - previousRightInput) * Q16_ONE) +
-        (previousRightOutputQ16 * HIGH_PASS_COEFFICIENT) / Q16_ONE;
+        (previousRightOutputQ16 * highPassCoefficient) / Q16_ONE;
     const int32_t filteredLeft = static_cast<int32_t>(filteredLeftQ16 / Q16_ONE);
     const int32_t filteredRight = static_cast<int32_t>(filteredRightQ16 / Q16_ONE);
     previousLeftInput = left;

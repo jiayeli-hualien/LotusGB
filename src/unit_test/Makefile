@@ -17,7 +17,7 @@ test_executables := $(build_dir)/save_state_test  $(build_dir)/cpu_interface_tes
 	$(build_dir)/dmg_oam_dma_test \
 	$(build_dir)/dmg_apu_test \
 	$(build_dir)/dmg_acid2_test $(build_dir)/cgb_memory_test $(build_dir)/cgb_boot_test \
-	$(build_dir)/ppu_video_memory_test $(build_dir)/cgb_system_test $(build_dir)/cgb_hardware_test $(build_dir)/mbc30_test
+	$(build_dir)/ppu_video_memory_test $(build_dir)/cgb_system_test $(build_dir)/cgb_compatibility_test $(build_dir)/cgb_hardware_test $(build_dir)/cgb_ir_test $(build_dir)/mbc30_test
 
 acid2_asset_dir := ../../tests/roms/dmg-acid2
 acid2_assets := $(wildcard ../../tests/roms/dmg-acid2/*)
@@ -43,7 +43,9 @@ test: $(test_executables)
 	$(build_dir)/cgb_boot_test
 	$(build_dir)/ppu_video_memory_test
 	$(build_dir)/cgb_system_test
+	$(build_dir)/cgb_compatibility_test
 	$(build_dir)/cgb_hardware_test
+	$(build_dir)/cgb_ir_test
 	$(build_dir)/mbc30_test
 
 $(build_dir)/cpu_interface_test: cpu_cycle_test.cpp ../lib/GBCPU.cpp $(test_headers) | $(build_dir)
@@ -68,7 +70,7 @@ $(build_dir)/system_clock_test: system_clock_test.cpp ../lib/system_clock.cpp $(
 	$(CXX) $(CPPFLAGS) $< ../lib/system_clock.cpp -o $@
 
 $(build_dir)/address_bus_test: address_bus_test.cpp ../lib/address_bus.cpp \
-		../lib/cartridge.cpp ../lib/memory_region.cpp $(test_headers) | $(build_dir)
+		../lib/cartridge.cpp ../lib/memory_region.cpp $(test_headers) ../../tests/include/mbc1_multicart_rom.hpp | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/address_bus.cpp ../lib/cartridge.cpp \
 		../lib/memory_region.cpp -o $@
 
@@ -93,11 +95,11 @@ $(build_dir)/dmg_ppu_test: dmg_ppu_test.cpp ../lib/dmg_ppu.cpp \
 		../lib/interrupt_registers.cpp -o $@
 
 $(build_dir)/dmg_oam_dma_test: dmg_oam_dma_test.cpp ../lib/dmg_oam_dma.cpp \
-		../lib/dmg_ppu.cpp ../lib/address_bus.cpp ../lib/interrupt_registers.cpp \
-		../lib/memory_region.cpp $(test_headers) | $(build_dir)
+		../lib/dmg_ppu.cpp ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/interrupt_registers.cpp \
+		../lib/memory_region.cpp ../lib/system_clock.cpp $(test_headers) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/dmg_oam_dma.cpp ../lib/dmg_ppu.cpp \
-		../lib/address_bus.cpp ../lib/interrupt_registers.cpp \
-		../lib/memory_region.cpp -o $@
+		../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/interrupt_registers.cpp \
+		../lib/memory_region.cpp ../lib/system_clock.cpp -o $@
 
 $(build_dir)/dmg_apu_test: dmg_apu_test.cpp ../lib/dmg_apu.cpp $(test_headers) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< ../lib/dmg_apu.cpp -o $@
@@ -124,8 +126,14 @@ $(build_dir)/ppu_video_memory_test: ppu_video_memory_test.cpp ../lib/dmg_ppu.cpp
 $(build_dir)/cgb_system_test: cgb_system_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) $(wildcard ../../tests/include/*.hpp) $(wildcard ../../tests/roms/cgb-acid2/*) | $(build_dir)
 	$(CXX) $(CPPFLAGS) -DLOTUSGB_CGB_ACID2_ASSET_DIR=\"../../tests/roms/cgb-acid2\" $< $(wildcard ../lib/*.cpp) -o $@
 
-$(build_dir)/cgb_hardware_test: cgb_hardware_test.cpp ../lib/cgb_hardware.cpp ../lib/dmg_ppu.cpp ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/memory_region.cpp ../lib/interrupt_registers.cpp ../lib/timer.cpp ../lib/dmg_serial.cpp $(test_headers) | $(build_dir)
-	$(CXX) $(CPPFLAGS) $< ../lib/cgb_hardware.cpp ../lib/dmg_ppu.cpp ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/memory_region.cpp ../lib/interrupt_registers.cpp ../lib/timer.cpp ../lib/dmg_serial.cpp -o $@
+$(build_dir)/cgb_hardware_test: cgb_hardware_test.cpp ../lib/cgb_hardware.cpp ../lib/dmg_ppu.cpp ../lib/dmg_oam_dma.cpp ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/memory_region.cpp ../lib/interrupt_registers.cpp ../lib/timer.cpp ../lib/dmg_serial.cpp ../lib/system_clock.cpp $(test_headers) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< ../lib/cgb_hardware.cpp ../lib/dmg_ppu.cpp ../lib/dmg_oam_dma.cpp ../lib/cgb_memory.cpp ../lib/address_bus.cpp ../lib/memory_region.cpp ../lib/interrupt_registers.cpp ../lib/timer.cpp ../lib/dmg_serial.cpp ../lib/system_clock.cpp -o $@
+
+$(build_dir)/cgb_ir_test: cgb_ir_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@
 
 $(build_dir)/mbc30_test: mbc30_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) $(wildcard ../../tests/include/*.hpp) | $(build_dir)
+	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@
+
+$(build_dir)/cgb_compatibility_test: cgb_compatibility_test.cpp $(wildcard ../lib/*.cpp) $(test_headers) $(generated_tables) $(wildcard ../../tests/include/*.hpp) | $(build_dir)
 	$(CXX) $(CPPFLAGS) $< $(wildcard ../lib/*.cpp) -o $@

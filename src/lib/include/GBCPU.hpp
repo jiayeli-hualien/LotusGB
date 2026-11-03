@@ -28,7 +28,7 @@ public:
     bool getStopped();
     void wakeFromStop();
 private:
-    IInstruction* fetch(uint16_t addr);
+    IInstruction* fetch(uint16_t addr, bool increment = true);
     void doFetchNextOp();
     RetStepOneCycle stepInterruptCycle();
     void doMemRead(InstState &instStat);
@@ -46,6 +46,7 @@ private:
     bool interruptMasterEnable = true;
     bool isHalt = false;
     bool isStopped = false;
+    bool isLocked = false;
     bool fetchAfterStopWake = false;
     bool initialFetchPending = false;
     bool imeEnablePending = false;

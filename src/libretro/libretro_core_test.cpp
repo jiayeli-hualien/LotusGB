@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <vector>
 #include "../../tests/include/cgb_test_rom.hpp"
+#include "../../tests/include/cgb_compat_rom.hpp"
 
 #ifndef LOTUSGB_LIBRETRO_TEST_ASSET_DIR
 #error LOTUSGB_LIBRETRO_TEST_ASSET_DIR must name the test ROM assets directory
@@ -32,6 +33,9 @@ constexpr unsigned HEIGHT = 144;
 unsigned inputPollCount = 0;
 unsigned videoRefreshCount = 0;
 unsigned observedPitch = 0;
+std::string hardwareModelOption = "auto";
+bool modelOptionAdvertised = false;
+bool throwDuringModelRegistration = false;
 bool frontendAcceptsXrgb8888 = true;
 bool upPressed = false;
 bool latchUpOnPoll = false;
@@ -61,6 +65,53 @@ std::vector<uint8_t> readBinary(const std::string &path) {
 std::vector<std::string> logMessages;
 std::vector<retro_log_level> logLevels;
 std::string systemDirectory;
+bool accelerometerAvailable = false;
+bool accelerometerEnabled = false;
+unsigned accelerometerEnableCalls = 0;
+unsigned accelerometerDisableCalls = 0;
+unsigned accelerometerReadCalls = 0;
+float accelerometerX = 0.5f;
+float accelerometerY = -0.25f;
+bool rumbleInterfaceAvailable = true;
+std::vector<uint16_t> rumbleRequests;
+
+bool frontendSetSensorState(unsigned port, retro_sensor_action action,
+                            unsigned rate) {
+    expect(port == 0, "cartridge accelerometer uses the primary controller port");
+    if (action == RETRO_SENSOR_ACCELEROMETER_ENABLE) {
+        expect(rate == 60, "core requests a frame-rate accelerometer sample");
+        if (!accelerometerAvailable)
+            return false;
+        accelerometerEnabled = true;
+        ++accelerometerEnableCalls;
+        return true;
+    }
+    if (action == RETRO_SENSOR_ACCELEROMETER_DISABLE) {
+        accelerometerEnabled = false;
+        ++accelerometerDisableCalls;
+        return true;
+    }
+    return false;
+}
+
+float frontendGetSensorInput(unsigned port, unsigned id) {
+    expect(port == 0 && accelerometerEnabled,
+           "core samples only an enabled primary-port accelerometer");
+    ++accelerometerReadCalls;
+    if (id == RETRO_SENSOR_ACCELEROMETER_X)
+        return accelerometerX;
+    if (id == RETRO_SENSOR_ACCELEROMETER_Y)
+        return accelerometerY;
+    return 0;
+}
+
+bool frontendSetRumbleState(unsigned port, retro_rumble_effect effect,
+                            uint16_t strength) {
+    expect(port == 0 && effect == RETRO_RUMBLE_STRONG,
+           "cartridge rumble uses the primary strong motor");
+    rumbleRequests.push_back(strength);
+    return true;
+}
 
 void frontendLog(retro_log_level level, const char *format, ...) {
     char buffer[512];
@@ -73,8 +124,36 @@ void frontendLog(retro_log_level level, const char *format, ...) {
 }
 
 bool environmentCallback(unsigned command, void *data) {
+    if (command == RETRO_ENVIRONMENT_SET_VARIABLES) {
+        if (throwDuringModelRegistration) throw std::runtime_error("model option registration failure");
+        const auto *variables = static_cast<const retro_variable *>(data);
+        for (; variables->key; ++variables) {
+            if (std::string(variables->key) == "lotusgb_model") {
+                modelOptionAdvertised = std::string(variables->value).find("auto|dmg|cgb") != std::string::npos;
+            }
+        }
+        return true;
+    }
+    if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
+        auto *variable = static_cast<retro_variable *>(data);
+        if (std::string(variable->key) != "lotusgb_model" || hardwareModelOption.empty()) return false;
+        variable->value = hardwareModelOption.c_str(); return true;
+    }
     if (command == RETRO_ENVIRONMENT_GET_LOG_INTERFACE) {
         static_cast<retro_log_callback *>(data)->log = frontendLog;
+        return true;
+    }
+    if (command == RETRO_ENVIRONMENT_GET_SENSOR_INTERFACE) {
+        auto *interface = static_cast<retro_sensor_interface *>(data);
+        interface->set_sensor_state = frontendSetSensorState;
+        interface->get_sensor_input = frontendGetSensorInput;
+        return true;
+    }
+    if (command == RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE) {
+        if (!rumbleInterfaceAvailable)
+            return false;
+        static_cast<retro_rumble_interface *>(data)->set_rumble_state =
+            frontendSetRumbleState;
         return true;
     }
     if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT) {
@@ -161,7 +240,7 @@ void testLibretroLoadsAcid2AndPublishesReferenceFrame() {
     expect(!retro_load_game(nullptr), "core rejects missing game content");
 
     std::vector<uint8_t> unsupported = rom;
-    unsupported[0x0147] = 0x22; // MBC7 is not implemented yet.
+    unsupported[0x0147] = 0x20; // MBC6 remains unsupported.
     retro_game_info unsupportedGame{};
     unsupportedGame.data = unsupported.data();
     unsupportedGame.size = unsupported.size();
@@ -625,6 +704,98 @@ void testLibretroExposesMbc2BatteryRam() {
     retro_unload_game();
 }
 
+void testMbc7LibretroSensorAndBatteryContract() {
+    retro_unload_game();
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x0A,             // LD A, $0A
+        0xEA, 0x00, 0x00,       // LD ($0000), A (MBC7 gate 1)
+        0x3E, 0x48,             // LD A, $48 (register gate and rumble)
+        0xEA, 0x00, 0x40,       // LD ($4000), A
+        0x18, 0xFE,             // loop forever
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x0100);
+    rom[0x0143] = 0x80;
+    rom[0x0147] = 0x22;
+    rom[0x0148] = 0;
+    rom[0x0149] = 0;
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+
+    accelerometerAvailable = true;
+    accelerometerEnabled = false;
+    const unsigned readsBefore = accelerometerReadCalls;
+    const unsigned enablesBefore = accelerometerEnableCalls;
+    const unsigned disablesBefore = accelerometerDisableCalls;
+    rumbleRequests.clear();
+    expect(retro_load_game(&game), "libretro accepts MBC7 cartridges");
+    expect(accelerometerEnabled &&
+               accelerometerEnableCalls == enablesBefore + 1,
+           "MBC7 content enables the frontend accelerometer");
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x100,
+           "libretro exposes the MBC7 EEPROM as a 256-byte battery block");
+    retro_run();
+    expect(accelerometerReadCalls == readsBefore + 2,
+           "each MBC7 run samples both accelerometer axes");
+    expect(rumbleRequests == std::vector<uint16_t>{0xFFFF},
+           "MBC7 register bit 3 drives the frontend rumble motor");
+    std::vector<uint8_t> snapshot(retro_serialize_size());
+    expect(retro_serialize(snapshot.data(), snapshot.size()) && snapshot[8] == 13,
+           "MBC7 sensor and rumble probe serialize in the current CGB state format");
+    const uint32_t usedSize = static_cast<uint32_t>(snapshot[16]) |
+        (static_cast<uint32_t>(snapshot[17]) << 8) |
+        (static_cast<uint32_t>(snapshot[18]) << 16) |
+        (static_cast<uint32_t>(snapshot[19]) << 24);
+    expect(usedSize >= 42,
+           "MBC7 snapshot includes its live cartridge sensor values");
+    const size_t mbc7State = usedSize - 42;
+    const uint16_t savedX = static_cast<uint16_t>(snapshot[mbc7State + 3] |
+        (static_cast<uint16_t>(snapshot[mbc7State + 4]) << 8));
+    const uint16_t savedY = static_cast<uint16_t>(snapshot[mbc7State + 5] |
+        (static_cast<uint16_t>(snapshot[mbc7State + 6]) << 8));
+    expect(savedX == 0x8198 && savedY == 0x81B4,
+           "libretro acceleration maps rightward X negative and upward Y positive into MBC7 units");
+    expect(snapshot[mbc7State + 1] == 0x48,
+           "CGB snapshot preserves enabled MBC7 RAM gate and active rumble bit");
+    retro_reset();
+    expect(accelerometerEnabled,
+           "system reset keeps the MBC7 frontend sensor enabled");
+    expect(rumbleRequests == std::vector<uint16_t>({0xFFFF, 0}),
+           "reset stops MBC7 rumble before replacing the cartridge instance");
+    expect(retro_unserialize(snapshot.data(), snapshot.size()) &&
+               rumbleRequests == std::vector<uint16_t>({0xFFFF, 0, 0xFFFF}),
+           "restoring an active MBC7 snapshot restarts frontend rumble");
+    retro_run();
+    expect(accelerometerReadCalls == readsBefore + 4,
+           "MBC7 samples resume after a system reset");
+    retro_unload_game();
+    expect(!accelerometerEnabled &&
+               accelerometerDisableCalls == disablesBefore + 1,
+           "unloading MBC7 disables its frontend accelerometer");
+    expect(rumbleRequests == std::vector<uint16_t>({0xFFFF, 0, 0xFFFF, 0}),
+           "unloading an MBC7 game stops the frontend rumble motor");
+
+    accelerometerAvailable = false;
+    logMessages.clear();
+    expect(retro_load_game(&game),
+           "MBC7 remains usable when the frontend has no accelerometer");
+    expect(!accelerometerEnabled &&
+               std::any_of(logMessages.begin(), logMessages.end(),
+                   [](const std::string &message) {
+                       return message.find("neutral sensor values") !=
+                              std::string::npos;
+                   }),
+           "missing sensor support is reported with a neutral-value fallback");
+    retro_run();
+    expect(accelerometerReadCalls == readsBefore + 4,
+           "neutral MBC7 fallback does not call unavailable sensor input");
+    retro_unload_game();
+    accelerometerAvailable = false;
+}
+
 void testLibretroPersistsMbc5BatteryRamAcrossFrontendReload() {
     std::vector<uint8_t> rom(0x8000, 0x00);
     const uint8_t program[] = {
@@ -669,6 +840,78 @@ void testLibretroPersistsMbc5BatteryRamAcrossFrontendReload() {
     expect(saveRam[0] == 0x06,
            "reloaded MBC5 game reads and advances its restored progress");
     retro_unload_game();
+}
+
+void testLibretroMbc5RumbleAndSnapshotRestore() {
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x0A,             // LD A, $0A
+        0xEA, 0x00, 0x00,       // LD ($0000), A (enable cartridge RAM)
+        0x3E, 0x0B,             // LD A, $0B (rumble on, RAM bank 3)
+        0xEA, 0x00, 0x40,       // LD ($4000), A
+        0x18, 0xFE,             // loop forever
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x0100);
+    rom[0x0147] = 0x1E; // MBC5 + rumble + RAM + battery
+    rom[0x0148] = 0x00;
+    rom[0x0149] = 0x03; // 32 KiB, four 8-KiB RAM banks
+
+    rumbleRequests.clear();
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game), "core loads an original-header MBC5 rumble cartridge");
+    std::vector<uint8_t> initial(retro_serialize_size());
+    expect(retro_serialize(initial.data(), initial.size()),
+           "save MBC5 rumble state before guest register writes");
+
+    retro_run();
+    expect(rumbleRequests == std::vector<uint16_t>{0xFFFF},
+           "MBC5 motor bit requests strong rumble through the libretro interface");
+    expect(retro_unserialize(initial.data(), initial.size()),
+           "restore the MBC5 snapshot with its motor switched off");
+    expect(rumbleRequests == std::vector<uint16_t>({0xFFFF, 0}),
+           "state restore synchronizes the frontend motor to the saved bank register");
+
+    retro_run();
+    expect(rumbleRequests == std::vector<uint16_t>({0xFFFF, 0, 0xFFFF}),
+           "guest rumble writes resume after restoring the pre-write snapshot");
+    retro_unload_game();
+    expect(rumbleRequests == std::vector<uint16_t>({0xFFFF, 0, 0xFFFF, 0}),
+           "unloading an MBC5 rumble game turns the frontend motor off");
+}
+
+void testLibretroMbc5RumbleWithoutFrontendSupport() {
+    retro_deinit();
+    rumbleInterfaceAvailable = false;
+    logMessages.clear();
+    retro_init();
+
+    std::vector<uint8_t> rom(0x8000, 0x00);
+    const uint8_t program[] = {
+        0x3E, 0x08,             // LD A, $08 (rumble on)
+        0xEA, 0x00, 0x40,       // LD ($4000), A
+        0x18, 0xFE,             // loop forever
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x0100);
+    rom[0x0147] = 0x1C; // MBC5 + rumble, no RAM
+    rom[0x0148] = 0x00;
+
+    const size_t priorRequests = rumbleRequests.size();
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    expect(retro_load_game(&game),
+           "rumble cartridge remains playable without the optional frontend interface");
+    retro_run();
+    expect(rumbleRequests.size() == priorRequests &&
+               std::any_of(logMessages.begin(), logMessages.end(),
+                   [](const std::string &message) {
+                       return message.find("rumble is unavailable") != std::string::npos;
+                   }),
+           "missing frontend rumble is reported and gameplay continues without motor output");
+    retro_unload_game();
+    rumbleInterfaceAvailable = true;
 }
 
 void testLibretroPersistsMbc3BatteryRamAcrossFrontendReload() {
@@ -786,12 +1029,12 @@ void testLibretroReportsLoadAndStoppedFrameDiagnostics() {
            "frontend receives content error logging");
 
     std::vector<uint8_t> rom(0x8000, 0);
-    rom[0x147] = 0x22;
+    rom[0x147] = 0x20;
     retro_game_info game{};
     game.data = rom.data();
     game.size = rom.size();
     expect(!retro_load_game(&game), "unsupported mapper load fails");
-    expect(logMessages.back().find("type=0x22 bytes=32768") != std::string::npos,
+    expect(logMessages.back().find("type=0x20 bytes=32768") != std::string::npos,
            "load diagnostic identifies mapper and ROM size");
     rom[0x147] = 0x03;
     rom[0x149] = 0xFF;
@@ -825,7 +1068,7 @@ void testLibretroReportsLoadAndStoppedFrameDiagnostics() {
     retro_unload_game();
 }
 
-void testLibretroReportsUnsupportedOpcodeAndCanReset() {
+void testLibretroIllegalOpcodeLocksWithoutFaultingFrontend() {
     std::vector<uint8_t> rom(0x8000, 0);
     rom[0x0147] = 0x00;
     rom[0x0100] = 0xD3;
@@ -833,24 +1076,22 @@ void testLibretroReportsUnsupportedOpcodeAndCanReset() {
     game.data = rom.data();
     game.size = rom.size();
 
-    expect(retro_load_game(&game), "unsupported-opcode diagnostic ROM loads");
+    expect(retro_load_game(&game), "illegal-opcode diagnostic ROM loads");
     logMessages.clear();
     logLevels.clear();
     retro_run();
-    expect(logMessages.size() == 1 && logLevels.back() == RETRO_LOG_ERROR &&
-               logMessages.back().find("unsupported opcode 0xD3 at 0x0100") !=
-                   std::string::npos,
-           "frontend receives a precise unsupported-opcode error");
+    expect(logMessages.empty(),
+           "hardware CPU lock-up does not become a frontend execution error");
 
     retro_run();
-    expect(logMessages.size() == 1,
-           "a faulted unsupported-opcode run does not flood the frontend log");
+    expect(logMessages.empty(),
+           "continued frontend callbacks remain free of lock-up error reports");
 
     retro_reset();
     logMessages.clear();
     retro_run();
-    expect(logMessages.size() == 1 && logLevels.back() == RETRO_LOG_ERROR,
-           "reset clears the execution fault and reports it on the next run");
+    expect(logMessages.empty(),
+           "frontend reset restarts execution without treating the illegal opcode as a core fault");
     retro_unload_game();
 }
 
@@ -908,6 +1149,150 @@ void testLibretroReportsApiAndVideoTiming() {
            "core reports the DMG frame rate");
     expect(avInfo.timing.sample_rate == 48000.0,
            "core reports the DMG audio output sample rate");
+}
+
+void testLibretroCgbCompatibilitySelection() {
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("lotusgb-compat-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+    const auto boot = LOTUSGB::Test::makeCgbCompatibilityBootRom();
+    {
+        std::ofstream file(directory / "cgb_boot.bin", std::ios::binary);
+        file.write(reinterpret_cast<const char *>(boot.data()), boot.size());
+        expect(bool(file), "write original compatibility bootstrap");
+    }
+    auto rom = LOTUSGB::Test::makeCgbCompatibilityRom();
+    retro_game_info game{}; game.data = rom.data(); game.size = rom.size();
+    for (bool xrgb : {true, false}) {
+        retro_deinit(); frontendAcceptsXrgb8888 = xrgb; retro_init();
+        logMessages.clear(); logLevels.clear();
+        expect(modelOptionAdvertised, "frontend can choose automatic, DMG or CGB hardware");
+        hardwareModelOption = "cgb"; systemDirectory = directory.string();
+        expect(retro_load_game(&game), "forced CGB loads a monochrome cartridge and CGB bootstrap");
+        for (unsigned frame = 0; frame < 4; ++frame) retro_run();
+        const uint32_t green = 0x0000FF00; // Callback normalizes both pixel formats to RGB888.
+        expect(std::all_of(observedFrame.begin(), observedFrame.end(), [&](uint32_t x) { return x == green; }),
+               "compatibility RGB555 palette reaches both frontend pixel formats");
+        auto *ram = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+        expect(ram && ram[0] == 0x11 && ram[0x40] == 1 && ram[2] == 0xFF,
+               "frontend compatibility cartridge executes and cannot access KEY1");
+        std::vector<uint8_t> saved(retro_serialize_size()), future(saved.size()), replay(saved.size());
+        expect(retro_serialize(saved.data(), saved.size()) && saved[8] == 13 && saved[12] == 2,
+               "frontend exposes current CGB physical-model states for compatibility games");
+        retro_run(); const auto video = observedFrame; const auto audio = latestAudio;
+        expect(retro_serialize(future.data(), future.size()), "capture compatibility future");
+        expect(retro_unserialize(saved.data(), saved.size()), "restore compatibility frontend state");
+        retro_run(); expect(observedFrame == video && latestAudio == audio &&
+            retro_serialize(replay.data(), replay.size()) && replay == future, "compatibility rewind restores exact video, audio and complete state");
+        hardwareModelOption = "auto"; retro_reset(); // Changes apply on next content load.
+        for (unsigned frame = 0; frame < 4; ++frame) retro_run();
+        expect(retro_serialize(replay.data(), replay.size()) && replay[12] == 2 && observedFrame == video,
+               "reset preserves selected physical hardware and repeats CGB compatibility bootstrap");
+        retro_unload_game(); systemDirectory.clear();
+        expect(retro_load_game(&game), "automatic model selection accepts monochrome content");
+        expect(retro_serialize(replay.data(), replay.size()) && replay[12] == 1,
+               "automatic selection still chooses actual DMG hardware for monochrome headers");
+        retro_unload_game(); hardwareModelOption.clear();
+        expect(retro_load_game(&game) && retro_serialize(replay.data(), replay.size()) && replay[12] == 1,
+               "frontends without variables retain header-based model selection");
+        retro_unload_game(); hardwareModelOption = "cgb";
+        expect(retro_load_game(&game) && retro_serialize(replay.data(), replay.size()) && replay[12] == 2,
+               "forced compatibility also supports no-BIOS synthetic startup");
+        retro_unload_game(); hardwareModelOption = "dmg";
+        rom[0x143] = 0x80;
+        expect(retro_load_game(&game) && retro_serialize(replay.data(), replay.size()) && replay[12] == 1,
+               "explicit DMG selection overrides a dual-mode cartridge header");
+        retro_unload_game(); rom[0x143] = 0;
+        expect(std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_ERROR) == logLevels.end(), "compatibility frontend checks report no unexpected core errors");
+        hardwareModelOption = "invalid";
+        expect(!retro_load_game(&game), "invalid model values fail explicitly");
+        hardwareModelOption = "auto"; logMessages.clear(); logLevels.clear();
+    }
+    std::filesystem::remove_all(directory);
+    retro_deinit(); throwDuringModelRegistration = true;
+    retro_init();
+    expect(!retro_load_game(&game), "environment exceptions stay inside the C ABI and fault initialization");
+    throwDuringModelRegistration = false;
+    retro_deinit(); frontendAcceptsXrgb8888 = true; retro_init();
+    expect(retro_load_game(&game), "reinitialization recovers from an environment callback failure");
+    retro_unload_game(); logMessages.clear(); logLevels.clear();
+}
+
+void testLibretroCgbBootRenderingStateAndReset() {
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("lotusgb-cgb-boot-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+    systemDirectory = directory.string();
+    std::vector<uint8_t> boot(0x900, 0);
+    boot[0] = 0xC3; boot[1] = 0; boot[2] = 2; // Execute the second boot window.
+    boot[0xFC] = 0x3E; boot[0xFD] = 0x11; boot[0xFE] = 0xE0; boot[0xFF] = 0x50;
+    size_t at = 0x200;
+    const auto emit = [&](std::initializer_list<uint8_t> bytes) { for (auto b : bytes) boot[at++] = b; };
+    const auto io = [&](uint8_t port, uint8_t value) { emit({0x3E, value, 0xE0, port}); };
+    emit({0xF3, 0x31, 0xFE, 0xFF, 0x3E, 0x0A, 0xEA, 0, 0});
+    emit({0xFA, 0x43, 1, 0xEA, 0x20, 0xA0}); // Header hole remains cartridge data.
+    io(0x68, 0x80); io(0x69, 0); io(0x69, 0x7C); io(0x40, 0x91);
+    emit({0x06, 4});
+    const size_t loop = at;
+    emit({0xF0, 0x44, 0xFE, 0x90, 0x20, 0xFA});
+    emit({0xF0, 0x44, 0xFE, 0, 0x20, 0xFA, 0x05});
+    emit({0x20, static_cast<uint8_t>(loop - at - 2)});
+    emit({0xC3, 0xFC, 0}); // Unmap from the first window at $FE; game starts at $100.
+    const auto writeBoot = [&](const char *name, const std::vector<uint8_t> &bytes) {
+        std::ofstream file(directory / name, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+        expect(bool(file), "write original CGB boot fixture");
+    };
+    writeBoot("cgb_boot.bin", boot);
+    auto rom = LOTUSGB::Test::makeCgbMbc1BatteryExerciseRom();
+    retro_game_info game{}; game.data = rom.data(); game.size = rom.size();
+    buttonsPressed = 0;
+    expect(retro_load_game(&game), "native CGB loads optional boot image");
+    auto *ram = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(ram != nullptr, "CGB boot path exposes cartridge SRAM");
+    retro_run();
+    expect(observedFrame[80 * WIDTH + 80] == 0x0000FF && ram[0x20] == 0x80,
+           "second CGB boot window renders a blue frame and reads cartridge header hole");
+    std::vector<uint8_t> saved(retro_serialize_size());
+    expect(retro_serialize(saved.data(), saved.size()), "serialize while CGB BIOS remains mapped");
+    for (unsigned n = 0; n < 12; ++n) retro_run();
+    expect(ram[0] == 0x11 && observedFrame[80 * WIDTH + 80] == 0xFF0000,
+           "FF50 handoff reaches native CGB game startup and red gameplay");
+    const auto frame = observedFrame; const auto audio = latestAudio;
+    std::vector<uint8_t> future(saved.size());
+    expect(retro_serialize(future.data(), future.size()), "serialize post-CGB-boot game state");
+    expect(retro_unserialize(saved.data(), saved.size()), "restore mapped CGB BIOS checkpoint");
+    for (unsigned n = 0; n < 12; ++n) retro_run();
+    std::vector<uint8_t> replay(saved.size());
+    expect(retro_serialize(replay.data(), replay.size()), "serialize boot handoff replay");
+    expect(frame == observedFrame && audio == latestAudio && future == replay,
+           "mapped CGB boot restore reproduces handoff, video, PCM and complete state");
+    std::filesystem::remove(directory / "cgb_boot.bin");
+    retro_reset(); retro_run();
+    expect(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == ram && observedFrame[80 * WIDTH + 80] == 0x0000FF,
+           "CGB reset reuses selected boot image and stable SRAM without rereading removed file");
+    retro_unload_game();
+    writeBoot("gbc_bios.bin", boot);
+    expect(retro_load_game(&game), "CGB BIOS fallback filename loads");
+    expect(retro_unserialize(saved.data(), saved.size()), "same CGB BIOS bytes under alias preserve snapshot identity");
+    retro_unload_game();
+    std::filesystem::remove(directory / "gbc_bios.bin");
+    expect(retro_load_game(&game), "missing CGB BIOS uses fast startup");
+    std::vector<uint8_t> fastBefore(saved.size()), fastAfter(saved.size());
+    expect(retro_serialize(fastBefore.data(), fastBefore.size()), "save no-BIOS CGB state");
+    expect(!retro_unserialize(saved.data(), saved.size()), "mapped CGB BIOS snapshot rejects different boot configuration");
+    expect(retro_serialize(fastAfter.data(), fastAfter.size()) && fastBefore == fastAfter,
+           "CGB BIOS identity mismatch leaves running fast-start game intact");
+    retro_unload_game();
+    writeBoot("gbc_bios.bin", boot);
+    writeBoot("cgb_boot.bin", std::vector<uint8_t>(0x800, 0));
+    logMessages.clear();
+    expect(!retro_load_game(&game), "malformed preferred CGB BIOS does not silently fall through to a valid alias");
+    expect(!logMessages.empty() && logLevels.back() == RETRO_LOG_ERROR &&
+               logMessages.back().find("2304 bytes") != std::string::npos,
+           "CGB BIOS size failure reaches frontend logging boundary");
+    systemDirectory.clear(); std::filesystem::remove_all(directory);
+    std::cout << "CGB optional BIOS rendering, handoff, state replay, reset and diagnostics passed\n";
 }
 
 void testLibretroLoadsOptionalBootRomFromSystemDirectory() {
@@ -1324,6 +1709,79 @@ void testLibretroCgbColorInputStateAndReset() {
     std::cout<<"CGB libretro: acid2 color, .gb/.gbc header detection, input, reset and exact state/rewind pass in both formats\n";
 }
 
+void testLibretroCgbMbc5HighBankGameplay() {
+    constexpr size_t progress = 15 * 0x2000 + 0x10;
+    for (bool xrgb : {true, false}) {
+        retro_deinit();
+        frontendAcceptsXrgb8888 = xrgb;
+        retro_init();
+        for (uint16_t bank : {uint16_t(0x100), uint16_t(0x1FF)}) {
+            auto rom = LOTUSGB::Test::makeCgbMbc5HighBankExerciseRom(bank);
+            retro_game_info game{};
+            game.path = "original-cgb-mbc5-high-bank.gbc";
+            game.data = rom.data(); game.size = rom.size();
+            buttonsPressed = 0;
+            expect(retro_load_game(&game), "load 8-MiB native CGB MBC5 game");
+            auto *ram = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+            expect(ram && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 0x20000,
+                   "MBC5 exposes all 128 KiB of battery RAM");
+            std::fill_n(ram, 0x20000, 0);
+            // Distinct untouched bytes catch upper/lower SRAM aliasing.
+            for (unsigned b = 0; b < 16; ++b) ram[b * 0x2000 + 123] = 0x80 + b;
+            ram[progress] = 40;
+            for (unsigned n = 0; n < 6; ++n) retro_run();
+            expect(ram[0] == 0x11 && ram[progress] > 40 &&
+                       ram[progress + 1] == static_cast<uint8_t>(bank) &&
+                       ram[progress + 2] == 1,
+                   "CGB CPU executes bank $100/$1FF and advances SRAM bank 15");
+            expect(observedFrame[80 * WIDTH + 80] == 0xFF0000,
+                   "high-bank CGB game renders its neutral scene");
+            const auto save = [] {
+                std::vector<uint8_t> bytes(retro_serialize_size());
+                expect(retro_serialize(bytes.data(), bytes.size()), "serialize high-bank CGB game");
+                return bytes;
+            };
+            const auto saved = save();
+            const auto battery = std::vector<uint8_t>(ram, ram + 0x20000);
+            const uint8_t before = ram[progress];
+            buttonsPressed = 1u << RETRO_DEVICE_ID_JOYPAD_RIGHT;
+            std::vector<std::array<uint32_t, WIDTH * HEIGHT>> video;
+            std::vector<std::vector<int16_t>> pcm;
+            for (unsigned n = 0; n < 4; ++n) {
+                retro_run(); video.push_back(observedFrame); pcm.push_back(latestAudio);
+            }
+            expect(ram[progress] > before && observedFrame[80 * WIDTH + 80] == 0x0000FF,
+                   "high-bank code keeps running while CGB input changes the scene");
+            const auto future = save();
+            expect(retro_unserialize(saved.data(), saved.size()), "restore MBC5 ninth ROM bank bit");
+            expect(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == ram,
+                   "MBC5 state restore preserves published battery pointer");
+            for (unsigned n = 0; n < 4; ++n) {
+                retro_run();
+                expect(observedFrame == video[n] && latestAudio == pcm[n],
+                       "MBC5 high-bank replay matches every video and PCM callback");
+            }
+            expect(save() == future, "MBC5 high-bank replay matches complete end state");
+            retro_unload_game();
+            expect(retro_load_game(&game), "reload MBC5 game for fresh battery import");
+            ram = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+            expect(ram && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == battery.size(),
+                   "fresh MBC5 instance exposes full battery import destination");
+            std::copy(battery.begin(), battery.end(), ram);
+            buttonsPressed = 0;
+            for (unsigned n = 0; n < 6; ++n) retro_run();
+            expect(ram[progress] > before && observedFrame[80 * WIDTH + 80] == 0xFF0000,
+                   "fresh game resumes and advances imported upper-bank progress");
+            for (unsigned b = 0; b < 16; ++b)
+                expect(ram[b * 0x2000 + 123] == 0x80 + b,
+                       "all sixteen SRAM banks retain independent battery bytes");
+            retro_unload_game();
+        }
+    }
+    retro_deinit(); frontendAcceptsXrgb8888 = true; buttonsPressed = 0; retro_init();
+    std::cout << "CGB MBC5 high ROM/SRAM banks, input, battery resume and exact replay passed in both formats\n";
+}
+
 void testLibretroMbc30BatteryAndState() {
     for(size_t bytes : {size_t(0x200000),size_t(0x400000)}) {
         auto rom=LOTUSGB::Test::makeCgbMbc30ExerciseRom();rom.resize(bytes);
@@ -1493,6 +1951,67 @@ void testLibretroCgbMbc3RtcGameplayAndBatteryReload() {
            "reloaded CGB guest resumes from imported MBC3 RTC and SRAM state");
     retro_unload_game();
     std::cout << "CGB MBC3 RTC guest registers and frontend battery reload passed\n";
+}
+
+void testLibretroCgbRtcOfflineProgression() {
+    auto rom = LOTUSGB::Test::makeCgbRtcOfflineResumeRom();
+    retro_game_info game{};
+    game.path = "cgb-rtc-offline.gbc";
+    game.data = rom.data();
+    game.size = rom.size();
+    buttonsPressed = 0;
+    expect(retro_load_game(&game), "load running-RTC offline-resume fixture");
+    auto *rtc = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_RTC));
+    expect(rtc && retro_get_memory_size(RETRO_MEMORY_RTC) == 24,
+           "running RTC exposes the versioned battery block");
+    std::fill_n(rtc, 24, 0);
+    std::copy_n("LGRT", 4, rtc);
+    rtc[4] = 1;
+    rtc[5] = 58; rtc[6] = 59; rtc[7] = 23; rtc[8] = 255; rtc[9] = 1;
+    rtc[15] = 0xFF;
+    const auto unixNow = [] {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    };
+    const uint64_t savedAt = unixNow() - 125;
+    for (unsigned i = 0; i < 8; ++i)
+        rtc[16 + i] = static_cast<uint8_t>(savedAt >> (8 * i));
+    for (unsigned i = 0; i < 2; ++i) retro_run();
+    auto *ram = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(ram != nullptr, "offline-resume fixture exposes SRAM observations");
+    uint64_t frozenAt = 0;
+    for (unsigned i = 0; i < 8; ++i)
+        frozenAt |= static_cast<uint64_t>(rtc[16 + i]) << (8 * i);
+    expect(frozenAt >= savedAt + 125 && frozenAt <= unixNow(),
+           "guest halt records the current host time after offline import");
+    // Bound elapsed time by host observations rather than requiring execution
+    // within one wall-clock second. No sleeps or arbitrary timing tolerance.
+    std::array<uint8_t, 5> expected{};
+    std::copy_n(ram + 0x30, 5, expected.begin());
+    const uint64_t observed = expected[0] + 60ULL * expected[1] +
+        3600ULL * expected[2] + 86400ULL *
+        (expected[3] | (static_cast<unsigned>(expected[4] & 1) << 8));
+    expect(expected[0] < 60 && expected[1] < 60 && expected[2] < 24 &&
+               expected[4] == 0xC0 && observed >= 123 &&
+               observed <= frozenAt - savedAt - 2,
+           "guest sees offline seconds/minutes/day rollover and sticky carry");
+    expect(std::equal(expected.begin(), expected.end(), rtc + 5) &&
+               std::equal(expected.begin(), expected.end(), rtc + 10),
+           "battery live/latched clock matches all five guest observations");
+    const std::vector<uint8_t> battery(ram, ram + 0x8000), clock(rtc, rtc + 24);
+    retro_unload_game();
+    expect(retro_load_game(&game), "reload offline-resume content in a fresh instance");
+    ram = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    rtc = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_RTC));
+    expect(ram && rtc, "fresh instance exposes both battery import destinations");
+    std::copy(battery.begin(), battery.end(), ram);
+    std::copy(clock.begin(), clock.end(), rtc);
+    std::fill_n(ram + 0x30, 5, 0); // Require new guest reads, not stale SRAM.
+    for (unsigned i = 0; i < 2; ++i) retro_run();
+    expect(std::equal(expected.begin(), expected.end(), ram + 0x30),
+           "fresh guest reads restored halted clock without adding offline time twice");
+    retro_unload_game();
+    std::cout << "CGB RTC offline progression, rollover and battery resume passed\n";
 }
 
 void measureTobuInput(const std::string &romPath, const std::filesystem::path &output, bool deluxe = false) {
@@ -1690,20 +2209,27 @@ int main(int argc, char **argv) {
     testLibretroExposesMbc1BatteryRam();
     testLibretroExecutesMbc1BankAndRestoresBatteryRam();
     testLibretroExposesMbc2BatteryRam();
+    testMbc7LibretroSensorAndBatteryContract();
     testLibretroPersistsMbc5BatteryRamAcrossFrontendReload();
+    testLibretroMbc5RumbleAndSnapshotRestore();
     testLibretroPersistsMbc3BatteryRamAcrossFrontendReload();
     testLibretroExposesAndPreservesMbc3RtcMemory();
     testLibretroReportsLoadAndStoppedFrameDiagnostics();
-    testLibretroReportsUnsupportedOpcodeAndCanReset();
+    testLibretroIllegalOpcodeLocksWithoutFaultingFrontend();
     testLibretroCallbackExceptionBoundaryFaultsOnce();
     testLibretroPublishesCoherentFramesAcrossLcdStartupPhases();
     testLibretroInputPulseAcrossLcdPhases();
     testLibretroSaveStateRoundTrip();
     testLibretroRepeatedRewindReplay();
     testLibretroCgbColorInputStateAndReset();
+    testLibretroCgbBootRenderingStateAndReset();
     testLibretroCgbMbc1AndMbc5BatteryGameProgressReload();
     testLibretroCgbMbc3RtcGameplayAndBatteryReload();
+    testLibretroCgbRtcOfflineProgression();
     testLibretroMbc30BatteryAndState();
+    testLibretroCgbMbc5HighBankGameplay();
+    testLibretroCgbCompatibilitySelection();
+    testLibretroMbc5RumbleWithoutFrontendSupport();
 
     retro_unload_game();
     retro_deinit();

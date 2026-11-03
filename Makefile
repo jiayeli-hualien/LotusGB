@@ -37,6 +37,8 @@ HOMEBREW_SAVE ?=
 MOONEYE_GROUP ?= ppu
 MOONEYE_OUTPUT_DIR ?= $(build_dir)/test-roms/mooneye$(if $(filter ppu,$(MOONEYE_GROUP)),,-$(MOONEYE_GROUP))
 MOONEYE_SUITE_DIR ?= ../test-roms/mooneye
+MOONEYE_CGB_BOOT_ROM ?=
+MOONEYE_CGB_BOOT_ROM_ARGS = $(if $(MOONEYE_CGB_BOOT_ROM),--cgb-boot-rom "$(MOONEYE_CGB_BOOT_ROM)")
 MOONEYE_VISUAL_SUITE_DIR ?= ../test-roms/game-boy-test-roms-v7.0/mooneye-test-suite
 VISUAL_TEST_PYTHON ?= $(build_dir)/visual-venv/bin/python
 GBMICROTEST_SUITE_DIR ?= ../test-roms/gbmicrotest
@@ -104,7 +106,7 @@ test-mooneye:
 		--runner "$(build_dir)/mooneye_rom_runner" \
 		--suite-dir "$(MOONEYE_SUITE_DIR)" \
 		--group "$(MOONEYE_GROUP)" \
-		--output-dir "$(MOONEYE_OUTPUT_DIR)"
+		--output-dir "$(MOONEYE_OUTPUT_DIR)" $(MOONEYE_CGB_BOOT_ROM_ARGS)
 
 test-mooneye-visual:
 	$(MAKE) -C $(src_dir)/lib ppu-frame-runner build_dir=$(build_dir)

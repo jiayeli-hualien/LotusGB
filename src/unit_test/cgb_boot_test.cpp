@@ -113,7 +113,7 @@ void testUnsupportedModesFailExplicitly() {
     rejects<std::invalid_argument>([&] { GameBoySystem::createCgbBootProbe(rom, {}); }, "missing CGB boot fixture rejected");
     rom[0x143] = 0;
     rejects<std::invalid_argument>([&] { GameBoySystem::createCgbBootProbe(rom, bootFixture()); },
-                                  "DMG compatibility mode requires future explicit implementation");
+                                  "synthetic native-only boot probe keeps its explicit cartridge restriction");
     rom[0x143] = 0x80; // dual-mode cartridge is eligible for the native probe
     const uint8_t lcd[] = {0x3E, 0x80, 0xE0, 0x40, 0x18, 0xFE};
     std::copy(std::begin(lcd), std::end(lcd), rom.begin() + 0x150);

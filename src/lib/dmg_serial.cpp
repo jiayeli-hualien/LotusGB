@@ -1,6 +1,7 @@
 #include "include/dmg_serial.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace LOTUSGB {
 
@@ -34,7 +35,7 @@ uint8_t DmgSerial::read(uint16_t address) {
     if (address == SB_ADDRESS)
         return data;
     if (address == SC_ADDRESS)
-        return control | (cgbMode ? 0x7C : UNUSED_SC_BITS);
+        return (control & (cgbMode ? 0x83 : 0x81)) | (cgbMode ? 0x7C : UNUSED_SC_BITS);
     return 0xFF;
 }
 
@@ -63,13 +64,30 @@ void DmgSerial::advanceTCycles(uint64_t tCycles) {
     }
 }
 
+bool DmgSerial::getOutgoingBit() const { return (data & 0x80) != 0; }
+
+void DmgSerial::setInternalClockCallback(std::function<bool(bool)> callback) {
+    internalClockCallback = std::move(callback);
+}
+
+void DmgSerial::clockExternalBit(bool incomingBit) {
+    if ((control & (TRANSFER_ENABLE | INTERNAL_CLOCK)) == TRANSFER_ENABLE)
+        shiftBit(incomingBit);
+}
+
 void DmgSerial::clockBit() {
     if ((control & (TRANSFER_ENABLE | INTERNAL_CLOCK)) !=
         (TRANSFER_ENABLE | INTERNAL_CLOCK))
         return;
 
-    // With no peer connected the incoming line is pulled high.
-    data = static_cast<uint8_t>((data << 1) | 1);
+    // Both outgoing bits must be sampled before either peer shifts. The host
+    // callback can sample a peer then deliver this outgoing bit to that peer.
+    const bool incoming = internalClockCallback ? internalClockCallback(getOutgoingBit()) : true;
+    shiftBit(incoming);
+}
+
+void DmgSerial::shiftBit(bool incomingBit) {
+    data = static_cast<uint8_t>((data << 1) | (incomingBit ? 1 : 0));
     if (++bitsTransferred == 8) {
         control &= static_cast<uint8_t>(~TRANSFER_ENABLE);
         bitsTransferred = 0;

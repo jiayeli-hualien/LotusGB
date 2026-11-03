@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -55,7 +56,7 @@ public:
                   std::shared_ptr<std::vector<uint8_t>> saveRam,
                   std::shared_ptr<std::vector<uint8_t>> saveRtc,
                   std::vector<uint8_t> dmgBootRom);
-    // Explicit native hardware selection; libretro selects by header bit 7.
+    // Explicit physical hardware selection; libretro selects by header bit 7.
     GameBoySystem(std::vector<uint8_t> rom, HardwareModel model,
                   std::shared_ptr<std::vector<uint8_t>> saveRam = nullptr,
                   std::shared_ptr<std::vector<uint8_t>> saveRtc = nullptr,
@@ -70,6 +71,7 @@ public:
     static GameBoySystem createCgbBootProbe(std::vector<uint8_t> rom,
                                             std::vector<uint8_t> bootRom);
     HardwareModel getHardwareModel() const { return model; }
+    bool isDmgCompatibilityMode() const { return cgbIo && !cgbIo->nativeFeaturesEnabled(); }
 
     // Versioned, portable snapshot at an M-cycle boundary. Throws on invalid
     // input; failed loads leave the machine and frontend memory pointers intact.
@@ -93,6 +95,19 @@ public:
     const DmgPpu::FrameBuffer &getCompletedFrameBuffer() const;
     std::vector<int16_t> takeAudioSamples();
     void setButtonState(JoypadButton button, bool pressed);
+    // Raw MBC7 X/Y register values; the cartridge exposes each new pair only
+    // after the guest performs its documented latch sequence.
+    void setCartridgeAccelerometerData(uint16_t x, uint16_t y);
+    bool isCartridgeRumbleActive() const;
+    void setCartridgeRumbleCallback(std::function<void(bool)> callback);
+    // Link hosts schedule sampling edges and wire peers; callbacks are not serialized.
+    bool getSerialOutgoingBit() const;
+    void clockSerialExternalBit(bool incomingBit);
+    void setSerialClockCallback(std::function<bool(bool)> callback);
+    // CGB IR is level-based: the callback reports whether an external light
+    // source is detected when the guest samples FF56. Host wiring is not state.
+    bool getInfraredLedState() const;
+    void setInfraredInputCallback(std::function<bool()> callback);
     uint8_t *getSaveRamData();
     size_t getSaveRamSize() const;
     std::shared_ptr<std::vector<uint8_t>> getSaveRamStorage() const;
@@ -115,6 +130,7 @@ private:
                   const std::array<uint8_t, 32> *knownRomHash = nullptr);
     void initializeDmgPostBootState();
     void initializeCgbPostBootState();
+    void applyCgbMode();
 
     HardwareModel model;
     bool cgbBootProbe;
@@ -123,6 +139,7 @@ private:
     std::unique_ptr<CgbWorkRam> cgbWorkRam;
     std::unique_ptr<CgbVideoRam> cgbVideoRam;
     std::unique_ptr<CgbIo> cgbIo;
+    std::vector<std::unique_ptr<CgbNativeRegisterRegion>> cgbRegisterRegions;
     RamRegion workRam;
     RamRegion highRam;
     InterruptRegisters interruptRegisters;

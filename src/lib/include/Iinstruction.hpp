@@ -31,6 +31,7 @@ enum CLOCK_ACTION {
     CLOCK_ACTION_NONE = 0,
     CLOCK_ACTION_HALT,
     CLOCK_ACTION_STOP,
+    CLOCK_ACTION_LOCKUP,
 };
 
 static constexpr size_t MAX_INST_LEN = 4; // in bytes, acutaly 3 but align 4
@@ -52,6 +53,10 @@ struct InstState {
 
     IME_ACTION imeAction = IME_ACTION_NONE;
     CLOCK_ACTION clockAction = CLOCK_ACTION_NONE;
+    // Ephemeral bus request: cleared before each M-cycle and consumed within it.
+    // Snapshots are M-cycle boundaries, so these are not persistent schema fields.
+    bool iduActive = false;
+    uint16_t iduAddress = 0;
 };
 
 InstState* createInitState();

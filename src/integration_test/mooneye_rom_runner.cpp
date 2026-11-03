@@ -37,10 +37,29 @@ void printRegisters(LOTUSGB::Reg &registers) {
 } // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 2 &&
-        (argc != 4 || std::string(argv[2]) != "--boot-rom")) {
+    LOTUSGB::HardwareModel model = LOTUSGB::HardwareModel::Dmg;
+    const char *bootRomPath = nullptr;
+    for (int arg = 2; arg < argc; ++arg) {
+        const std::string option = argv[arg];
+        if (option == "--model" && arg + 1 < argc) {
+            const std::string value = argv[++arg];
+            if (value == "dmg") model = LOTUSGB::HardwareModel::Dmg;
+            else if (value == "cgb") model = LOTUSGB::HardwareModel::CgbE;
+            else {
+                std::cerr << "Invalid hardware model: " << value << '\n';
+                return 2;
+            }
+        } else if (option == "--boot-rom" && arg + 1 < argc) {
+            bootRomPath = argv[++arg];
+        } else {
+            std::cerr << "Usage: mooneye_rom_runner <test-rom.gb> "
+                         "[--model dmg|cgb] [--boot-rom <boot-rom.bin>]\n";
+            return 2;
+        }
+    }
+    if (argc < 2) {
         std::cerr << "Usage: mooneye_rom_runner <test-rom.gb> "
-                     "[--boot-rom <dmg-boot-rom.bin>]\n";
+                     "[--model dmg|cgb] [--boot-rom <boot-rom.bin>]\n";
         return 2;
     }
 
@@ -57,23 +76,27 @@ int main(int argc, char **argv) {
     }
 
     std::vector<uint8_t> bootRom;
-    if (argc == 4) {
-        std::ifstream bootRomFile(argv[3], std::ios::binary);
+    if (bootRomPath) {
+        std::ifstream bootRomFile(bootRomPath, std::ios::binary);
         if (!bootRomFile) {
-            std::cerr << "Could not open DMG boot ROM: " << argv[3] << '\n';
+            std::cerr << "Could not open boot ROM: " << bootRomPath << '\n';
             return 2;
         }
         bootRom.assign(std::istreambuf_iterator<char>(bootRomFile), {});
-        if (bootRom.size() != 0x100) {
-            std::cerr << "DMG boot ROM must be exactly 256 bytes: " << argv[3]
-                      << '\n';
+        const size_t expectedSize = model == LOTUSGB::HardwareModel::CgbE
+            ? 0x900 : 0x100;
+        if (bootRom.size() != expectedSize) {
+            std::cerr << (model == LOTUSGB::HardwareModel::CgbE
+                    ? "CGB boot ROM must use the address-indexed 2304-byte layout: "
+                    : "DMG boot ROM must be exactly 256 bytes: ")
+                      << bootRomPath << '\n';
             return 2;
         }
     }
 
     // Keep the ROM image to recognize the protocol breakpoint. The curated
     // tests report from fixed ROM code, not bank-switched RAM/HRAM code.
-    LOTUSGB::GameBoySystem system(rom, nullptr, nullptr, std::move(bootRom));
+    LOTUSGB::GameBoySystem system(rom, model, nullptr, nullptr, std::move(bootRom));
     constexpr uint64_t MAX_M_CYCLES = 10'000'000;
     for (uint64_t cycle = 0; cycle < MAX_M_CYCLES; ++cycle) {
         const auto result = system.stepOneCycle();

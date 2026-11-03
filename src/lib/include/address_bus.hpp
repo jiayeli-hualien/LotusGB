@@ -34,6 +34,10 @@ public:
                   uint16_t regionStart);
     // Called at the CPU bus phase, before dispatching a read or write.
     void setCpuBusAccessCallback(std::function<void()> callback);
+    void setCpuBusEventCallback(std::function<void(uint16_t, CpuBusEvent)> callback);
+    uint8_t readWithIdu(uint16_t address) override;
+    void writeWithIdu(uint16_t address, uint8_t value) override;
+    void notifyIdu(uint16_t address) override;
     // Borrowed, like mapped regions; must outlive bus accesses.
     void setCpuBusArbiter(ICpuBusArbiter &arbiter);
     // Device-originated reads do not advance CPU time or apply CPU arbitration.
@@ -51,6 +55,9 @@ private:
     };
 
     void onCpuBusAccess();
+    uint8_t readCpu(uint16_t address, CpuBusEvent event);
+    void writeCpu(uint16_t address, uint8_t value, CpuBusEvent event);
+    std::function<void(uint16_t, CpuBusEvent)> cpuBusEventCallback;
 
     ICpuBusArbiter *cpuBusArbiter = nullptr;
     std::vector<Mapping> mappings;

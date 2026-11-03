@@ -39,18 +39,31 @@ hardware-component, system, libretro, Acid2 framebuffer, and runner-protocol
 tests. The libretro gate runs the ordinary VBlank-presentation and diagnostic fixed-step
 builds, including 48 kHz cadence, LCD restart, state restore and repeated
 rewind-protocol replay. These gates do not need downloaded ROM suites.
+`cgb_compatibility_test` checks boot-selected KEY0/OPRI locking, register/bank
+restrictions, monochrome palette rendering on CGB and pre/post-lock state replay.
+Libretro covers hardware-option fallback/selection, reset and exact compatibility
+video/PCM/state rewind in both pixel/presentation formats.
 `cgb_memory_test` checks the CGB memory components with an original CPU probe;
 `cgb_boot_test` checks explicit CGB-E assembly, split boot handoff and bank
 retention through `GameBoySystem`, plus the synthetic fixture factory's LCD-off/snapshot restriction (separate from playable CGB startup).
 `ppu_video_memory_test` compares owned/external VRAM with the monochrome
 renderer. `cgb_hardware_test` checks palette ports, DMA and fast serial/divider
-behavior; `cgb_system_test` checks exact cgb-acid2 pixels, speed/DMA/audio/input,
+behavior plus all-mode speed-switch PPU locks and output; `cgb_system_test`
+checks exact cgb-acid2 pixels, speed/DMA/audio/input, real KEY1/STOP pauses in
+both directions for all four PPU entry modes,
 model-tagged state replay and invalid typed payload rejection. Libretro tests
 check the CGB reference, input/reset and exact video/PCM/state rewind in both
 pixel formats. Original CGB-compatible MBC1 and MBC5 game fixtures additionally
 check color/input gameplay, battery progress and fresh-instance SRAM restore.
 An original CGB MBC3+RTC fixture exercises guest RTC latch/read/write and checks
 RTC plus SRAM import across a fresh content load in both presentation builds.
+`dmg_apu_test` also checks every digital level through each channel DAC on both
+models, NR50 minimum/maximum gain, inactive-generator bias and DAC isolation.
+Envelope tests cover boundary-stop/retrigger behavior and period-zero divider
+phase; `save_state_test` drives both models through a CPU/DIV terminal-envelope
+checkpoint and exact PCM/state replay. Silent-pulse tests cover all duty
+patterns, disable causes and retrigger phase; `cgb_system_test` compares guest
+PCM against a continuously clocked reference and restores mid-silence.
 `mbc30_test` and libretro MBC30 fixtures also cover 4-MiB ROM / 64-KiB SRAM,
 RTC, battery import and high-bank state replay using original code.
 The optional `make test-tobudx` runs the pinned external Deluxe
@@ -71,7 +84,7 @@ passed.
 | Change area | Additional check | Acceptance evidence |
 | --- | --- | --- |
 | CPU instruction semantics or timing | Pinned GBIT comparison; the focused CPU tests are part of `make test` | Instruction result and the relevant public state, bus, or cycle boundary. GBIT agreement is a comparison, not hardware proof. |
-| Timer, interrupt, DMA, mapper, or PPU behavior | Matching Mooneye group, if the external suite is available: `ppu` (default), `timer`, `interrupt`, `dma`, or `mapper` | Record the ROM, target model, startup profile, and expected pass signal. Use only the group relevant to the behavior; reserve `all` for a broad checkpoint. |
+| CPU, timer, interrupt, serial, DMA, mapper, or PPU behavior | Matching Mooneye group, if the external suite is available: `cpu`, `ppu` (default), `timer`, `interrupt` (including `interrupts/ie_push`), `serial`, `dma`, `mapper` (including standard MBC1M), `cgb` (synthetic CGB-E startup), or `cgb-boot` (external CGB BIOS required) | Record the ROM, target model, startup profile, and expected pass signal. Use only the group relevant to the behavior; reserve `all` for a broad checkpoint. |
 | Libretro input, audio, save, or frame delivery | Relevant in-process libretro test; add a licensed game profile when the behavior reaches gameplay | Check the frontend-visible result, not callback counts alone. Review the generated image/report for game runs. |
 | DMG sound behavior | `make test-roms` with the selected Blargg ROMs available externally | Record the selected cases and their reported result; these cover specific APU paths, not complete sound accuracy. |
 | Exact visual diagnostic | `make test-mooneye-visual` or `make test-gbmicrotest-ppu-latch` only when that scene/register behavior is under investigation | Inspect the generated image and keep the result scoped to the diagnostic. A cross-core image difference is not a hardware verdict. |
@@ -79,9 +92,19 @@ passed.
 Mooneye examples:
 
 ```sh
+make test-mooneye MOONEYE_GROUP=cpu MOONEYE_SUITE_DIR=../test-roms/mooneye
 make test-mooneye MOONEYE_GROUP=timer MOONEYE_SUITE_DIR=../test-roms/mooneye
 make test-mooneye MOONEYE_GROUP=interrupt MOONEYE_SUITE_DIR=../test-roms/mooneye
+make test-mooneye MOONEYE_GROUP=cgb MOONEYE_SUITE_DIR=../test-roms/mooneye
+make test-mooneye MOONEYE_GROUP=cgb-boot MOONEYE_CGB_BOOT_ROM=/path/to/cgb_boot.bin MOONEYE_SUITE_DIR=../test-roms/mooneye
 ```
+
+The optional `cgb` group runs the CGB-targeted VBlank/STAT timing ROM against
+LotusGB's CGB-E model with synthetic post-boot startup. The `cgb-boot` group
+runs initial-register and unused-HWIO checks that require an external CGB boot
+ROM; set `MOONEYE_CGB_BOOT_ROM` to its 2304-byte address-indexed image. Both
+profiles keep external ROMs and firmware outside the repository and are not
+part of GitHub CI.
 
 Homebrew profiles currently available in the local setup:
 

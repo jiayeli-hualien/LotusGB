@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 
 #include "dmg_serial.hpp"
 #include "interrupt_registers.hpp"
@@ -109,9 +110,92 @@ void testStartupProfilesRestoreSerialClockPhase() {
                "post-boot serial phase matches the synthesized $ABC8 divider phase");
     }
 }
+void testExternalEdgesAndTwoPortExchange() {
+    for (bool cgbMaster : {false, true}) {
+        for (bool cgbSlave : {false, true}) {
+            for (bool fast : {false, true}) {
+                InterruptRegisters masterIrq, slaveIrq;
+                DmgSerial master(masterIrq, cgbMaster), slave(slaveIrq, cgbSlave);
+                master.write(0xFF01, 0xA5); slave.write(0xFF01, 0x3C);
+                slave.write(0xFF02, 0x80);
+                unsigned edges = 0;
+                master.setInternalClockCallback([&](bool outgoing) {
+                    const bool incoming = slave.getOutgoingBit();
+                    slave.clockExternalBit(outgoing);
+                    ++edges;
+                    return incoming;
+                });
+                master.write(0xFF02, fast ? 0x83 : 0x81);
+                const unsigned period = cgbMaster && fast ? 16 : 512;
+                for (unsigned bit = 0; bit < 8; ++bit) {
+                    slave.advanceTCycles(97 + bit * 31); // Slave's time never supplies external edges.
+                    master.advanceTCycles(period - 1);
+                    expect(edges == bit, "paired link shifts only on master clock edges");
+                    master.advanceTCycles(1);
+                    const uint8_t mask = static_cast<uint8_t>((1u << (bit + 1)) - 1);
+                    const uint8_t expectedMaster = static_cast<uint8_t>((0xA5 << (bit + 1)) | ((0x3C >> (7 - bit)) & mask));
+                    const uint8_t expectedSlave = static_cast<uint8_t>((0x3C << (bit + 1)) | ((0xA5 >> (7 - bit)) & mask));
+                    expect(master.read(0xFF01) == expectedMaster && slave.read(0xFF01) == expectedSlave,
+                           "both ports sample outgoing MSBs before shifting partial received data");
+                    expect(bool(masterIrq.read(0xFF0F) & 8) == (bit == 7) &&
+                               bool(slaveIrq.read(0xFF0F) & 8) == (bit == 7),
+                           "both serial IRQs occur only after the eighth edge");
+                }
+                master.advanceTCycles(period * 10);
+                slave.clockExternalBit(false);
+                expect(edges == 8 && master.read(0xFF01) == 0x3C && slave.read(0xFF01) == 0xA5,
+                       "completed link transfers stop shifting and exchange complete bytes");
+            }
+        }
+    }
+}
+
+void testIrregularExternalEdgesAbortAndModeGate() {
+    InterruptRegisters irq;
+    DmgSerial serial(irq, true);
+    serial.write(0xFF01, 0xA5);
+    serial.clockExternalBit(false);
+    expect(serial.read(0xFF01) == 0xA5, "idle port ignores external edges");
+    serial.write(0xFF02, 0x82); // Fast select does not turn external mode into an internal clock.
+    for (unsigned bit = 0; bit < 3; ++bit) {
+        serial.advanceTCycles(1001 + bit * 12345);
+        serial.clockExternalBit(false);
+    }
+    expect(serial.read(0xFF01) == 0x28 && !(irq.read(0xFF0F) & 8),
+           "irregular external edges expose partial data without an early IRQ");
+    serial.write(0xFF02, 0); serial.clockExternalBit(true);
+    expect(serial.read(0xFF01) == 0x28, "abort keeps partial data and ignores subsequent edges");
+    serial.write(0xFF02, 0x80);
+    for (unsigned bit = 0; bit < 7; ++bit) serial.clockExternalBit(true);
+    expect(serial.read(0xFF02) & 0x80, "restarted external transfer requires a fresh eight edges");
+    serial.clockExternalBit(true);
+    expect(serial.read(0xFF01) == 0xFF && (irq.read(0xFF0F) & 8), "restarted external transfer completes normally");
+    serial.write(0xFF01, 0x55); serial.write(0xFF02, 0x81);
+    serial.clockExternalBit(false);
+    expect(serial.read(0xFF01) == 0x55, "externally supplied edges do not clock internal mode");
+}
+
+void testSerialCallbackFailureAndDisconnect() {
+    InterruptRegisters irq;
+    DmgSerial serial(irq);
+    serial.write(0xFF01, 0xA5); serial.write(0xFF02, 0x81);
+    serial.setInternalClockCallback([](bool) -> bool { throw std::runtime_error("link failed"); });
+    bool failed = false;
+    try { serial.advanceTCycles(512); } catch (const std::runtime_error &) { failed = true; }
+    expect(failed && serial.read(0xFF01) == 0xA5 && !(irq.read(0xFF0F) & 8),
+           "link callback failures propagate without inventing a received bit or successful IRQ");
+    serial.setInternalClockCallback({});
+    serial.advanceTCycles(4096);
+    expect(serial.read(0xFF01) == 0xFF && (irq.read(0xFF0F) & 8),
+           "removing link callback restores documented disconnected incoming-high fallback");
+}
+
 }
 
 int main() {
+    testSerialCallbackFailureAndDisconnect();
+    testExternalEdgesAndTwoPortExchange();
+    testIrregularExternalEdgesAbortAndModeGate();
     testRegistersAndDisconnectedTransfer();
     testExternalClockWaitsAndAbortRetainsPartialData();
     testStartDoesNotResetSerialClockPhase();

@@ -9,21 +9,24 @@ limits live in the [DMG validation matrix](dmg-validation.md) and
 
 LotusGB composes DMG and native CGB systems behind one libretro adapter. The system
 composes the CPU, address bus, cartridge and RAM, timer, interrupts, joypad,
-unconnected serial port, PPU, OAM DMA and APU. The default startup profile
+serial port with optional host bit exchange, PPU, OAM DMA and APU. The default startup profile
 selects DMG or CGB from cartridge header bit 7 and skips boot-ROM execution;
-an optional external DMG boot ROM can be selected for DMG startup. Native
-CGB uses its own synthetic post-boot registers/palettes without a BIOS. ROM-only, MBC1, MBC2, MBC3
-and MBC5 cartridges are supported within the limits listed in the validation
-matrix.
+optional external DMG or CGB boot images can be selected from the system
+directory. Native CGB uses synthetic post-boot registers/palettes when its BIOS
+is absent; the [CGB loader contract](cgb-development.md#optional-cgb-bios-through-libretro-2026-11-02) records layouts and validation limits. ROM-only, MBC1, MBC1M,
+MBC2, MBC3/MBC30, MBC5 and MBC7 cartridges are supported; MBC5/MBC7 rumble can use
+the optional libretro rumble interface, and MBC7 includes serial EEPROM and
+host-provided accelerometer input. Support remains bounded
+by the validation matrix.
 
 The PPU renders background, window and object pixels and implements selected
 mid-scanline register behavior. Its Mode 3 BG/OBJ fetch arbitration and some
 raster timing remain approximate. The [PPU guide](ppu-scrolling.md) records the
 current DMG model and visual evidence. The same renderer supports CGB color
 attributes, palettes, flips and priority, while timing remains approximate.
-Additional mapper families, connected serial peers and MBC5 rumble output
-remain outside the current implementation. The external boot ROM is user-supplied and is not included in
-the repository.
+MBC6, camera, HuC and other mapper families and frontend link transport remain
+outside the current implementation. The external
+boot ROM is user-supplied and is not included in the repository.
 
 ## Runtime flow
 
@@ -42,7 +45,7 @@ flowchart TD
     BUS --> IO[Mapped hardware registers]
     IO --> JOY[Joypad and interrupts]
     IO --> TIMER[Timer]
-    IO --> SERIAL[DMG serial SB/SC, no peer]
+    IO --> SERIAL[DMG/CGB serial SB/SC]
     IO --> APU[DMG APU, pulse channels 1 and 2, wave channel 3, noise channel 4]
     IO --> PPU[Shared DMG/CGB PPU, VRAM and OAM]
     IO --> DMA[OAM DMA + CGB VRAM DMA / KEY1]
@@ -118,10 +121,12 @@ references, callbacks and published cartridge storage addresses. Libretro owns
 the file/slot interface and contains exceptions. See [save states](save-states.md)
 for the schema, version policy, RTC behavior and validation scope.
 
-Native CGB snapshots use version 2/model 2, retaining the v1 base component
-sections and appending banked RAM, color palettes/buffers, fetch metadata,
-VRAM DMA and speed-switch state. Clock domains are rebound from validated
-speed state after loading. DMG version 1 field order remains unchanged. The
+Current snapshots use DMG v11 and CGB v13. They preserve model-specific state,
+including pending Mode-3 object fetches during OAM DMA and CPU illegal-opcode
+lock-up state. Host callbacks remain
+external, and clock domains are rebound from validated speed state after
+loading. See the [format policy](save-states.md) for the schema, migration list
+and version history. The
 synthetic LCD-off boot probe remains a separate test-only configuration.
 
 ## Shared GB/CGB composition
@@ -148,11 +153,11 @@ flowchart TD
 | Boundary | Shared behavior and model differences |
 | --- | --- |
 | CPU / decoding | Same instruction engine. KEY1-armed STOP is coordinated by the system, with a clocked pause before changing rate and waking the CPU. |
-| Bus / cartridge | Same dispatcher, aliases and mappers; composition selects RAM/register mappings and adds CGB VRAM DMA. OAM DMA bus conflicts remain approximate. |
-| Clock / timer / audio / serial | A CPU M-cycle advances 4 CPU clocks, corresponding to 4 or 2 base clocks. Timer/serial/OAM DMA use the CPU domain; PPU/APU/VRAM DMA use base time. APU divider tap follows CPU speed. |
-| Startup / RAM | Separate synthetic handoffs and optional CGB banked storage. No selectable DMG compatibility mode on CGB; DMG games use DMG hardware. |
+| Bus / cartridge | Same dispatcher, aliases and mappers; composition selects RAM/register mappings and adds CGB VRAM DMA. Native CGB OAM DMA separates cartridge and WRAM bus ownership; GDMA drops destination writes while the PPU owns VRAM. Other conflicted values and PPU/DMA timing remain approximate (see [CGB evidence](cgb-development.md#cgb-oam-dma-bus-separation-2026-11-02) and [GDMA Mode-3 behavior](cgb-development.md#gdma-writes-while-the-ppu-owns-vram-2026-11-03)). |
+| Clock / timer / audio / serial | A CPU M-cycle advances 4 CPU clocks, corresponding to 4 or 2 base clocks. Timer/serial/OAM DMA use the CPU domain; PPU/APU/VRAM DMA and CGB IR settling use base time. APU divider tap follows CPU speed. |
+| Startup / RAM | Separate physical hardware and boot-selected execution mode. Header-based defaults can be overridden; CGB compatibility gates native registers and maps monochrome indices through CGB palettes. See [compatibility](cgb-compatibility.md). |
 | PPU | Same timing/fetch/render pipeline uses owned DMG VRAM or borrowed `IVideoRam`. CPU windows precede selected-bank storage access. Color mode adds banked attributes, palettes and OAM-order priority; DMG keeps existing shade behavior. |
-| Frontend / snapshots | Both pixel formats convert RGB555 or DMG shades. Snapshots preserve v1 DMG and use v2 for CGB, with atomic candidate validation and stable SRAM/RTC pointers. |
+| Frontend / snapshots | Both pixel formats convert RGB555 or DMG shades. DMG v11/CGB v13 snapshots load legacy DMG v1/v3/v4/v6/v7/v8/v9/v10 and CGB v2/v3/v4/v5/v6/v7/v8/v9/v10/v11/v12, with atomic candidate validation and stable SRAM/RTC/EEPROM pointers. |
 
 The system owns external video storage, which outlives the PPU and is shared
 directly; no VRAM synchronization copy is needed. The borrowed pointer and
@@ -191,6 +196,16 @@ DMG path. Exact contracts, tests and remaining scope live in the
 
 These project-specific notes are informed by [Martin Fowler's *Refactoring* (2nd edition)](https://martinfowler.com/books/refactoring.html); they summarize our workflow in original wording.
 
+## CPU IDU and OAM bus events
+
+The CPU distinguishes ordinary accesses, accesses sharing a 16-bit IDU update,
+and internal IDU-only cycles through `IMemoryAccess`. `AddressBus` reports the
+combined event after synchronizing devices to the CPU bus phase. DMG system
+wiring forwards FE-page events to the PPU's Mode-2 OAM corruption model; native
+CGB omits that observer. Flat/GBIT memories retain ordinary transaction behavior.
+Requests are consumed within the M-cycle, while resulting OAM bytes are already
+serialized. See the [event contract and evidence](oam-corruption.md).
+
 ## Serial scope
 
 `DmgSerial` owns `$FF01` (SB) and `$FF02` (SC) and advances from the system
@@ -198,7 +213,8 @@ clock, including while the CPU is in HALT. Its free-running 512-T-cycle bit
 clock is independent of Timer/DIV and is not restarted by SC writes.
 In internal-clock mode it shifts in one high bit per edge with no connected
 peer; after eight bits it clears SC bit 7 and requests the serial interrupt.
-External-clock mode remains pending because no peer supplies a clock.
+External-clock mode waits for host-supplied edges; an optional internal-clock
+callback exchanges bits with a peer (see the [host interface and tests](serial-link.md)).
 Clearing SC bit 7 aborts without completing or requesting an interrupt.
 The synthetic serial clock starts at phase zero; exact model-specific
 post-boot phase, SC-write edge races, link cables and accessories are not

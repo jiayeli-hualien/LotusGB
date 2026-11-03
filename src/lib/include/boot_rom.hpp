@@ -2,6 +2,8 @@
 #define LOTUSGB_BOOT_ROM_HPP
 
 #include <cstdint>
+#include <functional>
+#include <utility>
 #include <vector>
 
 #include "address_bus.hpp"
@@ -21,9 +23,11 @@ public:
 
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
-    bool isMapped() const;
+    bool isMapped() const { return mapped; }
+    void setUnmappedCallback(std::function<void()> callback) { unmappedCallback = std::move(callback); }
 
 private:
+    std::function<void()> unmappedCallback;
     Cartridge &cartridge;
     std::vector<uint8_t> bootRom;
     bool mapped;

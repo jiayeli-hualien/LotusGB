@@ -1,7 +1,7 @@
 # DMG interrupt behavior and validation
 
 This is the interrupt contract and implementation audit for LotusGB, updated
-2026-10-28. It separates hardware rules from current implementation evidence.
+2026-11-03. It separates hardware rules from current implementation evidence.
 Passing instruction tests does not establish peripheral-to-CPU timing accuracy.
 
 LotusGB keeps peripheral requests in IF separate from the CPU's IE/IME
@@ -34,12 +34,16 @@ flowchart TD
     C -- Yes --> E[Wake HALT if sleeping]
     E --> F{IME enabled and instruction boundary?}
     F -- No --> G[Retain request; continue execution when awake]
-    F -- Yes --> H[Select highest priority request]
-    H --> I[Clear IME and acknowledge selected IF bit]
-    I --> J[Push return PC and enter vector]
+    F -- Yes --> H[Clear IME and begin entry]
+    H --> I[Push return PC high byte]
+    I --> J{Enabled request remains?}
+    J -- Yes --> K[Select and acknowledge request]
+    K --> L[Push return PC low byte and vector]
+    J -- No --> M[Cancel dispatch; resume at $0000]
 ```
 
-This diagram describes HALT, not STOP. It omits subcycle races during entry.
+The HALT wake path is separate from STOP. The entry steps reflect the tested
+IE-write boundary; other subcycle races remain open.
 
 ## CPU rules
 
@@ -51,8 +55,11 @@ and [HALT](https://gbdev.io/pandocs/halt.html).
 - RETI restores PC and enables interrupts. RET alone does not enable them.
 - Accept interrupts between complete instructions; a CB prefix and its opcode
   belong to one instruction.
-- Entry clears IME and the selected IF request, pushes the return PC, and
-  vectors in five M-cycles. Stack writes store the high byte first.
+- Entry clears IME, then pushes the return PC high byte first. After that
+  write, the CPU re-evaluates `IF & IE` and acknowledges the selected request
+  before the low-byte push. This lets an IE change from the high-byte push
+  cancel dispatch or select another pending request; an IE change from the
+  low-byte push is too late. Entry takes five M-cycles.
 - HALT wakes on an enabled pending request, including with IME clear. With
   IME clear and a request already pending when HALT executes, the HALT bug
   suppresses the next opcode-fetch PC increment.
@@ -87,10 +94,10 @@ STOP begins, and exceptional STOP-entry races remain unverified.
 | Startup | `GameBoySystem` post-boot profile sets IME=0. Synthetic CPU reset retains its existing IME=1 convention. | `testPostBootInterruptsWaitForEi` requests IF/IE before EI, checks no handler/stack change, then checks handler execution and return. Synthetic reset is test infrastructure, not a hardware power-on claim. |
 | IF / IE | `InterruptRegisters` latches low-five-bit requests; IF reads upper bits high. IE stores its byte. Request generation is independent of IME. | CPU and system tests exercise software requests and real timer/PPU requests. |
 | EI / DI | CPU defers EI until the next instruction completes; DI cancels a pending enable. | `testEiDelay` includes a multi-cycle following instruction and an already-pending request. Additional tests check EI; EI return PC and DI cancellation across following instructions; external EI/DI sequence ROMs pass. |
-| Entry / priority | CPU selects the source at acceptance, acknowledges it immediately, then performs two idle M-cycles, two stack writes, and the vector fetch. | `testInterruptEntryPriorityStackAndVector` checks all five steps, return address, stack order and preservation of another IF bit. Priority changes and acknowledgement races during entry remain unverified. |
+| Entry / priority | CPU begins with the highest-priority request, performs two idle M-cycles and the high-byte stack write, then re-evaluates `IF & IE` before acknowledging and writing the low byte. A cancelled dispatch resumes at `$0000`. | `testInterruptEntryPriorityStackAndVector` checks all five cycles; `testInterruptEntryCancellationAndIEStackWriteTiming` checks cancellation with IF preserved, redirection to another pending request and the lower-byte boundary. External Mooneye `interrupts/ie_push` passes. Other IF/peripheral races during entry remain unverified. |
 | Prefetch / CB | CPU compensates for its prefetched opcode when saving the return address. It does not accept an interrupt between CB bytes. | `testInterruptWaitsUntilCbInstructionCompletes`. Prefetch compensation is internal bookkeeping; software must see the correct return PC. |
 | RETI | The instruction restores PC and enables IME. | `testRetiImmediatelyServicesAnotherPendingInterrupt` checks immediate service before executing the resumed opcode, stack address/order and IF acknowledgement. External `reti_intr_timing` and `reti_timing` pass. |
-| HALT | CPU idles while the shared clock advances peripherals. Pending IF/IE wakes it; IME decides whether to enter a handler. | `testHaltWakeAndHaltBug`, `testStopDecodeAndHaltIdle`, and `testTimerInterruptWakesHaltAndRunsHandler`. Exact wake/entry phase is still under investigation. |
+| HALT | CPU idles while the shared clock advances peripherals. Pending IF/IE wakes it; IME decides whether to enter a handler. | `testHaltWakeAndHaltBug` and `testEiHaltWithPendingInterruptReturnsToHalt` cover the ordinary HALT bug and the delayed-IME `EI; HALT` return address. `testStopDecodeAndHaltIdle` and `testTimerInterruptWakesHaltAndRunsHandler` cover idle/wake integration. Exact wake/entry phase is still under investigation. |
 | STOP | CPU exposes a separate stopped state with zero elapsed CPU T-cycles; a selected JOYP input-line falling edge wakes it independently of IE/IME, and fetching resumes. | CPU STOP tests plus `testSelectedJoypadLineWakesStopWithoutInterruptAcceptance`, which checks unselected input, selected wake, IF, continued execution and no handler entry. Based on Pan Docs; wake phase, already-low-at-entry and exceptional STOP races have no physical-DMG validation. |
 | Peripheral timing | Timer, PPU and joypad own request generation; CPU owns selection/service. | Component tests plus system integration. Unconnected serial internal-clock completion now requests IF bit 3, with component and CPU/HALT system tests. Actual link peers and external clock input are unsupported. |
 | Bus phase | `SystemClock` advances components to the end of an M-cycle before a CPU bus access. | Existing CPU bus-access tests and external timing ROMs. This is a model with limited validation, not a guarantee for every register conflict. |
@@ -125,13 +132,14 @@ for commands and current results.
 
 1. **EI combinations.** EI followed by EI now has focused pending-request
    coverage and passes the external `ei_sequence` ROM. EI followed by HALT
-   with a later-arriving VBlank passes `halt_ime0_ei`. An already-pending
-   request at EI/HALT still needs separate evidence; its return-PC behavior
-   must not be inferred from ordinary HALT.
-2. **Entry races and RETI.** Check changing IE/IF during the stack writes,
-   cancellation/reprioritization of requests. Immediate service after RETI now
-   has unit and external ROM coverage. Acceptance-time selection is still
-   not proof of the remaining entry races.
+   with a later-arriving VBlank passes `halt_ime0_ei`; a separate original CPU
+   fixture now checks an already-pending request, the HALT-bug return address,
+   `RETI`, and the second HALT execution. Other request-arrival boundaries
+   remain open.
+2. **Entry races and RETI.** Mooneye `interrupts/ie_push` and focused CPU tests
+   now cover IE changes caused by both stack writes, cancellation and
+   reprioritization. Immediate service after RETI also has unit and external
+   ROM coverage. Other IF/peripheral races during entry remain open.
 3. **Peripheral-specific gaps.** Add evidence for STAT-write glitches. Line-153
    early LY reset and comparison now have focused PPU and CPU-handler tests;
    finer hardware races remain open. STOP wake is implemented from the
@@ -156,7 +164,7 @@ all relevant evidence instead of adjusting one subsystem to satisfy one ROM.
 | Wrong IME at skipped-boot entry | System startup | Pending IF/IE before EI system test |
 | LYC comparison recomputed while LCD off | Peripheral request generation | Retained-flag and edge-history tests |
 | Missing Mode 2 STAT event at VBlank | Peripheral event / shared signal | Entry-dot, blocking, and external DIV-based timing checks |
-| SCX/HBlank LY sample used the previous line at dot 452 | PPU readable LY edge | Assert the dot-451/dot-452 boundary and retain the expanded 14-ROM regression |
+| SCX/HBlank LY sample used the previous line at dot 452 | PPU readable LY edge | Assert the dot-451/dot-452 boundary and retain the 14-ROM PPU regression |
 
 
 ## Bounded SCX timing experiment (2026-10-24, historical checkpoint)
@@ -206,9 +214,11 @@ pass at this checkpoint. ROMs stay external.
 
 References: [EI sequence](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/ei_sequence.s),
 [EI before HALT](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/halt_ime0_ei.s),
-and [RETI interrupt timing](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/reti_intr_timing.s).
-The EI/HALT ROM waits for a later interrupt; it does not establish the behavior
-of every already-pending EI/HALT combination. No test expectations were relaxed.
+and [RETI interrupt timing](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/reti_intr_timing.s),
+plus [Pan Docs: HALT and the HALT bug](https://eldred.fr/pandocs/halt.html).
+The EI/HALT ROM waits for a later interrupt; the already-pending case is
+covered by the original instruction-level fixture. No test expectations were
+relaxed.
 
 
 ## SCX / HALT wake follow-up (2026-10-25, historical checkpoint)

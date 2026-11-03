@@ -6,7 +6,7 @@ The latest expanded PPU timing result (2026-10-25): all 14 cases pass, including
 `hblank_ly_scx_timing-GS` and the sprite Mode 0 timing ROM. Earlier result
 counts below are historical checkpoints.
 
-The current system can either execute an optional external DMG boot ROM or start from a fast synthetic post-boot profile. CGB behavior and unsupported cartridge hardware are outside this matrix.
+The current system can either execute an optional external DMG boot ROM or start from a fast synthetic post-boot profile. Native CGB behavior is tracked separately; shared MBC7 mapper behavior is included here because it is implemented by the DMG cartridge path as well.
 
 Native CGB-E playability is tracked in the separate
 [CGB implementation guide](cgb-development.md); its native-CGB game and hardware checks do
@@ -62,22 +62,33 @@ mid-Mode 3 race. See [Pan Docs rendering](https://gbdev.io/pandocs/Rendering.htm
 
 | Area | Implemented behavior and notable DMG details | Current validation | Known gaps / next useful check |
 | --- | --- | --- | --- |
-| CPU instructions and timing | CPU advances in M-cycles and reports T-cycles. Implemented behavior includes arithmetic, ALU, loads/stores, CB operations, control flow, stack and interrupt sequences; 11 base opcodes remain explicitly unsupported and fail through the libretro error path. | `make test`: `cpu_instruction_test.cpp` and `cpu_cycle_test.cpp` check externally visible registers, flags, bus order and cycle phases across register, immediate, memory, stack, jump and interrupt forms. `ADD SP,e8` is checked over all 65,536 SP-low-byte/offset combinations. The pinned GBIT integration comparison is separate. | CPU phase tests follow GB-CTR and check observable state; they are not physical-DMG timing measurements. The 11 unsupported opcodes and DMG OAM corruption from IDU accesses remain outside implementation; other internal timing is not fully hardware-validated. |
-| Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp` verifies TAC frequencies and confirms TIMA overflow requests Timer IF on reload; `game_boy_system_test.cpp` checks that the timer IRQ wakes HALT and reaches its handler; `cpu_instruction_test.cpp` covers CPU interrupt entry. | All 13 Mooneye `acceptance/timer` ROMs pass, including TIMA/TMA writes during reload. The PPU group includes interrupt-entry and HALT timing ROMs, and the interrupt group adds ten EI/DI, RETI, HALT and IF/IE checks. This does not cover every interrupt race. |
-| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1, MBC2, MBC3, and MBC5 banking. Special cases include MBC2's 512×4-bit RAM and MBC3 RTC latch, HALT, and day rollover. | `make test`: `address_bus_test.cpp`; 27 Mooneye standard MBC1/MBC2/MBC5 cases pass. Libretro integration runs CPU code from MBC1 bank 2, writes battery RAM, unloads the game, restores the SRAM block, and verifies banked code reads and updates it. Other libretro tests cover save RAM/RTC memory-block restoration across reset and reload. | RetroArch `.srm` disk write/reload was manually verified with Big2Small on 2026-10-23. RetroArch `.rtc` disk write/reload was verified on 2026-10-26 using a temporary MBC3 timer-only probe: clean exit wrote the 24-byte RTC block, and a second RetroArch process restored and advanced it. These verify one cartridge/frontend path each, not every mapper or game; RTC evidence and limits are recorded under `build/test-roms/mbc3-rtc-persistence/`. Tobu Tobu Girl remains an MBC1 gameplay target; high-score persistence requires completing a level and is not a required manual acceptance step. MBC30 now has separate original banking/RTC/state tests and supports up to 4-MiB ROM / 64-KiB SRAM; see the CGB/MBC30 implementation and original fixture coverage. Other mapper families are unsupported; MBC5 rumble banking works, but motor output is not exposed. |
-| Save states | Version 1 DMG snapshots include CPU instruction progress, hardware pipelines, RAM, mapper/RTC state, and frame/audio state. Libretro uses a fixed 512 KiB buffer and validates before atomic commit. | `save_state_test.cpp` and libretro GB Pong regressions are part of `make test`. Core tests compare 30 subsequent video and PCM callbacks after fresh-load restore in both pixel formats; invalid states leave the next frame running. `make build`, `make test`, and the pinned GBIT comparison passed. On 2026-10-30, macOS RetroArch 1.22.2 passed GB Pong save/advance/restore, further input, and restoration from the same file after a frontend relaunch; see [session identity and evidence](save-states.md#macos-retroarch-acceptance-2026-10-30). The user reported Steam Deck same-session and full-relaunch restore/control passing on 2026-10-31, with no current tearing; see [Deck evidence and identity limits](steam-deck-check.md#m5-save-state-checkpoint--user-reported-pass-2026-10-31). | Installed Deck hash and frontend/OS versions were not supplied. Running RTCs retain wall-clock behavior. A bounded macOS [rewind session](rewind.md) passed with GB Pong; Deck R rewind and control after release pass in Ping Pong by user report; long-session stability and measured Deck performance remain unverified. Future-version migration and run-ahead are untested. |
-| Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. Startup profiles restore model-specific clock phase. | `make test`: `dmg_serial_test.cpp` checks register, bit/completion, and boot/post-boot divider-phase boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. Mooneye `boot_sclk_align-dmgABCmgb` passes with both fast startup and the local standard DMG BIOS. | The Mooneye result is for its documented DMG ABC/MGB target, not all DMG revisions or physical hardware. No real peer, external clock input, accessories or CGB fast clock are implemented. Component/system tests do not establish full hardware serial conformance. |
-| Joypad | Active-low button lines, direction/button selection, falling-edge interrupt requests, and DMG STOP wake on a selected P10–P13 line falling low. STOP wake is separate from IE/IME interrupt acceptance. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; `testSelectedJoypadLineWakesStopWithoutInterruptAcceptance` checks unselected input keeps STOP active, selected A input wakes it, IF is requested, execution resumes and no interrupt vector is entered with IME=0 / IE=0. Libretro input regression uses GB Pong. | STOP signal behavior follows [Pan Docs](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction); no physical-DMG result is available. Exact wake phase, already-low-at-entry behavior and unusual STOP-entry races remain unverified. The libretro input/callback phase can shift VBlank-synchronized visible response by one callback; this is demonstrated with a synthetic ROM, not hardware-validated. See the [input-phase report](#libretro-input-phase-and-vblank-response-2026-10-26). |
-| PPU rendering | 160×144 DMG shade framebuffer with background, window and objects, tile addressing, palettes, transparency and DMG priority. BG and OBJ use separate 16-pixel FIFOs; selected LCDC, palette and tile-map changes are sampled progressively. OBJ descriptors are selected at scanline entry and fetch stalls remain coarse. | `make test`: `dmg_ppu_test.cpp` covers pixel output and selected register changes; DMG Acid2 passes its exact framebuffer regression. The selected sprite-priority image matches its reference. Four optional GBMicrotest latch captures are visual diagnostics only; see [GBMicrotest](#gbmicrotest-ppu-latch-diagnostics). | Mode 3 pixel timing and shared BG/OBJ bus arbitration lack model-matched hardware validation. Canyon Racer repeatability and cross-core image comparisons are documented in the [homebrew guide](homebrew-check.md); they are not hardware oracles. See the [PPU investigation](ppu-scrolling.md). |
-| PPU modes and Mode 3 timing | 456-dot scanlines; VBlank/STAT requests; final-line LY reset and delayed LYC comparison; mode-based VRAM/OAM access. Mode 3 starts at 172 dots, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. Normal-line readable LY changes at dot 452; LCD startup retains its dot-454 edge. | `make test` covers selected mode/access boundaries and CPU writes during blocked modes. Eleven selected Mooneye PPU/interrupt ROMs pass; the expanded 14-case PPU set passed 14/14 in its latest recorded run. | These tests do not establish full raster accuracy. SCX/SCY fetch sampling and BG/OBJ arbitration remain simplified or unverified against matching DMG hardware. The [PPU guide](ppu-scrolling.md) records the model and scoped diagnostics. |
-| OAM DMA | FF46 schedules 160 bytes at one byte per M-cycle after startup, supports delayed restart, and arbitrates CPU OAM/source-bus access; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. | `make test`: `dmg_oam_dma_test.cpp`; six Mooneye OAM DMA cases pass: `basic`, `reg_read`, `sources-GS`, `oam_dma_start`, `oam_dma_timing`, `oam_dma_restart`. | Basic read contention is modeled; exact write-induced bus corruption, PPU/DMA rendering contention, and sub-M-cycle bus effects remain unmodeled. |
-| APU and audio output | DMG pulse 1/2, wave 3, and noise 4; stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the 2026-10-26 run against the current core. | The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
+| CPU instructions and timing | CPU advances in M-cycles and reports T-cycles. Implemented behavior includes arithmetic, ALU, loads/stores, CB operations, control flow, stack and interrupt sequences. The eleven invalid base opcodes hard-lock CPU instruction fetch and interrupt service; system clocks continue. | `make test`: `cpu_instruction_test.cpp` checks all eleven opcode encodings, fixed PC, no bus activity, ignored pending interrupts and reset recovery. DMG/CGB save-state tests replay a locked CPU while peripherals advance. `ADD SP,e8` is checked over all 65,536 SP-low-byte/offset combinations. All 17 selected Mooneye `cpu` ROMs pass, covering instruction timing, DAA, flags, OAM bits and unused hardware bits. The pinned GBIT integration comparison is separate. | Opcode holes follow the documented CPU lock-up contract; CPU phase tests otherwise follow GB-CTR and check observable state, not physical-DMG timing. [DMG OAM corruption](oam-corruption.md) has CPU IDU/access events and component/system regressions. Exact bus races remain outside validation. |
+| Timer and interrupts | DIV/TIMA/TMA/TAC edge-based counting, delayed TIMA overflow reload and its four-T-cycle write window, DIV-write edges, IF/IE, interrupt priority and CPU interrupt entry. | `make test`: `timer_test.cpp` verifies TAC frequencies and confirms TIMA overflow requests Timer IF on reload; `game_boy_system_test.cpp` checks that the timer IRQ wakes HALT and reaches its handler; `cpu_instruction_test.cpp` covers interrupt priority, IE changes caused by both interrupt stack writes, IF preservation on cancellation and re-vectoring. | All 14 Mooneye timer ROMs pass, including DIV instruction timing and TIMA/TMA writes during reload. The PPU group includes interrupt-entry and HALT timing ROMs; the 11-case interrupt group includes EI/DI, RETI, HALT, IF/IE and `interrupts/ie_push`. This does not cover every interrupt race. |
+| Address bus and cartridge | Address mapping and WRAM echo; ROM-only, MBC1 (including standard 1-MiB MBC1M), MBC2, MBC3/MBC30, MBC5 and MBC7. Special cases include MBC2's 512×4-bit RAM, MBC3 RTC, MBC5/MBC7 rumble output and MBC7 sensor latch/serial EEPROM. | `make test`: `address_bus_test.cpp`; 28 Mooneye MBC1/MBC1M/MBC2/MBC5 cases pass. MBC7 tests cover banking, register gates, sensor latching, EEPROM commands, timed busy/ready polling and persistent 256-byte storage. CPU-driven DMG/CGB snapshots resume a partial EEPROM command and pending programming; mocked libretro tests cover accelerometer enable/sample/conversion and fallback. MBC5/MBC7 rumble has register, gate/bank, frontend-interface and snapshot-restore coverage. | MBC7 axis calibration and sensor timing are approximate, and no real sensor, physical rumble motor or MBC7 game has been checked manually. Other unsupported mapper families remain out of scope. See [MBC7 evidence and limits](cgb-development.md#mbc7-eeprom-and-accelerometer-path-2026-11-02). |
+| Save states | Current DMG v11/CGB v13 snapshots include CPU instruction progress and lock-up state, hardware pipelines, RAM, mapper/RTC/EEPROM state, rumble control and frame/audio state. Libretro uses a fixed 512 KiB buffer and validates before atomic commit. | `save_state_test.cpp` and libretro regressions are part of `make test`. Core tests compare subsequent video and PCM after fresh-load restore in both pixel formats; invalid states leave the next frame running. MBC7 tests replay an EEPROM command interrupted between serial bits and a pending self-timed programming cycle. MBC5/MBC7 tests replay motor state and check unload/reset cleanup. On 2026-10-30, macOS RetroArch 1.22.2 passed GB Pong save/advance/restore and reload; the user reported Steam Deck same-session and full-relaunch restore/control passing on 2026-10-31. See [format/evidence](save-states.md) and [Deck evidence](steam-deck-check.md#m5-save-state-checkpoint--user-reported-pass-2026-10-31). | Installed Deck hash and frontend/OS versions were not supplied. Running RTCs retain wall-clock behavior. A bounded macOS [rewind session](rewind.md) passed with GB Pong; Deck R rewind and control after release pass in Ping Pong by user report. Long-session stability, measured Deck performance, future-version migration and run-ahead are unverified. |
+| Serial, unconnected DMG | SB/SC registers, unused SC bits high, free-running 8192 Hz internal bit clock, MSB-first shifting with incoming ones, eight-bit completion, serial IF request, abort and externally clocked waiting. Serial clock is independent of DIV and continues in HALT. Startup profiles restore model-specific clock phase. | `make test`: `dmg_serial_test.cpp` checks register, bit/completion, and boot/post-boot divider-phase boundaries; system tests check serial IRQ/HALT/RETI and continued completion despite repeated DIV resets. Mooneye `boot_sclk_align-dmgABCmgb` passes with both fast startup and the local standard DMG BIOS. | The Mooneye result is for its documented DMG ABC/MGB target, not all DMG revisions or physical hardware. The [logical bit-exchange interface](serial-link.md) now supplies external edges and paired-core tests, including CGB fast/double-speed clocks. Frontend link transport, physical cables and accessories are not covered. Component/system tests do not establish full hardware serial conformance. |
+| Joypad | Active-low button lines, direction/button selection, falling-edge interrupt requests, and DMG STOP wake on a selected P10–P13 line falling low. STOP wake is separate from IE/IME interrupt acceptance. | `make test`: `joypad_test.cpp`, `game_boy_system_test.cpp`; tests check unselected input, an already-low selected line at STOP entry, release without wake, and a fresh press that wakes and requests IF. Libretro input regression uses GB Pong. | STOP signal behavior follows [Pan Docs](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction); the already-low case is an edge-model contract, not physical-DMG evidence. Exact wake phase and unusual STOP-entry races remain unverified. The libretro input/callback phase can shift VBlank-synchronized visible response by one callback; this is demonstrated with a synthetic ROM, not hardware-validated. See the [input-phase report](#libretro-input-phase-and-vblank-response-2026-10-26). |
+| PPU rendering | 160×144 DMG shade framebuffer with background, window and objects, tile addressing, palettes, transparency and DMG priority. BG and OBJ use separate 16-pixel FIFOs; Mode 2 checks OAM entries every two PPU dots and retains the first ten Y matches, while selected LCDC, palette and tile-map changes are sampled progressively. Object-row size is resolved at Mode 3 entry; fetch stalls remain coarse. | `make test`: `dmg_ppu_test.cpp` covers pixel output, scan-time Y selection and selected register changes; `save_state_test.cpp` replays a snapshot taken mid-Mode-2 scan; DMG Acid2 passes its exact upstream framebuffer regression, including its LCDC updates during Mode 2. The selected sprite-priority image matches its reference. Four optional GBMicrotest latch captures are visual diagnostics only; see [GBMicrotest](#gbmicrotest-ppu-latch-diagnostics). | The two-dot scan cadence is reference-based and has no physical-DMG measurement. Mode 3 pixel timing and shared BG/OBJ bus arbitration also lack model-matched hardware validation. Canyon Racer repeatability and cross-core image comparisons are documented in the [homebrew guide](homebrew-check.md); they are not hardware oracles. See the [PPU investigation](ppu-scrolling.md). |
+| PPU modes and Mode 3 timing | 456-dot scanlines; VBlank/STAT requests; final-line LY reset and delayed LYC comparison; mode-based VRAM/OAM access. Mode 3 starts at 172 dots, adds `SCX & 7`, a six-dot visible-window penalty, and modeled 6–11-dot object-fetch stalls. Normal-line readable LY changes at dot 452; LCD startup retains its dot-454 edge. | `make test` covers selected mode/access boundaries and CPU writes during blocked modes. The default 14-case Mooneye PPU profile passes, including sprite Mode 0, SCX/HBlank and STAT blocking. | These tests do not establish full raster accuracy. SCX/SCY fetch sampling and BG/OBJ arbitration remain simplified or unverified against matching DMG hardware. The [PPU guide](ppu-scrolling.md) records the model and scoped diagnostics. |
+| OAM DMA | FF46 schedules 160 bytes at one byte per M-cycle after startup, supports delayed restart, and arbitrates CPU OAM/source-bus access; DMG DMA sources `$E0`–`$FF` mirror `$C0`–`$DF`, independently of CPU OAM/I/O mappings. Mode-2 DMA hides that line's objects, and Mode-3 OBJ fetch samples the aligned active DMA word for tile/attributes. | `make test`: `dmg_oam_dma_test.cpp`, `cgb_hardware_test.cpp` and `save_state_test.cpp`; six Mooneye OAM DMA cases pass: `basic`, `reg_read`, `sources-GS`, `oam_dma_start`, `oam_dma_timing`, `oam_dma_restart`. The component test checks first/last byte and full-transfer timing at both CGB CPU speeds. An original pixel fixture checks the Mode-3 effect on DMG and CGB; a CPU-driven DMG snapshot replays an active DMA with an object fetch pending. | Full M-cycle start/end timing has Mooneye and component coverage. Exact sub-M-cycle DMA/PPU bus effects and revision differences remain unverified by physical measurements. [CPU-triggered OAM corruption](oam-corruption.md) is a separate effect. |
+| APU and audio output | DMG pulse 1/2, wave 3, and noise 4; per-channel digital/DAC conversion, stereo routing and PCM output. Special CH3 behavior includes delayed sample fetch, fetch-cycle wave RAM access, and retrigger corruption. The common active period-zero NRx2 write increments CH1/CH2/CH4 volume. | `make test`: `dmg_apu_test.cpp`, timer/system integration tests, and libretro callback tests. APU tests check repeated volume increments and wrap through CGB PCM registers, plus changed DMG mixed PCM. Optional `make test-roms` runs [Blargg DMG sound tests](https://github.com/retrio/gb-test-roms/tree/master/dmg_sound) 09, 10, and 12; all three passed in the 2026-10-26 run against the current core. | Other NRx2 zombie-write combinations vary by hardware revision and remain unimplemented. The selected ROMs focus on CH3 wave RAM behavior, not full APU conformance. CH4 waveform quality still benefits from listening or comparison against DMG reference recordings. |
 | Startup, frame stepping, and libretro | The default fast path starts at `$0100` with a synthetic DMG post-boot state calibrated to the BIOS handoff. When `dmg_boot.bin` (or the compatible fallback name `gb_bios.bin`) is present in RetroArch's system directory, the core maps its 256 bytes at `$0000-$00FF`, starts the CPU at `$0000`, and unmaps it when the boot program writes nonzero to `$FF50`. Reset repeats the selected startup path. The default adapter uses bounded VBlank presentation; the diagnostic `stepFrame()` API advances 70,224 T-cycles. | `make test`: system and libretro tests cover the synthetic BIOS overlay, `$FF50` handoff, optional system-directory loading, malformed-image diagnostics, content errors, STOP warnings, and callback-exception boundaries. With the local standard DMG BIOS, Mooneye `boot_regs-dmgABC`, `boot_hwio-dmgABCmgb`, and `boot_div-dmgABCmgb` all pass. The no-BIOS fast profile also passes all three after matching the handoff CPU/I/O values and divider phase. The core .so remains a local build artifact. | The fast profile skips the logo animation and initializes tested handoff state; it is not a byte-for-byte snapshot of all CPU-visible and internal memory (including logo-derived VRAM and OAM contents). Logo rendering/header checks and model-specific power-on behavior are not independently verified. Reserved-opcode diagnostics remain `stderr`-only, and placeholder handling continues execution. See [startup profile and boot-ROM scope](#startup-profile-and-boot-rom-scope). |
 
 The Mooneye `manual-only/sprite_priority` DMG frame also matches its v7.0
 reference image exactly (0/23,040 pixels differ). This verifies sprite-priority
 composition for that scene, not per-dot OBJ fetch timing; see the
 [reproducible visual check](ppu-scrolling.md#mooneye-manual-sprite-priority-image-2026-10-25).
+
+### STOP with an already-low selected Joypad line (2026-11-02)
+
+The [Pan Docs STOP description](https://gbdev.io/pandocs/Reducing_Power_Consumption.html#using-the-stop-instruction)
+says a low P10–P13 line terminates STOP. The CPU-driven
+`testStopRequiresFreshFallingJoypadEdgeWhenLineWasAlreadyLow` now records the
+edge interpretation at the system boundary: a selected A line held low before
+STOP does not wake it retroactively, releasing the key does not wake it, and a
+new press resumes instruction fetch and requests Joypad IF. This is automated
+emulator-contract coverage; exact wake phase and physical-DMG confirmation
+remain open.
 
 ## Startup profile and boot-ROM scope
 
@@ -369,23 +380,18 @@ exposed six explicit failure signatures (not timeouts):
 | `hblank_ly_scx_timing-GS` | FAIL |
 | `intr_2_mode0_timing_sprites` | FAIL |
 
-The expanded 14-case set now passes all 14 tests. The latest local report is
-`build/test-roms/mooneye-expanded-final/report.md`; it records per-ROM logs
-and SHA-256 hashes. Re-run it with:
+The three formerly extended PPU cases now pass and have joined the default
+14-case `ppu` profile. The report records per-ROM logs and SHA-256 hashes.
+Re-run the profile with:
 
 ```sh
-python3 tools/run_mooneye_ppu_tests.py \
-  --runner build/mooneye_rom_runner \
-  --suite-dir /path/to/mts-20240926-1737-443f6e1 \
-  --output-dir build/test-roms/mooneye-expanded \
-  --extended
+make test-mooneye MOONEYE_SUITE_DIR=/path/to/mts-20240926-1737-443f6e1
 ```
 
-Investigate LCD enable/disable and LYC/STAT behavior first, then VBlank/STAT
-interaction, and finally SCX and object-fetch timing. Consult each ROM's
-source and hardware documentation before changing behavior. These failures
-identify missing external coverage; they do not by themselves establish a
-regression or prove which component is responsible.
+The historical failures prompted focused work on LCD enable/disable,
+LYC/STAT, VBlank/STAT interaction, SCX and object-fetch timing. Passing these
+ROMs covers selected edges and does not establish full PPU accuracy; use the
+source and hardware documentation when investigating additional cases.
 
 
 ### LCD-off LYC comparator correction (2026-10-24)
@@ -718,8 +724,8 @@ valid evidence of hardware behavior.
 
 ### Common mapper acceptance (2026-10-24)
 
-The available Mooneye mapper ROMs pass without changing the cartridge
-implementation. The explicit `mapper` group selects only standard wiring:
+At this checkpoint, the available Mooneye mapper ROMs passed without changing
+the cartridge implementation. The `mapper` group then selected standard wiring:
 
 | Mapper | Cases | Coverage |
 | --- | ---: | --- |
@@ -731,15 +737,16 @@ The suite names use bit units: for example, `rom_16Mb` is 2 MiB and
 `rom_64Mb` is 8 MiB. These tests support the existing capacity claims; the
 emulator is not limited to 32 KiB when a supported mapper is present.
 
-The combined `all` group now has 67 passing cases; the default `ppu` group
-remains eleven. This optional external-ROM workflow is outside GitHub CI.
+At this checkpoint the combined `all` group had 67 passing cases; the default
+`ppu` group had eleven. This optional external-ROM workflow is outside GitHub CI.
 Reports include each selected ROM's SHA-256 for repeatability; the recorded
 hash identifies the supplied file and does not verify it against an official
 release checksum manifest. Logs retain the suite-relative directory names so
 repeated names such as `rom_512kb` from different mappers cannot overwrite one another.
 
-`multicart_rom_8Mb` is deliberately excluded: MBC1M uses different wiring and
-remains outside the supported standard-MBC1 scope. The local archive has no
+`multicart_rom_8Mb` was excluded at this checkpoint because MBC1M used
+unimplemented wiring. On 2026-11-02 it was added to the mapper group after the
+[MBC1M implementation and 28-case check](cgb-development.md#mbc1m-multicart-wiring-2026-11-02). The local archive has no
 MBC3 mapper group; existing MBC3/RTC evidence remains the unit, frontend and
 recorded game checks. Passing mapper ROMs is not a claim of full gameplay,
 RTC disk persistence, all MBC5 RAM/rumble behavior or every cartridge variant.
@@ -867,3 +874,57 @@ Mooneye cases and GBIT (244/244 + 256/256) pass. Both 3,600-frame homebrew
 profiles retain their previous final frame hashes, and the original supplied
 Big2Small save is unchanged. This remains a staged baseline, not complete
 FIFO/sprite arbitration or full raster-effect compatibility.
+
+### STAT write interrupt quirk (2026-11-02)
+
+DMG STAT writes with the LCD enabled now force all interrupt sources active
+for one M-cycle before returning to the requested mask. This can request STAT
+IF even when writing zero in OAM scan, HBlank, VBlank or during LYC equality.
+Native CGB omits this quirk. See [Pan Docs STAT](https://github.com/gbdev/pandocs/blob/master/src/STAT.md#spurious-stat-interrupts).
+
+`cgb_hardware_test` crosses both models, all four modes and matching/nonmatching
+LYC. It checks spurious IRQs, combined-line blocking while the override lasts,
+release after four clocks, retained interrupt mask and absence while LCD is
+off. `save_state_test` captures a real CPU STAT write with four clocks pending,
+then checks CPU-visible IF and exact PCM/state replay after restore. Snapshot
+v4 includes the transient; older v1/v2/v3 states remain loadable with no pending
+override. This models the documented M-cycle behavior, not every sub-dot race
+or physical Game Boy revision.
+The standard local Mooneye PPU group also passes after this correction;
+the report is `build/test-roms/stat-write-ppu/report.md`. The external ROMs
+remain outside the repository and CI.
+
+### Invalid CPU opcode lock-up (2026-11-02)
+
+The eleven unused base opcodes (`$D3`, `$DB`, `$DD`, `$E3`, `$E4`, `$EB`, `$EC`,
+`$ED`, `$F4`, `$FC`, `$FD`) now hard-lock instruction fetch and interrupt
+service. The PPU, APU, timer and system clock continue to advance. This follows
+[Pan Docs' invalid-opcode behavior](https://eldred.fr/pandocs/CPU_Instruction_Set.html)
+and its linked [CPU decode analysis](https://gist.github.com/SonoSooS/c0055300670d678b5ae8433e20bea595#opcode-holes-not-implemented-opcodes).
+
+`cpu_instruction_test` checks all eleven encodings, stable PC/SP, no bus
+activity, pending interrupts remaining unserviced, and reset recovery.
+`game_boy_system_test` checks bounded stepping while peripherals keep time.
+DMG/CGB `save_state_test` snapshots and replays the lock; malformed lock fields
+are rejected atomically. Libretro no longer converts these hardware lock-ups
+into host execution errors. This is specification-based behavior, not a
+physical-hardware run.
+
+### IE changes during interrupt entry (2026-11-03)
+
+The CPU now keeps the selected IF request pending through the upper-byte PC
+stack write. It re-evaluates `IF & IE` after that write and before the lower-byte
+write: disabling the only request cancels dispatch, while another pending
+enabled request can supply the vector. A change caused by the lower-byte write
+is too late. Cancellation preserves IF and resumes at `$0000`.
+
+`cpu_instruction_test` covers cancellation with IF retained, redirection from
+VBlank to STAT, and the lower-byte timing boundary. The external
+[Mooneye `ie_push` source](https://github.com/Gekkio/mooneye-test-suite/blob/main/acceptance/interrupts/ie_push.s)
+reports the behavior verified on DMG, MGB, SGB, SGB2, CGB, AGB and AGS. The ROM
+is included in the local `interrupt` and `all` profiles; ROM binaries remain
+outside this repository. The curated `all` profile now passes 91/91,
+including CPU timing/flag tests, DIV timing, serial boot-clock alignment and
+the three PPU cases promoted from diagnostics. The standard PPU profile passes
+14/14.
+No snapshot fields or entry-cycle counts changed.

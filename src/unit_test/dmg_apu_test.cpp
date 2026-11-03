@@ -1,6 +1,8 @@
 #include "dmg_apu.hpp"
 
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -451,9 +453,652 @@ void testAllChannelDacsOffMuteOutputImmediately() {
                "all DACs off disconnects the output without a filter tail");
 }
 
+void testCgbActiveWaveRamAliasesWithoutDmgAccessWindow() {
+    DmgApu apu(true);
+    setupWaveChannelForRetriggerTest(apu);
+    apu.advanceTCycles(25); // Byte 2 is selected, outside the DMG fetch window.
+    for (uint16_t address = 0xFF30; address <= 0xFF3F; ++address)
+        expect(apu.read(address) == 0x22,
+               "active CGB wave RAM reads alias the selected byte outside a DMG fetch cycle");
+    apu.write(0xFF3F, 0xAB);
+    const auto ram = stopWaveChannelAndReadRam(apu);
+    expect(ram[2] == 0xAB && ram[15] == 0xFF,
+           "active CGB wave RAM writes use the channel address, not the requested CPU address");
+    apu.write(0xFF1A, 0x80); // DAC enabled, channel still stopped.
+    apu.write(0xFF3F, 0x5A);
+    expect(apu.read(0xFF3F) == 0x5A && apu.read(0xFF32) == 0xAB,
+           "inactive CGB wave RAM uses normal addresses even with the DAC enabled");
+}
+
+void testCgbRetriggerPreservesWaveRam() {
+    for (unsigned cycles : {24u, 76u}) {
+        DmgApu apu(true);
+        setupWaveChannelForRetriggerTest(apu);
+        apu.advanceTCycles(cycles); // Both DMG first-byte and row-corruption windows.
+        apu.write(0xFF1E, 0x87);
+        const auto ram = stopWaveChannelAndReadRam(apu);
+        for (unsigned i = 0; i < ram.size(); ++i)
+            expect(ram[i] == static_cast<uint8_t>(i * 0x11),
+                   "CGB CH3 retrigger does not apply DMG wave RAM corruption");
+    }
+}
+
+void testModelSpecificPoweredOffLengthRegisters() {
+    for (bool cgb : {false, true}) {
+        for (bool writeBeforePowerOff : {false, true}) {
+            DmgApu apu(cgb);
+            apu.write(0xFF26, 0x80);
+            if (!writeBeforePowerOff) apu.write(0xFF26, 0);
+            apu.write(0xFF11, 0x3F); apu.write(0xFF16, 0x3F);
+            apu.write(0xFF1B, 0xFF); apu.write(0xFF20, 0x3F);
+            if (writeBeforePowerOff) apu.write(0xFF26, 0);
+            apu.write(0xFF26, 0x80);
+            apu.write(0xFF12, 0xF0); apu.write(0xFF17, 0xF0);
+            apu.write(0xFF1A, 0x80); apu.write(0xFF21, 0xF0);
+            apu.write(0xFF14, 0xC0); apu.write(0xFF19, 0xC0);
+            apu.write(0xFF1E, 0xC0); apu.write(0xFF23, 0xC0);
+            expect((apu.read(0xFF26) & 15) == 15, "all four length-test channels start active");
+            apu.onDividerApuFallingEdge();
+            expect((apu.read(0xFF26) & 15) == (cgb ? 15 : 0),
+                   "CGB clears lengths at power-off and ignores off-state writes; DMG retains writable lengths");
+            // CGB's reloaded full length must expire after 64 (CH1/2/4) or
+            // 256 (CH3) length clocks, rather than merely surviving one tick.
+            if (cgb) {
+                for (unsigned n = 1; n < 127; ++n) apu.onDividerApuFallingEdge();
+                expect((apu.read(0xFF26) & 15) == 4, "CGB pulse/noise full lengths expire after 64 clocks");
+                for (unsigned n = 127; n < 511; ++n) apu.onDividerApuFallingEdge();
+                expect((apu.read(0xFF26) & 15) == 0, "CGB wave full length expires after 256 clocks");
+            }
+        }
+    }
+}
+
+void testCgbPcmDigitalRegisters() {
+    DmgApu dmg, apu(true);
+    expect(dmg.read(0xFF76) == 0xFF && dmg.read(0xFF77) == 0xFF,
+           "DMG does not expose CGB PCM registers");
+    expect(apu.read(0xFF76) == 0 && apu.read(0xFF77) == 0,
+           "powered-off CGB PCM registers report zero");
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF11, 0x40); apu.write(0xFF12, 0xA0);
+    apu.write(0xFF13, 0xFF); apu.write(0xFF14, 0x87);
+    apu.write(0xFF16, 0x40); apu.write(0xFF17, 0x50);
+    apu.write(0xFF18, 0xFF); apu.write(0xFF19, 0x87);
+    apu.advanceTCycles(32); // One complete eight-step duty period.
+    expect(apu.read(0xFF76) == 0x5A, "PCM12 packs CH1 low and CH2 high digital amplitude");
+    apu.write(0xFF76, 0); apu.write(0xFF77, 0xFF);
+    expect(apu.read(0xFF76) == 0x5A && apu.read(0xFF77) == 0,
+           "PCM registers are read-only and independent of NR50/NR51 routing");
+    apu.write(0xFF24, 0x77); apu.write(0xFF25, 0xFF);
+    expect(apu.read(0xFF76) == 0x5A, "mixer volume and panning do not alter PCM12");
+    apu.advanceTCycles(4);
+    expect(apu.read(0xFF76) == 0, "pulse low steps report digital zero rather than signed mixer levels");
+    apu.advanceTCycles(28);
+    apu.write(0xFF12, 0);
+    expect(apu.read(0xFF76) == 0x50, "disabling CH1 DAC clears only its PCM nibble");
+    apu.write(0xFF26, 0);
+    expect(apu.read(0xFF76) == 0 && apu.read(0xFF77) == 0,
+           "APU shutdown clears both CGB PCM outputs");
+}
+
+void testCgbPcmWaveAndNoiseDigitalLevels() {
+    DmgApu wave(true);
+    wave.write(0xFF26, 0x80); wave.write(0xFF30, 0xD3); wave.write(0xFF31, 0xC7);
+    wave.write(0xFF1A, 0x80); wave.write(0xFF1C, 0x20);
+    wave.write(0xFF1D, 0xFE); wave.write(0xFF1E, 0x87);
+    wave.advanceTCycles(10);
+    expect(wave.read(0xFF77) == 3, "PCM34 low nibble exposes CH3 sample buffer");
+    wave.advanceTCycles(4);
+    expect(wave.read(0xFF77) == 12, "PCM34 follows subsequent wave samples");
+    wave.write(0xFF1C, 0x40);
+    expect(wave.read(0xFF77) == 6, "PCM34 includes CH3 digital output-level shift");
+    wave.write(0xFF1C, 0x60);
+    expect(wave.read(0xFF77) == 3, "CH3 quarter level shifts its digital sample twice");
+    wave.write(0xFF1C, 0);
+    expect(wave.read(0xFF77) == 0, "CH3 mute reports zero digital output");
+    wave.write(0xFF1C, 0x20); wave.write(0xFF1A, 0);
+    expect(wave.read(0xFF77) == 0, "stopped wave channel does not expose stale buffered samples");
+
+    DmgApu noise(true);
+    noise.write(0xFF26, 0x80); noise.write(0xFF21, 0x90);
+    noise.write(0xFF22, 0); noise.write(0xFF23, 0x80);
+    noise.advanceTCycles(112);
+    expect(noise.read(0xFF77) == 0, "noise digital low level is zero before its first high step");
+    noise.advanceTCycles(8);
+    expect(noise.read(0xFF77) == 0x90, "PCM34 high nibble exposes CH4 envelope at a high LFSR step");
+    noise.write(0xFF21, 0);
+    expect(noise.read(0xFF77) == 0, "noise DAC shutdown clears its PCM nibble");
+}
+
+void testPulseFirstDutyAndRetriggerPhase() {
+    for (unsigned duty = 0; duty < 4; ++duty) {
+        DmgApu apu(true);
+        apu.write(0xFF26, 0x80);
+        apu.write(0xFF11, duty << 6); apu.write(0xFF12, 0x50);
+        apu.write(0xFF16, duty << 6); apu.write(0xFF17, 0x50);
+        apu.write(0xFF13, 0xFF); apu.write(0xFF18, 0xFF);
+        apu.write(0xFF14, 0x87); apu.write(0xFF19, 0x87);
+        expect(apu.read(0xFF76) == 0, "both pulse channels initially output zero for every duty");
+        apu.advanceTCycles(3);
+        expect(apu.read(0xFF76) == 0, "first duty output remains suppressed before first timer edge");
+        apu.advanceTCycles(29); // A full eight-step period; suppression is gone.
+        const uint8_t wrapped = (duty == 1 || duty == 2) ? 0x55 : 0;
+        expect(apu.read(0xFF76) == wrapped, "pulse first-step suppression does not recur after waveform wrap");
+        apu.write(0xFF26, 0); apu.write(0xFF26, 0x80);
+        apu.write(0xFF11, duty << 6); apu.write(0xFF12, 0x50);
+        apu.write(0xFF14, 0x87);
+        expect(apu.read(0xFF76) == 0, "APU power cycle restores first-duty suppression");
+    }
+    DmgApu apu(true);
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF11, 0x40); apu.write(0xFF12, 0x50);
+    apu.write(0xFF16, 0x40); apu.write(0xFF17, 0x50);
+    apu.write(0xFF13, 0xFF); apu.write(0xFF18, 0xFF);
+    apu.write(0xFF14, 0x87); apu.write(0xFF19, 0x87);
+    apu.advanceTCycles(34); // Wrapped step zero; two low countdown bits remain.
+    expect(apu.read(0xFF76) == 0x55, "phase test reaches a noninitial high duty step");
+    apu.write(0xFF14, 0x87); apu.write(0xFF19, 0x87);
+    expect(apu.read(0xFF76) == 0x55, "retrigger preserves duty index and does not re-suppress output");
+    apu.advanceTCycles(5);
+    expect(apu.read(0xFF76) == 0x55, "retrigger retains timer low bits instead of resetting four-cycle phase");
+    apu.advanceTCycles(1);
+    expect(apu.read(0xFF76) == 0, "both retained-phase pulse timers advance on the expected edge");
+}
+
+void testSilentPulseDividersKeepDutyPhase() {
+    constexpr std::array<uint8_t, 4> patterns{0x01, 0x81, 0x87, 0x7E};
+    for (unsigned channel = 0; channel < 2; ++channel) {
+        const uint16_t base = channel == 0 ? 0xFF11 : 0xFF16;
+        const uint8_t mask = 1 << channel;
+        for (unsigned duty = 0; duty < 4; ++duty) {
+            for (unsigned period : {4u, 12u, 128u, 8192u}) {
+                const unsigned frequency = 2048 - period / 4;
+                for (unsigned reason = 0; reason < (channel == 0 ? 3u : 2u); ++reason) {
+                    for (unsigned gap : {1u, 2u, 3u, 4u, period - 1, period, period + 1, 8 * period + 3}) {
+                        DmgApu apu(true); apu.write(0xFF26, 0x80);
+                        apu.write(base, (duty << 6) | 63); apu.write(base + 1, 0x50);
+                        apu.write(base + 2, frequency & 255);
+                        if (reason == 2) apu.write(0xFF10, 0x19);
+                        const uint8_t high = frequency >> 8;
+                        apu.write(base + 3, 0x80 | (reason == 0 ? 0x40 : 0) | high);
+                        apu.advanceTCycles(period + 1);
+                        if (reason == 0) apu.onDividerApuFallingEdge();
+                        else if (reason == 1) apu.write(base + 1, 0);
+                        else apu.write(0xFF10, 0x11); // Clear negate after a subtract calculation.
+                        expect(!(apu.read(0xFF26) & mask), "length, DAC and sweep disable the pulse output");
+                        apu.advanceTCycles(gap);
+                        expect(((apu.read(0xFF76) >> (channel * 4)) & 15) == 0,
+                               "a muted pulse remains digitally silent while its divider advances");
+                        apu.write(base + 1, 0x50);
+                        if (reason == 2) apu.write(0xFF10, 0);
+                        apu.write(base + 3, 0x80 | high);
+                        unsigned position = ((period + 1 + gap) / period) & 7;
+                        const auto expectPhase = [&] {
+                            const uint8_t expected = (patterns[duty] & (1 << (7 - position))) ? 5 : 0;
+                            expect(((apu.read(0xFF76) >> (channel * 4)) & 15) == expected,
+                                   "retrigger retains the golden duty phase reached during the silent interval");
+                        };
+                        expectPhase();
+                        const unsigned remaining = period - ((period + 1 + gap) % period);
+                        unsigned reload = period | (remaining & 3);
+                        for (unsigned edge = 0; edge < 8; ++edge) {
+                            apu.advanceTCycles(reload - 1); expectPhase();
+                            apu.advanceTCycles(1); position = (position + 1) & 7; expectPhase();
+                            reload = period;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+void testPulseDividerWaitsForFirstTrigger() {
+    for (unsigned channel = 0; channel < 2; ++channel) {
+        const uint16_t pulse = channel == 0 ? 0xFF11 : 0xFF16;
+        DmgApu silent(true); silent.write(0xFF26, 0x80);
+        silent.write(pulse, 0xC0); silent.write(pulse + 2, 0xFF); silent.write(pulse + 3, 0x87);
+        expect((silent.read(0xFF26) & 3) == 0, "trigger with the DAC off keeps pulse output disabled");
+        silent.advanceTCycles(5); silent.write(pulse + 1, 0x50); silent.write(pulse + 3, 0x87);
+        expect(silent.read(0xFF76) == (channel == 0 ? 5 : 0x50),
+               "a DAC-off trigger still starts the divider and consumes first-duty suppression");
+        silent.write(0xFF26, 0); silent.write(0xFF26, 0x80);
+        silent.advanceTCycles(19);
+        silent.write(pulse, 0xC0); silent.write(pulse + 1, 0x50);
+        silent.write(pulse + 2, 0xFF); silent.write(pulse + 3, 0x87);
+        expect(silent.read(0xFF76) == 0, "power cycling restores an untriggered divider and suppressed first step");
+        silent.advanceTCycles(4);
+        expect(silent.read(0xFF76) == (channel == 0 ? 5 : 0x50),
+               "power cycling resets silent duty history to the initial position");
+        for (unsigned idle : {1u, 4u, 19u, 47u}) {
+            DmgApu apu(true); apu.write(0xFF26, 0x80);
+            const uint16_t base = channel == 0 ? 0xFF11 : 0xFF16;
+            apu.write(base, 0xC0); apu.write(base + 1, 0x50); apu.write(base + 2, 0xFF);
+            apu.write(base + 3, 7); // Configure the period without triggering.
+            apu.advanceTCycles(idle); apu.write(base + 3, 0x87);
+            expect(apu.read(0xFF76) == 0, "an untriggered divider does not advance duty or first-step suppression");
+            apu.advanceTCycles(4);
+            expect(apu.read(0xFF76) == (channel == 0 ? 5 : 0x50),
+                   "first trigger starts at duty step zero, then advances to the first high step");
+        }
+    }
+}
+
+void setupOneTickLengths(DmgApu &apu) {
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF11, 63); apu.write(0xFF16, 63);
+    apu.write(0xFF1B, 255); apu.write(0xFF20, 63);
+    apu.write(0xFF12, 0xF0); apu.write(0xFF17, 0xF0);
+    apu.write(0xFF1A, 0x80); apu.write(0xFF21, 0xF0);
+    for (auto port : {0xFF14, 0xFF19, 0xFF1E, 0xFF23}) apu.write(port, 0x80);
+}
+
+void testExtraLengthEnableClocks() {
+    for (bool cgb : {false, true}) {
+        for (unsigned phase = 0; phase < 8; ++phase) {
+            DmgApu apu(cgb); setupOneTickLengths(apu);
+            for (unsigned i = 0; i < phase; ++i) apu.onDividerApuFallingEdge();
+            for (auto port : {0xFF14, 0xFF19, 0xFF1E, 0xFF23}) apu.write(port, 0x40);
+            expect((apu.read(0xFF26) & 15) == (phase & 1 ? 0 : 15),
+                   "length enable clocks immediately only before non-length sequencer steps");
+        }
+        DmgApu apu(cgb); setupOneTickLengths(apu);
+        apu.onDividerApuFallingEdge(); // Next step 1 does not clock lengths.
+        for (auto port : {0xFF14, 0xFF19, 0xFF1E, 0xFF23}) apu.write(port, 0);
+        expect((apu.read(0xFF26) & 15) == 15,
+               "DMG/CGB-E disabled-to-disabled writes do not apply early-CGB length quirk");
+        // A two-tick length loses exactly one count on the rising enable edge.
+        apu.write(0xFF11, 62); apu.write(0xFF16, 62);
+        apu.write(0xFF1B, 254); apu.write(0xFF20, 62);
+        for (unsigned repeat = 0; repeat < 2; ++repeat)
+            for (auto port : {0xFF14, 0xFF19, 0xFF1E, 0xFF23}) apu.write(port, 0x40);
+        expect((apu.read(0xFF26) & 15) == 15, "repeated enabled writes do not double-clock lengths");
+        apu.onDividerApuFallingEdge(); apu.onDividerApuFallingEdge();
+        expect((apu.read(0xFF26) & 15) == 0, "remaining one count expires on the next regular length clock");
+    }
+}
+
+void testLengthTriggerReloadAndEnableCollision() {
+    for (bool cgb : {false, true}) {
+        for (unsigned phase = 0; phase < 8; ++phase) {
+            for (bool expireOnEnable : {false, true}) {
+                DmgApu apu(cgb); setupOneTickLengths(apu);
+                if (!expireOnEnable) {
+                    for (auto port : {0xFF14, 0xFF19, 0xFF1E, 0xFF23}) apu.write(port, 0x40);
+                    apu.onDividerApuFallingEdge(); // Expire, then disable the counters.
+                    for (auto port : {0xFF14, 0xFF19, 0xFF1E, 0xFF23}) apu.write(port, 0);
+                    for (unsigned i = 1; i < 8; ++i) apu.onDividerApuFallingEdge();
+                }
+                for (unsigned i = 0; i < phase; ++i) apu.onDividerApuFallingEdge();
+                for (auto port : {0xFF14, 0xFF19, 0xFF1E, 0xFF23}) apu.write(port, 0xC0);
+                expect((apu.read(0xFF26) & 15) == 15,
+                       "trigger re-enables DAC-backed channels when enable clock expires a counter");
+                // Existing one-tick data survives even-phase trigger; otherwise
+                // zero reloads as maximum minus the odd-phase extra clock.
+                const unsigned pulse = expireOnEnable && !(phase & 1) ? 1 : 64 - (phase & 1);
+                const unsigned wave = expireOnEnable && !(phase & 1) ? 1 : 256 - (phase & 1);
+                unsigned next = phase, lengthTicks = 0;
+                while (lengthTicks < wave) {
+                    apu.onDividerApuFallingEdge();
+                    if ((next & 1) == 0) ++lengthTicks;
+                    next = (next + 1) & 7;
+                    const unsigned expected = (lengthTicks < pulse ? 11 : 0) |
+                                              (lengthTicks < wave ? 4 : 0);
+                    expect((apu.read(0xFF26) & 15) == expected,
+                           "trigger reloads all four lengths with exactly one applicable extra clock");
+                }
+            }
+        }
+    }
+}
+
+std::array<uint8_t, 3> observeEnvelopeVolumes(DmgApu &apu) {
+    std::array<uint8_t, 3> peak{};
+    // Clock only the generators. Observe a full pulse cycle and more than
+    // the longest zero run of short-mode noise without advancing DIV-APU.
+    for (unsigned i = 0; i < 256; ++i) {
+        apu.advanceTCycles(1);
+        const auto pulse = apu.read(0xFF76), noise = apu.read(0xFF77);
+        peak[0] = std::max(peak[0], static_cast<uint8_t>(pulse & 15));
+        peak[1] = std::max(peak[1], static_cast<uint8_t>(pulse >> 4));
+        peak[2] = std::max(peak[2], static_cast<uint8_t>(noise >> 4));
+    }
+    return peak;
+}
+
+void testEnvelopeTriggerReloadPhase() {
+    for (unsigned phase = 0; phase < 8; ++phase) {
+        for (unsigned period = 0; period < 8; ++period) {
+            for (bool increase : {false, true}) {
+                DmgApu apu(true);
+                apu.write(0xFF26, 0x80);
+                apu.write(0xFF11, 0x40); apu.write(0xFF16, 0x40);
+                apu.write(0xFF13, 0xFF); apu.write(0xFF18, 0xFF); apu.write(0xFF22, 8);
+                const uint8_t envelope = 0x70 | (increase ? 8 : 0) | period;
+                apu.write(0xFF12, envelope); apu.write(0xFF17, envelope); apu.write(0xFF21, envelope);
+                for (unsigned n = 0; n < phase; ++n) apu.onDividerApuFallingEdge();
+                for (auto port : {0xFF14, 0xFF19}) apu.write(port, 0x87);
+                apu.write(0xFF23, 0x80);
+                expect(observeEnvelopeVolumes(apu) == std::array<uint8_t, 3>{7, 7, 7},
+                       "trigger loads envelope initial volumes independently of sequencer phase");
+                unsigned next = phase, envelopeTicks = 0;
+                // Include two subsequent changes to check that the extra delay
+                // applies to the trigger reload, not every envelope reload.
+                const unsigned ticksToTest = period ? 3 * period + 1 : 10;
+                while (envelopeTicks < ticksToTest) {
+                    apu.onDividerApuFallingEdge();
+                    if (next == 7) {
+                        ++envelopeTicks;
+                        unsigned changes = 0;
+                        if (period && envelopeTicks >= period + (phase == 7))
+                            changes = 1 + (envelopeTicks - period - (phase == 7)) / period;
+                        const uint8_t expected = increase ? std::min(15u, 7 + changes)
+                                                         : (changes > 7 ? 0 : 7 - changes);
+                        const auto observed = observeEnvelopeVolumes(apu);
+                        expect(observed == std::array<uint8_t, 3>{expected, expected, expected},
+                               "pulse/noise envelopes preserve phase-7 trigger delay, normal reload pace and period-zero disable");
+                    }
+                    next = (next + 1) & 7;
+                }
+            }
+        }
+    }
+}
+
+void startEnvelopeProbe(DmgApu &apu, uint8_t control) {
+    apu.write(0xFF26, 0x80);
+    apu.write(0xFF11, 0x40); apu.write(0xFF16, 0x40);
+    apu.write(0xFF13, 0xFF); apu.write(0xFF18, 0xFF); apu.write(0xFF22, 8);
+    for (auto port : {0xFF12, 0xFF17, 0xFF21}) apu.write(port, control);
+    for (auto port : {0xFF14, 0xFF19}) apu.write(port, 0x87);
+    apu.write(0xFF23, 0x80);
+}
+void envelopeTick(DmgApu &apu) {
+    for (unsigned n = 0; n < 8; ++n) apu.onDividerApuFallingEdge();
+}
+void testEnvelopeStopsUntilRetrigger() {
+    for (uint8_t period = 1; period < 8; ++period) {
+        for (bool increase : {false, true}) {
+            DmgApu atLimit(true);
+            const uint8_t control = 0x70 | (increase ? 8 : 0) | period;
+            startEnvelopeProbe(atLimit, control);
+            for (unsigned tick = 0; tick < (increase ? 8u : 7u) * period; ++tick) envelopeTick(atLimit);
+            for (auto port : {0xFF12, 0xFF17, 0xFF21}) atLimit.write(port, control ^ 8);
+            auto expectedAtLimit = observeEnvelopeVolumes(atLimit);
+            for (auto &volume : expectedAtLimit) volume = increase ? volume - 1 : volume + 1;
+            for (unsigned tick = 0; tick < period; ++tick) envelopeTick(atLimit);
+            expect(observeEnvelopeVolumes(atLimit) == expectedAtLimit,
+                   "reaching the last valid volume does not stop updates until an out-of-range attempt");
+            DmgApu apu(true);
+            startEnvelopeProbe(apu, control);
+            // Attempt one step past the boundary; this stops automatic updates
+            // without disabling the generator or its DAC.
+            const unsigned changes = increase ? 9 : 8;
+            for (unsigned tick = 0; tick < changes * period; ++tick) envelopeTick(apu);
+            const uint8_t limit = increase ? 15 : 0;
+            expect(observeEnvelopeVolumes(apu) == std::array<uint8_t, 3>{limit, limit, limit} &&
+                       (apu.read(0xFF26) & 11) == 11,
+                   "all envelope periods stop at their range boundary without disabling channels");
+            for (auto port : {0xFF12, 0xFF17, 0xFF21}) apu.write(port, control ^ 8);
+            // Observe the post-write volume rather than assuming a revision's
+            // immediate NRx2 write quirk. Later clocks must not resume updates.
+            const auto afterWrite = observeEnvelopeVolumes(apu);
+            for (unsigned tick = 0; tick < 3 * period; ++tick) envelopeTick(apu);
+            expect(observeEnvelopeVolumes(apu) == afterWrite,
+                   "changing direction does not restart an envelope that stopped automatic updates");
+            for (auto port : {0xFF14, 0xFF19}) apu.write(port, 0x87);
+            apu.write(0xFF23, 0x80);
+            for (unsigned tick = 0; tick < period; ++tick) envelopeTick(apu);
+            const uint8_t restarted = increase ? 6 : 8;
+            expect(observeEnvelopeVolumes(apu) == std::array<uint8_t, 3>{restarted, restarted, restarted},
+                   "retrigger re-enables stopped envelopes and reloads initial volume and pace");
+        }
+    }
+}
+void testEnvelopePeriodZeroKeepsDividerPhase() {
+    for (bool increase : {false, true}) {
+        for (unsigned elapsed = 1; elapsed <= 9; ++elapsed) {
+            DmgApu apu(true); startEnvelopeProbe(apu, 0x70 | (increase ? 8 : 0));
+            for (unsigned tick = 0; tick < elapsed; ++tick) envelopeTick(apu);
+            expect(observeEnvelopeVolumes(apu) == std::array<uint8_t, 3>{7, 7, 7},
+                   "period zero suppresses automatic volume changes");
+            for (auto port : {0xFF12, 0xFF17, 0xFF21}) apu.write(port, 0x72 | (increase ? 8 : 0));
+            const auto afterWrite = observeEnvelopeVolumes(apu);
+            const unsigned remaining = 8 - elapsed % 8;
+            for (unsigned tick = 1; tick <= remaining + 2; ++tick) {
+                envelopeTick(apu);
+                auto expected = afterWrite;
+                const unsigned steps = tick < remaining ? 0 : 1 + (tick - remaining) / 2;
+                for (auto &volume : expected) volume = increase ? volume + steps : volume - steps;
+                expect(observeEnvelopeVolumes(apu) == expected,
+                       "enabling a nonzero pace retains the period-zero divider's eight-tick phase");
+            }
+        }
+    }
+}
+
+void testZeroPaceNrx2WritesManuallyStepActiveEnvelopes() {
+    DmgApu cgb(true);
+    startEnvelopeProbe(cgb, 0x78); // Volume 7, increase mode, period 0.
+    expect(observeEnvelopeVolumes(cgb) == std::array<uint8_t, 3>{7, 7, 7},
+           "zero-pace channels start with their programmed volume");
+
+    uint8_t expected = 7;
+    for (unsigned write = 0; write < 10; ++write) {
+        for (auto port : {0xFF12, 0xFF17, 0xFF21}) cgb.write(port, 0x08);
+        expected = static_cast<uint8_t>((expected + 1) & 0x0F);
+        expect(observeEnvelopeVolumes(cgb) ==
+                   std::array<uint8_t, 3>{expected, expected, expected},
+               "active zero-pace increase writes step pulse/noise volume modulo sixteen");
+    }
+    expect((cgb.read(0xFF26) & 0x0B) == 0x0B,
+           "manual envelope steps leave both pulse and noise channels active");
+
+    const auto prepareConstantDmgNoise = [](DmgApu &apu) {
+        apu.write(0xFF26, 0x80);
+        apu.write(0xFF21, 0x58); // Volume 5, increase mode, period 0.
+        apu.write(0xFF22, 0x00);
+        apu.write(0xFF23, 0x80);
+        apu.write(0xFF24, 0x77);
+        apu.write(0xFF25, 0x88); // Route noise to both outputs.
+        apu.advanceTCycles(15 * 8); // The 15-bit LFSR has reached all ones.
+        apu.write(0xFF22, 0xE0);   // Hold that output while measuring the write.
+        apu.advanceTCycles(40000);
+        apu.takeAudioSamples();
+    };
+    DmgApu dmg;
+    DmgApu dmgControl;
+    prepareConstantDmgNoise(dmg);
+    prepareConstantDmgNoise(dmgControl);
+    dmg.write(0xFF21, 0x08);
+    dmg.advanceTCycles(500);
+    dmgControl.advanceTCycles(500);
+    const auto steppedPcm = dmg.takeAudioSamples();
+    const auto steadyPcm = dmgControl.takeAudioSamples();
+    expect(!steppedPcm.empty() && steppedPcm.size() == steadyPcm.size(),
+           "DMG manual-volume comparison captures matching audio intervals");
+    expect(steppedPcm != steadyPcm,
+           "the documented zero-pace NRx2 write changes DMG mixer output too");
+}
+
+void testSweepPreservesCurrentPulseCountdown() {
+    for (bool subtract : {false, true}) {
+        const unsigned frequency = subtract ? 1024 : 512;
+        const unsigned oldPeriod = 4 * (2048 - frequency);
+        const unsigned updated = subtract ? frequency / 2 : frequency + frequency / 2;
+        const unsigned newPeriod = 4 * (2048 - updated);
+        for (unsigned offset : {0u, 1u, 4u, 511u, oldPeriod - 1}) {
+            DmgApu swept(true), manual(true);
+            for (auto *apu : {&swept, &manual}) {
+                apu->write(0xFF26, 0x80); apu->write(0xFF11, 0xC0);
+                apu->write(0xFF12, 0x90); apu->write(0xFF13, frequency & 255);
+                apu->write(0xFF10, apu == &swept ? (subtract ? 0x19 : 0x11) : 0);
+                apu->write(0xFF14, 0x80 | (frequency >> 8));
+                apu->advanceTCycles(offset);
+                for (unsigned step = 0; step < 3; ++step) apu->onDividerApuFallingEdge();
+            }
+            // Apply the same period update through CPU-visible registers to
+            // a control with sweep disabled; neither update is a trigger.
+            manual.write(0xFF13, updated & 255); manual.write(0xFF14, updated >> 8);
+            const unsigned remaining = oldPeriod - offset;
+            expect((swept.read(0xFF26) & 1) != 0, "valid sweep update leaves channel active");
+            for (unsigned t = 1; t <= remaining + 7 * newPeriod; ++t) {
+                swept.advanceTCycles(1); manual.advanceTCycles(1);
+                expect(swept.read(0xFF76) == manual.read(0xFF76),
+                       "sweep and nontrigger register updates preserve identical pulse edge timing");
+                if (t < remaining)
+                    expect(swept.read(0xFF76) == 0, "sweep does not advance the original pending duty edge early");
+                if (t == remaining)
+                    expect(swept.read(0xFF76) == 9, "pending duty edge retains old countdown after sweep");
+                if (t == remaining + 6 * newPeriod)
+                    expect(swept.read(0xFF76) == 0, "subsequent duty steps reload the new swept period");
+            }
+        }
+    }
+}
+
+void testSweepOverflowAndNegateContracts() {
+    for (bool cgb : {false, true}) {
+        DmgApu immediate(cgb);
+        immediate.write(0xFF26, 0x80); immediate.write(0xFF12, 0xF0);
+        immediate.write(0xFF10, 1); // Pace zero still performs trigger overflow check.
+        immediate.write(0xFF13, 0); immediate.write(0xFF14, 0x86);
+        expect(!(immediate.read(0xFF26) & 1), "trigger sweep overflow disables CH1 even at zero pace");
+        DmgApu lookahead(cgb);
+        lookahead.write(0xFF26, 0x80); lookahead.write(0xFF12, 0xF0);
+        lookahead.write(0xFF10, 0x11); lookahead.write(0xFF13, 0); lookahead.write(0xFF14, 0x84);
+        expect(lookahead.read(0xFF26) & 1, "first sweep calculation fits before lookahead case");
+        for (unsigned step = 0; step < 3; ++step) lookahead.onDividerApuFallingEdge();
+        expect(!(lookahead.read(0xFF26) & 1), "second overflow calculation disables CH1 after valid frequency update");
+        DmgApu negate(cgb);
+        negate.write(0xFF26, 0x80); negate.write(0xFF12, 0xF0);
+        negate.write(0xFF10, 0x19); negate.write(0xFF13, 0); negate.write(0xFF14, 0x84);
+        expect(negate.read(0xFF26) & 1, "negative sweep trigger remains active");
+        negate.write(0xFF10, 0x11);
+        expect(!(negate.read(0xFF26) & 1), "clearing negate after subtraction calculation disables CH1");
+    }
+}
+
+void testMixedDacBiasCancellation() {
+    for (bool cgb : {false, true}) {
+        DmgApu apu(cgb); apu.write(0xFF26, 0x80);
+        apu.write(0xFF12, 8); // Inactive pulse generator, enabled DAC: positive bias.
+        for (uint16_t address = 0xFF30; address <= 0xFF3F; ++address) apu.write(address, 0xFF);
+        apu.write(0xFF1A, 0x80); apu.write(0xFF1C, 0x20);
+        apu.write(0xFF1D, 0xFE); apu.write(0xFF1E, 0x87);
+        apu.write(0xFF24, 0x77); apu.write(0xFF25, 0x55);
+        apu.advanceTCycles(4096);
+        const auto samples = apu.takeAudioSamples();
+        expect(!samples.empty() && std::all_of(samples.begin(), samples.end(), [](int16_t x) { return x == 0; }),
+               "inactive pulse DAC and constant maximum wave DAC cancel before stereo filtering");
+        apu.write(0xFF25, 0x44); apu.advanceTCycles(88);
+        const auto waveOnly = apu.takeAudioSamples();
+        expect(!waveOnly.empty() && waveOnly[0] == -3840 && waveOnly[1] == -3840,
+               "unrouting the inactive DAC exposes the wave DAC's negative bias transition");
+    }
+}
+
+void testDacTransferFromDigitalLevels() {
+    const std::array<uint16_t, 4> dacRegisters{0xFF12, 0xFF17, 0xFF1A, 0xFF21};
+    for (bool cgb : {false, true}) {
+        for (unsigned channel = 0; channel < 4; ++channel) {
+            for (unsigned volume = 0; volume < 16; ++volume) {
+                for (uint8_t master : {uint8_t(0), uint8_t(7)}) {
+                    DmgApu apu(cgb); apu.write(0xFF26, 0x80);
+                    apu.write(0xFF24, master << 4);
+                    apu.write(0xFF25, 0x10 << channel);
+                    const uint8_t envelope = static_cast<uint8_t>((volume << 4) | 8);
+                    if (channel < 2) {
+                        const uint16_t base = channel == 0 ? 0xFF11 : 0xFF16;
+                        apu.write(base, 0xC0); apu.write(base + 1, envelope);
+                        apu.write(base + 2, 0xF0); apu.write(base + 3, 0x87);
+                    } else if (channel == 2) {
+                        for (uint16_t address = 0xFF30; address <= 0xFF3F; ++address)
+                            apu.write(address, static_cast<uint8_t>(volume * 17));
+                        apu.write(0xFF1A, 0x80); apu.write(0xFF1C, 0x20);
+                        apu.write(0xFF1D, 0xFE); apu.write(0xFF1E, 0x87);
+                    } else {
+                        apu.write(0xFF21, envelope); apu.write(0xFF22, 8); apu.write(0xFF23, 0x80);
+                    }
+                    apu.advanceTCycles(88); // First 48-kHz sample, at a high generator step.
+                    if (cgb) {
+                        const auto pcm = apu.read(channel < 2 ? 0xFF76 : 0xFF77);
+                        expect(((pcm >> ((channel & 1) * 4)) & 15) == volume,
+                               "CGB digital observation retains every generator level before DAC conversion");
+                    }
+                    const auto samples = apu.takeAudioSamples();
+                    expect(samples.size() == 2 && samples[0] ==
+                               (15 - 2 * static_cast<int>(volume)) * (master + 1) * 32 && samples[1] == 0,
+                           "each DAC maps digital 0..15 to positive..negative bias before nonzero NR50 gain and NR51 panning");
+                }
+            }
+            DmgApu stopped(cgb); stopped.write(0xFF26, 0x80);
+            stopped.write(dacRegisters[channel], channel == 2 ? 0x80 : 8);
+            stopped.write(0xFF24, 0x70); stopped.write(0xFF25, 0x10 << channel);
+            stopped.advanceTCycles(88);
+            expect((stopped.read(0xFF26) & 15) == 0 && stopped.takeAudioSamples()[0] == 3840,
+                   "enabled DAC emits digital-zero bias even when its generator was never triggered");
+            DmgApu disconnected(cgb); disconnected.write(0xFF26, 0x80);
+            // Another, unrouted DAC keeps the common HPF connected.
+            disconnected.write(channel == 0 ? 0xFF1A : 0xFF12, channel == 0 ? 0x80 : 8);
+            disconnected.write(0xFF24, 0x70); disconnected.write(0xFF25, 0x10 << channel);
+            disconnected.advanceTCycles(88);
+            expect(disconnected.takeAudioSamples()[0] == 0,
+                   "a disabled DAC contributes zero even while another channel keeps the mixer connected");
+        }
+    }
+}
+
+void testModelSpecificHighPassDecay() {
+    std::array<int16_t, 2> halfMillisecond{};
+    for (bool cgb : {false, true}) {
+        DmgApu apu(cgb);
+        apu.write(0xFF26, 0x80);
+        for (uint16_t address = 0xFF30; address <= 0xFF3F; ++address) apu.write(address, 0xFF);
+        apu.write(0xFF1A, 0x80); apu.write(0xFF1C, 0x20);
+        apu.write(0xFF1D, 0xFE); apu.write(0xFF1E, 0x87);
+        apu.write(0xFF24, 0x77); apu.write(0xFF25, 0x40);
+        apu.advanceTCycles(41944); // Ten milliseconds, constant wave DAC input.
+        const auto samples = apu.takeAudioSamples();
+        expect(samples.size() >= 256 && samples[0] == -3840,
+               "constant wave input produces a known initial high-pass step");
+        const double perClock = cgb ? 0.998943 : 0.999958;
+        for (unsigned frame : {1u, 8u, 24u, 64u, 127u}) {
+            const double expected = -3840 * std::pow(perClock, frame * 4194304.0 / 48000);
+            expect(std::abs(samples[frame * 2] - expected) <= 33,
+                   "model high-pass decay follows documented master-clock charge factor at 48 kHz within PCM quantization");
+            expect(samples[frame * 2 + 1] == 0, "model filter does not leak into an unrouted output");
+        }
+        halfMillisecond[cgb ? 1 : 0] = std::abs(samples[48]);
+        apu.write(0xFF1A, 0); apu.advanceTCycles(1024);
+        for (auto sample : apu.takeAudioSamples())
+            expect(sample == 0, "both model filters disconnect immediately with all DACs off");
+    }
+    expect(halfMillisecond[1] < halfMillisecond[0] / 4,
+           "CGB high-pass removes constant bias faster than DMG");
+}
+
 }
 
 int main() {
+    testSilentPulseDividersKeepDutyPhase();
+    testPulseDividerWaitsForFirstTrigger();
+    testEnvelopeStopsUntilRetrigger();
+    testEnvelopePeriodZeroKeepsDividerPhase();
+    testZeroPaceNrx2WritesManuallyStepActiveEnvelopes();
+    testDacTransferFromDigitalLevels();
+    testMixedDacBiasCancellation();
+    testModelSpecificHighPassDecay();
+    testSweepPreservesCurrentPulseCountdown();
+    testSweepOverflowAndNegateContracts();
+    testEnvelopeTriggerReloadPhase();
+    testExtraLengthEnableClocks();
+    testLengthTriggerReloadAndEnableCollision();
+    testPulseFirstDutyAndRetriggerPhase();
+    testCgbPcmDigitalRegisters();
+    testCgbPcmWaveAndNoiseDigitalLevels();
+    testCgbActiveWaveRamAliasesWithoutDmgAccessWindow();
+    testCgbRetriggerPreservesWaveRam();
+    testModelSpecificPoweredOffLengthRegisters();
     testPulseFrequencyLowRegistersAreWriteOnly();
     testChannelOneProducesStereoSamplesAtConfiguredRate();
     testChannelTwoProducesAudioOnItsIndependentStereoRoute();

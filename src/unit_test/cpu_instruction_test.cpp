@@ -25,19 +25,30 @@ class TestMemory : public IMemoryAccess {
 public:
     uint8_t read(uint16_t addr) override {
         reads.push_back(addr);
+        events.emplace_back(addr, CpuBusEvent::Read);
+        if (interruptRegisters && (addr == 0xFF0F || addr == 0xFFFF))
+            return interruptRegisters->read(addr);
         return bytes[addr];
     }
 
     void write(uint16_t addr, uint8_t value) override {
         writes.emplace_back(addr, value);
+        events.emplace_back(addr, CpuBusEvent::Write);
         bytes[addr] = value;
+        if (interruptRegisters && (addr == 0xFF0F || addr == 0xFFFF))
+            interruptRegisters->write(addr, value);
     }
 
+    uint8_t readWithIdu(uint16_t addr) override { auto value = read(addr); events.back().second = CpuBusEvent::ReadIdu; return value; }
+    void writeWithIdu(uint16_t addr, uint8_t value) override { write(addr, value); events.back().second = CpuBusEvent::WriteIdu; }
+    void notifyIdu(uint16_t addr) override { events.emplace_back(addr, CpuBusEvent::Idu); }
+    std::vector<std::pair<uint16_t, CpuBusEvent>> events;
     void resize(size_t) override {}
 
     std::array<uint8_t, 65536> bytes{};
     std::vector<uint16_t> reads;
     std::vector<std::pair<uint16_t, uint8_t>> writes;
+    InterruptRegisters *interruptRegisters = nullptr;
 };
 
 struct CpuFixture {
@@ -1979,6 +1990,38 @@ void testEiDelay() {
            "the pending interrupt is accepted at the next instruction boundary");
 }
 
+void testEiHaltWithPendingInterruptReturnsToHalt() {
+    CpuFixture f{{0x0000, 0xFB}, {0x0001, 0x76}, {0x0002, 0x00},
+                 {0x0040, 0xD9}};
+    auto reg = f.cpu.getReg();
+    reg.getRefSP() = 0xC100;
+    f.cpu.setReg(reg);
+    f.cpu.setIME(false);
+    f.interrupts.write(0xFFFF, 0x01);
+    f.interrupts.write(0xFF0F, 0x01);
+
+    expect(f.runUntilNextOpcode() == 1 && !f.cpu.getIME(),
+           "EI fetches HALT while IME remains disabled for its delay slot");
+    expect(f.runUntilNextOpcode() == 1 && f.cpu.getIME() &&
+               !f.cpu.getHALT() && f.cpu.getReg().getRefPC() == 0x0002,
+           "pending EI;HALT triggers the halt bug and enables IME at the boundary");
+    expect(f.runUntilNextOpcode() == 5 && !f.cpu.getIME() &&
+               f.cpu.getReg().getRefPC() == 0x0041,
+           "the pending interrupt is serviced immediately after the bugged HALT");
+    expect(f.memory.bytes[0xC0FF] == 0x00 && f.memory.bytes[0xC0FE] == 0x01,
+           "the EI;HALT interrupt return address points to HALT itself");
+    expect((f.interrupts.read(0xFF0F) & 0x01) == 0,
+           "interrupt entry acknowledges the pending request");
+
+    expect(f.runUntilNextOpcode() == 4 && f.cpu.getIME() &&
+               f.cpu.getReg().getRefPC() == 0x0002,
+           "RETI returns to the HALT instruction and fetches it again");
+    expect(f.cpu.stepOneCycle().fetchedNewInst && f.cpu.getHALT(),
+           "the returned HALT now sleeps because the request was acknowledged");
+    expect(!f.cpu.stepOneCycle().fetchedNewInst && f.cpu.getHALT(),
+           "the second HALT remains asleep without another pending request");
+}
+
 void testRepeatedEiDoesNotPostponePendingInterrupt() {
     CpuFixture f{{0x0000, 0xFB}, {0x0001, 0xFB}, {0x0002, 0x04},
                  {0x0040, 0x00}};
@@ -2094,6 +2137,63 @@ void testInterruptEntryPriorityStackAndVector() {
            "interrupt entry fetches the handler opcode after its stack writes");
 }
 
+void prepareInterruptEntryAtPc0200(CpuFixture &f, uint16_t stackPointer) {
+    f.memory.interruptRegisters = &f.interrupts;
+    Reg reg = f.cpu.getReg();
+    // The fetched opcode is at $0200; interrupt entry pushes this address.
+    reg.getRefPC() = 0x0201;
+    reg.getRefSP() = stackPointer;
+    f.cpu.setReg(reg);
+}
+
+void testInterruptEntryCancellationAndIEStackWriteTiming() {
+    {
+        CpuFixture f{{0x0000, 0x00}, {0x0200, 0x00}};
+        prepareInterruptEntryAtPc0200(f, 0x0000);
+        f.interrupts.write(0xFFFF, INTERRUPT_TIMER);
+        f.interrupts.write(0xFF0F, INTERRUPT_TIMER);
+
+        expect(f.cpu.stepOneCycle().success, "timer interrupt entry begins");
+        expect(f.cpu.stepOneCycle().success, "timer interrupt performs first stack phase");
+        expect(f.cpu.stepOneCycle().success &&
+                   f.interrupts.read(0xFFFF) == INTERRUPT_LCD_STAT &&
+                   (f.interrupts.read(0xFF0F) & INTERRUPT_TIMER),
+               "upper PC push changes IE before interrupt acknowledgement");
+        const auto resolution = f.cpu.stepOneCycle();
+        expect(resolution.success && !resolution.fetchedNewInst &&
+                   f.cpu.getReg().getRefPC() == 0 &&
+                   (f.interrupts.read(0xFF0F) & INTERRUPT_TIMER),
+               "upper push can cancel dispatch while preserving IF and resuming at zero");
+    }
+    {
+        CpuFixture f{{0x0000, 0x00}, {0x0200, 0x00}, {0x0048, 0x00}};
+        prepareInterruptEntryAtPc0200(f, 0x0000);
+        f.interrupts.write(0xFFFF, INTERRUPT_VBLANK | INTERRUPT_LCD_STAT);
+        f.interrupts.write(0xFF0F, INTERRUPT_VBLANK | INTERRUPT_LCD_STAT);
+
+        for (unsigned cycle = 0; cycle < 3; ++cycle)
+            expect(f.cpu.stepOneCycle().success, "VBlank/STAT interrupt entry advances");
+        const auto resolution = f.cpu.stepOneCycle();
+        expect(resolution.success && f.cpu.getReg().getRefPC() == 0x0048 &&
+                   (f.interrupts.read(0xFF0F) & 0x1F) == INTERRUPT_VBLANK,
+               "upper push can redirect to another still-enabled pending interrupt");
+    }
+    {
+        CpuFixture f{{0x0000, 0x00}, {0x0200, 0x00}};
+        prepareInterruptEntryAtPc0200(f, 0x0001);
+        f.interrupts.write(0xFFFF, INTERRUPT_SERIAL);
+        f.interrupts.write(0xFF0F, INTERRUPT_SERIAL);
+
+        for (unsigned cycle = 0; cycle < 3; ++cycle)
+            expect(f.cpu.stepOneCycle().success, "serial interrupt entry advances to low push");
+        const auto resolution = f.cpu.stepOneCycle();
+        expect(resolution.success && f.interrupts.read(0xFFFF) == 0 &&
+                   f.cpu.getReg().getRefPC() == 0x0058 &&
+                   (f.interrupts.read(0xFF0F) & INTERRUPT_SERIAL) == 0,
+               "IE change from the lower push is too late to cancel the selected vector");
+    }
+}
+
 void testInterruptWaitsUntilCbInstructionCompletes() {
     CpuFixture f{{0x0000, 0xCB}, {0x0001, 0x33}, {0x0002, 0x00},
                  {0x0040, 0x00}};
@@ -2162,35 +2262,114 @@ void testHaltWakeAndHaltBug() {
            "HALT bug makes the opcode byte repeat as the immediate operand");
 }
 
-void testUnsupportedBaseOpcodesFailWithAddressAndOpcode() {
-    constexpr uint8_t unsupportedOpcodes[] = {
+void testIllegalBaseOpcodesHardLockTheCpu() {
+    constexpr uint8_t illegalOpcodes[] = {
         0xD3, 0xDB, 0xDD, 0xE3, 0xE4, 0xEB,
         0xEC, 0xED, 0xF4, 0xFC, 0xFD,
     };
 
-    for (const uint8_t opcode : unsupportedOpcodes) {
+    for (const uint8_t opcode : illegalOpcodes) {
         CpuFixture f{{0x0000, opcode}};
-        bool failedExplicitly = false;
-        try {
-            f.cpu.stepOneCycle();
-        } catch (const std::runtime_error &error) {
-            const std::string message = error.what();
-            const char hexDigits[] = "0123456789ABCDEF";
-            std::string expectedOpcode = "0x00";
-            expectedOpcode[2] = hexDigits[opcode >> 4];
-            expectedOpcode[3] = hexDigits[opcode & 0x0F];
-            failedExplicitly =
-                message.find("unsupported opcode " + expectedOpcode +
-                             " at 0x0000") != std::string::npos;
-        }
-        expect(failedExplicitly,
-               "unsupported base opcode fails with its opcode and address");
+        f.memory.events.clear();
+        const auto lockup = f.cpu.stepOneCycle();
+        expect(lockup.success && !lockup.fetchedNewInst &&
+                   lockup.tCyclesElapsed == T_CYCLES_PER_M_CYCLE,
+               "illegal base opcode enters lock-up in one M-cycle");
+        const auto lockedPc = f.cpu.getReg().getRefPC();
+        const auto lockedSp = f.cpu.getReg().getRefSP();
+        expect(lockedPc == 1 && !f.cpu.getHALT() &&
+                   !f.cpu.getStopped(),
+               "illegal-opcode lock-up is distinct from HALT and STOP");
+
+        f.cpu.setIME(true);
+        f.interrupts.write(0xFFFF, 1);
+        f.interrupts.write(0xFF0F, 1);
+        f.memory.events.clear();
+        const auto lockedCycle = f.cpu.stepOneCycle();
+        auto afterLockedCycle = f.cpu.getReg();
+        expect(lockedCycle.success && !lockedCycle.fetchedNewInst &&
+                   lockedCycle.tCyclesElapsed == T_CYCLES_PER_M_CYCLE &&
+                   afterLockedCycle.getRefPC() == lockedPc &&
+                   afterLockedCycle.getRefSP() == lockedSp &&
+                   f.memory.events.empty() &&
+                   f.interrupts.getPendingInterrupts() == 1,
+               "locked CPU does not fetch, alter stack, or service interrupts");
+
+        f.cpu.reset();
+        expect(f.cpu.stepOneCycle().fetchedNewInst,
+               "CPU reset clears the hard lock for a power-cycle restart");
     }
+}
+
+
+void testCpuIduBusEvents() {
+    using Event = CpuBusEvent;
+    const auto oamEvents = [](const TestMemory &memory) {
+        std::vector<std::pair<uint16_t, Event>> result;
+        for (const auto &event : memory.events) if ((event.first & 0xFF00) == 0xFE00) result.push_back(event);
+        return result;
+    };
+    for (unsigned pair = 0; pair < 4; ++pair) {
+        for (bool decrement : {false, true}) {
+            CpuFixture f({{0, static_cast<uint8_t>((decrement ? 0x0B : 3) + pair * 16)}});
+            auto reg = f.cpu.getReg(); commonPairRef(reg, pair) = decrement ? 0xFE00 : 0xFEFF; f.cpu.setReg(reg);
+            f.memory.events.clear(); f.runUntilNextOpcode();
+            expect(oamEvents(f.memory) == std::vector<std::pair<uint16_t, Event>>{{decrement ? uint16_t(0xFE00) : uint16_t(0xFEFF), Event::Idu}},
+                   "INC/DEC register pairs emit pre-operation address in their internal M-cycle");
+        }
+    }
+    for (uint8_t opcode : {0x22, 0x32, 0x2A, 0x3A}) {
+        CpuFixture f({{0, opcode}}); auto reg = f.cpu.getReg(); reg.getRefHL() = 0xFEFF; f.cpu.setReg(reg);
+        f.memory.events.clear(); f.runUntilNextOpcode();
+        expect(oamEvents(f.memory) == std::vector<std::pair<uint16_t, Event>>{{0xFEFF, (opcode & 8) ? Event::ReadIdu : Event::WriteIdu}},
+               "HL auto-update emits one combined event rather than two independent corruptions");
+    }
+    for (uint8_t opcode : {0xC5, 0xCD, 0xC4, 0xC7, 0xFF}) {
+        CpuFixture f({{0, opcode}, {1, 0}, {2, 0x40}}); auto reg = f.cpu.getReg(); reg.getRefSP() = 0xFE12; f.cpu.setReg(reg);
+        f.memory.events.clear(); f.runUntilNextOpcode();
+        expect(oamEvents(f.memory) == std::vector<std::pair<uint16_t, Event>>{{0xFE12, Event::Idu}, {0xFE11, Event::WriteIdu}, {0xFE10, Event::Write}},
+               "PUSH/CALL/RST emit the three effective stack write events in bus order");
+    }
+    for (uint8_t opcode : {0xC1, 0xD1, 0xE1, 0xF1, 0xC9, 0xD9, 0xC0}) {
+        CpuFixture f({{0, opcode}, {0xFE10, 0}, {0xFE11, 0x40}}); auto reg = f.cpu.getReg(); reg.getRefSP() = 0xFE10; f.cpu.setReg(reg);
+        f.memory.events.clear(); f.runUntilNextOpcode();
+        expect(oamEvents(f.memory) == std::vector<std::pair<uint16_t, Event>>{{0xFE10, Event::ReadIdu}, {0xFE11, Event::Read}},
+               "POP/RET combine only the first read with IDU");
+    }
+    {
+        CpuFixture f({{0, 0}, {0xFDFF, 0x3E}, {0xFE00, 0x12}, {0xFE01, 0}});
+        auto reg = f.cpu.getReg(); reg.getRefPC() = 0xFDFF; f.cpu.setReg(reg); f.cpu.fetchFirstOpcode();
+        f.memory.events.clear(); f.runUntilNextOpcode();
+        expect(oamEvents(f.memory) == std::vector<std::pair<uint16_t, Event>>{{0xFE00, Event::ReadIdu}, {0xFE01, Event::ReadIdu}},
+               "immediate and opcode fetches combine reads and PC increments at the OAM boundary");
+    }
+    {
+        CpuFixture f({{0, 0}}); auto reg = f.cpu.getReg(); reg.getRefSP() = 0xFE12; f.cpu.setReg(reg);
+        f.interrupts.write(0xFFFF, 1); f.interrupts.write(0xFF0F, 1);
+        f.memory.events.clear(); f.runUntilNextOpcode();
+        expect(oamEvents(f.memory) == std::vector<std::pair<uint16_t, Event>>{{0xFE12, Event::Idu}, {0xFE11, Event::WriteIdu}, {0xFE10, Event::Write}},
+               "interrupt entry exposes the effective IDU/write stack sequence");
+    }
+    for (uint8_t opcode : {0xC4, 0xC0}) {
+        CpuFixture f({{0, opcode}, {1, 0}, {2, 0x40}});
+        auto reg = f.cpu.getReg(); reg.getRefSP() = 0xFE12; setFlags(reg, true, false, false, false); f.cpu.setReg(reg);
+        f.memory.events.clear(); f.runUntilNextOpcode();
+        expect(oamEvents(f.memory).empty(), "untaken conditional CALL/RET do not emit stack IDU events");
+    }
+    {
+        CpuFixture f({{0, 0x76}, {0xFE00, 0}}); auto reg = f.cpu.getReg(); reg.getRefPC() = 0xFE00; f.cpu.setReg(reg);
+        f.cpu.setIME(false); f.interrupts.write(0xFFFF, 1); f.interrupts.write(0xFF0F, 1);
+        f.memory.events.clear(); expect(f.cpu.stepOneCycle().success, "HALT-bug OAM fetch executes");
+        expect(oamEvents(f.memory) == std::vector<std::pair<uint16_t, Event>>{{0xFE00, Event::Read}},
+               "HALT-bug fetch suppresses the PC increment and its combined IDU event");
+    }
+
 }
 
 } // namespace
 
 int main() {
+    testCpuIduBusEvents();
     testCbRegisterOperationsCompleteAfterPrefixCycle();
     testBitHlUsesReadAndNextFetchCycles();
     testIncDecHlReadModifyWritePhases();
@@ -2223,13 +2402,15 @@ int main() {
     testMemoryAccessesOccurWithinTheirMCycle();
     testAbsoluteAndHighMemoryALoadStorePhases();
     testEiDelay();
+    testEiHaltWithPendingInterruptReturnsToHalt();
     testRepeatedEiDoesNotPostponePendingInterrupt();
     testDiCancelsEiWithPendingInterruptAcrossFollowingInstructions();
     testRetiImmediatelyServicesAnotherPendingInterrupt();
     testInterruptEntryPriorityStackAndVector();
+    testInterruptEntryCancellationAndIEStackWriteTiming();
     testInterruptWaitsUntilCbInstructionCompletes();
     testHaltWakeAndHaltBug();
-    testUnsupportedBaseOpcodesFailWithAddressAndOpcode();
+    testIllegalBaseOpcodesHardLockTheCpu();
     std::cout << "CPU instruction tests passed\n";
     return EXIT_SUCCESS;
 }

@@ -39,7 +39,8 @@ bool Instruction::stepOneMemCycle(SUB_FUNC_PARAMS) {
     }
     funcPerMemCycle[pInstState->memCycleCnt++](SUB_FUNC_ARGS);
     const bool stoppedAtInstructionEnd =
-        pInstState->clockAction == CLOCK_ACTION_STOP;
+        pInstState->clockAction == CLOCK_ACTION_STOP ||
+        pInstState->clockAction == CLOCK_ACTION_LOCKUP;
     if (pInstState->memCycleCnt >= memCycles &&
         pInstState->memMode != MEM_MODE_FETCH && !stoppedAtInstructionEnd) {
         throw std::invalid_argument("last sub function should set memMode as MEM_MODE_FETCH");

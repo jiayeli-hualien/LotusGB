@@ -24,7 +24,7 @@ normal audio on Steam Deck as well. The user also confirmed normal audio while
 holding Rewind and after releasing it. The Deck core hash and session duration
 were not recorded. See the [rewind evidence](rewind.md).
 
-## Current route (2026-11-02)
+## Current route (2026-11-03)
 
 Work in the order below. These are acceptance milestones, not calendar
 commitments. M1–M3 are complete. M4 is closed for now without a confirmed fix
@@ -51,8 +51,202 @@ and licensed homebrew.
 | M7 — bounded automated checkpoint complete (2026-11-01) | Input response and presentation pacing | Tobu's tested short/held actions now respond in call 2 under the default bounded VBlank policy, versus call 3 in the fixed diagnostic baseline. The policy distinguishes real completion, healthy host repeat, STOP and failure; hardware clocks remain shared. Dual-mode audio/coherent-video/state/rewind regressions pass. See the [current policy and evidence](input-latency.md#current-presentation-policy). Manual Mac/Deck feel, listening and physical latency are deferred, not claimed as passed. |
 | M8 — playable checkpoint passed (2026-11-01) | Native CGB-E through RetroArch | Banked RAM, color PPU, KEY1 speed switching, VRAM DMA and model-tagged snapshots. Exact cgb-acid2 pixels and Deluxe directional/flap/dash response with state replay pass; installed macOS RetroArch loads/restores gameplay. Broader game compatibility and hardware accuracy remain work. See the [canonical evidence and limits](cgb-development.md). |
 | M9 — bounded checkpoint complete (2026-11-01) | CGB gameplay and battery SRAM | CI fixtures cover CGB-compatible MBC1 and MBC5, color/input gameplay, battery-backed progress and fresh-content SRAM restore. Optional local `make test-cgb-homebrew` adds Big2Small MBC5 save/resume and Deluxe MBC1 gameplay/state replay. See [CGB evidence](cgb-development.md#reproducible-checks). |
-| M10 — in progress | Broader CGB game compatibility | Original CGB fixtures now cover MBC1/MBC5 gameplay and battery RAM, plus MBC3 guest RTC latch/read/write and fresh-content battery import in both libretro presentation builds. Continue with licensed homebrew gameplay profiles and original hardware fixtures; keep commercial-game checks private. |
+| M10 — in progress | CGB-E Pokémon Crystal single-player playability | Original CGB fixtures cover MBC1/MBC5 gameplay and battery RAM, MBC5 ROM banks $100/$1FF and 128-KiB SRAM gameplay/state/battery replay, plus MBC3 guest RTC latch/read/write, running-clock offline progression/day rollover and fresh-content battery import in both libretro presentation builds. The user reports a prior manual Crystal single-player pass; the date, ROM region and route/coverage were not recorded. After the 2026-11-04 core update, the user confirmed gameplay, in-game save and save persistence after reopening Steam RetroArch. This is a bounded post-update smoke regression, not independent proof of full-story completion or real-title RTC progression. See the [CGB playability record](cgb-development.md#pokemon-crystal-post-update-check-2026-11-04). Keep ROMs and derived artifacts private; use licensed homebrew and original fixtures for reproducible public checks. |
 | Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and other systems need a concrete user or distribution target before becoming milestones. |
+
+### Active automatic route — GB/CGB specification coverage
+
+Continue GB/CGB specification work without waiting for commercial-game or
+device acceptance. The original MBC5 high-bank fixture extends M10's automated
+mapper/gameplay gate; running-RTC offline progression is also covered. These
+checks remain separate from the deferred private manual observations above.
+
+CGB VBlank/STAT timing now passes Mooneye's CGB-targeted
+`misc/ppu/vblank_stat_intr-C`: line-144 Mode 2 STAT asserts one M-cycle before
+VBlank, while the DMG control remains at VBlank entry. Focused PPU checks cover
+native CGB and CGB compatibility. BIOS-produced register/divider cases are
+now isolated in a separate optional Mooneye group that requires an external
+CGB boot ROM; see the [CGB evidence](cgb-development.md#cgb-vblankstat-interrupt-edge-2026-11-03).
+
+The latest bounded correction separates native CGB OAM DMA cartridge and WRAM
+bus ownership. Focused bus tests reproduce the previous failure; an original
+CPU probe covers ROM execution/SRAM writes during WRAM DMA and in-flight
+snapshot replay. See the [CGB evidence](cgb-development.md#cgb-oam-dma-bus-separation-2026-11-02).
+CGB same-bus fetch collisions now also have a guest CPU probe: a WRAM DMA byte
+executes as code while the free cartridge bus accepts an SRAM write; the DMG
+single-bus control blocks the write. A complementary ROM-source probe executes
+DMA bytes in place of a HALT ROM fetch and checks SRAM write blocking until bus
+release. Another original CPU probe runs `PUSH BC`/`POP DE` on a WRAM stack
+during ROM-source DMA and checks the recovered word after the cartridge bus is
+released. Other conflict phases and revisions remain open (see
+[evidence](cgb-development.md#cgb-oam-dma-fetch-conflicts-2026-11-03)).
+CGB OAM DMA source reads also have decoy-bank checks for VBK-selected VRAM and
+SVBK-selected WRAM (see
+[evidence](cgb-development.md#cgb-oam-dma-banked-sources-2026-11-03)).
+ROM-window source data also has a guest-level check: an MBC1 program executes
+the transfer routine from WRAM, then copies and compares all 160 OAM bytes in
+SRAM.
+CGB GDMA and LCD-off HBlank DMA now also check that WRAM sources use the
+SVBK-selected bank rather than bank-1 decoy data (see
+[evidence](cgb-development.md#cgb-vram-dma-banked-sources-2026-11-03)).
+CGB GDMA and LCD-off HBlank blocks now also have direct `SystemClock` and
+guest-CPU integration checks proving their 32-base-T-cycle rate stays fixed at
+normal and double CPU speed (see
+[evidence](cgb-development.md#cgb-vram-dma-rate-at-double-speed-2026-11-03)).
+CGB GDMA now consumes its transfer during Mode 3 while dropping destination
+writes blocked by the PPU; a focused test also confirms writes resume in
+HBlank. A destination-overflow regression confirms that transfer stops at the
+end of VRAM instead of wrapping to `$8000`; the overflowed `FF55` readback is
+left unspecified. The [CGB VRAM DMA guide](cgb-development.md#gdma-writes-while-the-ppu-owns-vram-2026-11-03)
+records the documented behavior and remaining source/OAM-DMA conflict limits.
+CGB OAM DMA now has both a guest-visible normal/double-speed scanline check and
+a `SystemClock` boundary regression: it checks the first byte at M=2, the last
+byte, and release exactly 160 CPU M-cycles later (640/320 base-clock dots).
+The line-2 object is hidden while normal-speed DMA remains active and visible
+after double-speed DMA finishes before that scan ([evidence](cgb-development.md#cgb-oam-dma-rate-at-double-speed-2026-11-03)).
+HBlank DMA also now pauses during CPU HALT and resumes after VBlank wake;
+an original guest program verifies retained blocks, copied data and exact
+snapshot replay (see [evidence](cgb-development.md#hblank-dma-and-halt-2026-11-02)).
+CGB HBlank DMA now also follows the documented LCD-off behavior: one block
+runs when disabled, then remaining blocks wait for visible HBlanks after LCD
+restart. Component and guest CPU tests cover both startup-off and mid-transfer
+shutdown, FF55 progress, source data and exact snapshot replay (see
+[evidence](cgb-development.md#hblank-dma-and-lcd-off-transitions-2026-11-03)).
+An additional PPU/DMA regression checks that a block armed after line 143's
+HBlank remains pending through all VBlank lines and resumes at line 0 of the
+next frame, matching Pan Docs' visible-line HBlank schedule (see
+[evidence](cgb-development.md#hblank-dma-across-vblank-2026-11-04)).
+Native CGB now has model-specific active-wave-RAM access, CH3 retrigger and
+powered-off length-register behavior, with component/guest CPU tests and exact
+snapshot replay (see [APU evidence](cgb-development.md#cgb-apu-register-behavior-2026-11-02)).
+CGB PCM12/PCM34 now expose live digital outputs through the shared APU and
+CPU bus, with component/model/CPU checks and snapshot replay (see
+[PCM evidence](cgb-development.md#cgb-pcm-observation-registers-2026-11-02)).
+Pulse first-duty suppression and retrigger countdown low-bit retention now
+have PCM regressions. Snapshot v3 records the new flags and loads legacy DMG
+v1/CGB v2 states (see [pulse evidence](cgb-development.md#pulse-first-duty-and-retrigger-phase-2026-11-02)).
+Documented NRx4 extra length-enable/trigger clocks now have all-channel,
+eight-phase component tests plus CPU/DIV/NR52 checks and snapshot replay (see
+[length evidence](cgb-development.md#length-enable-and-trigger-clocks-2026-11-02)).
+Envelope trigger phase-7 reload now has all-phase/period/direction digital
+regressions and CPU/DIV observation with pending-tick snapshot replay (see
+[envelope evidence](cgb-development.md#envelope-trigger-reload-phase-2026-11-02)).
+CH1 sweep now retains the pending pulse countdown and acts on trigger-time
+overflow, with PCM/control and NR52 regressions (see
+[sweep evidence](cgb-development.md#ch1-sweep-countdown-and-overflow-2026-11-02)).
+The portable serial external-clock interface now has original two-port and
+two-system CPU tests, all four CGB clock rates and paired snapshot replay (see
+[serial evidence](serial-link.md)). The remaining-specification audit selected
+optional native-CGB BIOS loading next: libretro now has an original boot/render/
+handoff/reset/state checkpoint and explicit size/identity diagnostics (see
+[BIOS evidence](cgb-development.md#optional-cgb-bios-through-libretro-2026-11-02)).
+The next audited gap is the DMG STAT-write interrupt quirk, absent on CGB:
+it now has a four-clock transient, model/mode/LYC coverage and pending-write
+snapshot replay (see [STAT evidence](dmg-validation.md#stat-write-interrupt-quirk-2026-11-02)).
+Snapshot v4 carries that transient while loading legacy v1/v2/v3.
+The audit also selected standard MBC1M multicart wiring: header-based detection,
+full-register bank tests and DMG/CGB CPU/state/battery checks now cover this
+previously unsupported variant (see [MBC1M evidence](cgb-development.md#mbc1m-multicart-wiring-2026-11-02)).
+CGB high-pass output now uses its documented model-specific charge factor,
+with constant-input PCM decay and disconnect tests (see
+[filter evidence](cgb-development.md#model-specific-high-pass-decay-2026-11-02)).
+DMG Mode-2 OAM corruption now has documented CPU IDU/access events, golden
+read/write/combined patterns, the Read+IDU row cutoffs, model controls,
+CPU/snapshot replay and a row-by-row M-cycle boundary sweep (see
+[OAM evidence](oam-corruption.md)). Sub-M-cycle bus phase, hardware revisions
+and DMA-interaction behavior remain outside that bounded model.
+CGB speed-switch pauses now latch PPU video-memory permissions by entry mode,
+with all-mode background/object/black output checks, CPU switches in both
+directions and exact paused snapshot replay. CGB v5 records that latch and loads
+legacy CGB v2/v3/v4; DMG remains v4 (see
+[speed-switch evidence](cgb-development.md#speed-switch-ppu-locking-2026-11-02)).
+The audio audit also corrected all-channel digital-to-DAC conversion, including
+inactive-generator bias and CH3 polarity, with all-level/model/PCM/gain tests
+(see [DAC evidence](cgb-development.md#digital-generation-and-dac-conversion-2026-11-02)).
+Automatic envelopes now distinguish the final valid volume from an attempted
+out-of-range step, retain period-zero divider phase and restart on trigger.
+All-period/direction tests and a dual-model CPU/DIV snapshot probe cover this
+behavior. Snapshot v6 stores separate envelope-update flags and loads previous
+model versions (see [envelope stop evidence](cgb-development.md#envelope-divider-and-automatic-stop-2026-11-02)).
+The shared period-zero `x8` to `$08` write case now steps active CH1/CH2/CH4
+volume, with CGB PCM and DMG mixed-PCM regressions; other revision-specific
+zombie-write behavior remains open (see [APU evidence](cgb-development.md#common-period-zero-nrx2-write-step-2026-11-02)).
+Pulse duty clocks now continue after output is disabled by length, DAC or
+sweep. Golden phase tests and an original CPU/PCM continuous-reference probe
+cover retrigger phase and muted-interval snapshot replay without a new format
+(see [silent pulse evidence](cgb-development.md#pulse-duty-clocks-while-output-is-disabled-2026-11-02)).
+CGB boot-selected DMG compatibility now has an automated checkpoint covering
+KEY0/OPRI locking, native-register gating, palette-remapped rendering and exact
+pre/post-lock state replay. Libretro exposes `auto`/`dmg`/`cgb` hardware selection;
+both pixel formats, reset and rewind have original-fixture checks. At that
+checkpoint, CGB v8 recorded bootstrap selections, IR receive settling and the
+latched input; it loaded CGB v2–v7, while DMG remained v6. See the
+[compatibility contract and remaining limits](cgb-compatibility.md).
+Real BIOS revisions and detailed PPU arbitration remain unverified; continue the
+important-specification audit. Detailed PPU/DMA conflicts, speed-switch revision
+behavior, frontend link transport and analog IR sensor response remain gaps;
+connected digital IR has an automated host/core contract ([IR evidence](cgb-infrared.md)).
+Native CGB LCDC.0 priority behavior now has a paired renderer regression against
+DMG compatibility: CGB keeps BG/Window pixels but lets objects win while the bit
+is clear; compatibility mode blanks BG/Window. The test also checks the
+"behind BG" object flag in both modes (see
+[CGB PPU evidence](cgb-development.md#native-cgb-lcdc0-bgobj-priority-2026-11-04)).
+DMG STOP now has an original CPU regression for an already-low selected
+Joypad line: only a fresh falling edge after release wakes execution. This
+records the documented edge contract, not physical-DMG timing validation.
+MBC7 is now supported through the shared mapper: tests cover its serial EEPROM,
+accelerometer latch, battery block, libretro sensor fallback and DMG/CGB snapshots
+during partial commands and programming. DO busy/ready polling, operation delays
+and sequential reads follow the 93LC56 interface; sensor calibration/settling
+and per-device program timing remain approximate. See the
+[MBC7 evidence](cgb-development.md#mbc7-eeprom-and-accelerometer-path-2026-11-02).
+MBC5/MBC7 rumble now preserves register bit 3 separately from RAM gating/bank
+selection and drives the optional libretro strong motor. Synthetic-core tests
+cover on/off requests, state restore, unload cleanup and the frontend-unavailable
+fallback; this does not claim manual motor or game acceptance. See the
+[CGB mapper evidence](cgb-development.md#implemented-contracts-and-evidence).
+Native CGB now resets the Window Y condition when LCDC.5 is cleared; DMG and
+CGB DMG-compatibility mode retain it. An original tile fixture checks hiding,
+future-WY re-arming and the model split against the
+[Pan Docs behavior](cgb-development.md#native-cgb-window-y-condition-reset-2026-11-02).
+OAM DMA activity now reaches the PPU scan boundary: active Mode-2 DMA hides
+that line's objects on DMG and CGB even when the transferred bytes equal OAM's
+existing contents. Mode-3 object fetches now sample the aligned DMA destination
+word for tile/attributes, with an original pixel fixture covering DMG and CGB;
+a CPU-driven DMG snapshot fixture replays an active transfer with a fetch pending.
+First/last transfer timing and revision-specific scan results remain open
+([evidence](cgb-development.md#oam-dma-during-mode-3-object-fetch-2026-11-02)).
+Mode 2 now accumulates OAM candidates over its 80-dot window instead of reading
+the whole table at Mode 3 entry. The focused PPU regression checks that a DMA
+write after an entry's scan point cannot retroactively change its Y eligibility;
+the CPU-driven snapshot regression resumes mid-scan and reproduces exact video
+and state; DMG Acid2 remains an exact reference-frame regression. The scan
+cadence is based on the PPU timing reference, with physical-DMG validation still open.
+The scan state fits the already serialized OBJ-event fields; legacy snapshots
+finish their current line with the previous bulk-selection behavior. See the
+[PPU validation record](dmg-validation.md#target-model-and-ppu-acceptance) and
+[scan investigation](ppu-scrolling.md).
+The eleven invalid base opcodes now hard-lock instruction fetch and interrupt
+service while the system clock continues; DMG v11/CGB v13 snapshots retain the
+lock, and reset clears it. CPU, system, frontend and snapshot regressions cover
+this contract from the [documented CPU behavior](https://eldred.fr/pandocs/CPU_Instruction_Set.html).
+The default Mooneye PPU profile now includes three formerly extended cases:
+sprite Mode 0 timing, SCX/HBlank LY timing and STAT IRQ blocking. All 14
+selected PPU ROMs pass, and the curated `all` profile is now 91/91.
+The DMG interrupt audit also added Mooneye `interrupts/ie_push`: the CPU now
+resolves IE changes from the upper-byte stack push before acknowledging IF,
+supports cancellation/re-vectoring, and keeps lower-byte changes too late.
+Focused CPU regressions cover all three cases. The curated local Mooneye suite
+now includes 17 CPU/flag/timing ROMs, DIV timing and serial boot-clock alignment;
+the combined 91-ROM set passes. See the
+[interrupt contract](interrupts.md#request-wake-and-service).
+An original CPU regression now covers the already-pending `EI; HALT` case:
+the HALT bug makes interrupt return target HALT itself, and `RETI` re-executes
+it after acknowledging the request. The full local Mooneye interrupt group
+still passes 11/11, including its distinct later-arriving-interrupt HALT case.
+Current gameplay checkpoints do not mean all important GB/CGB specifications
+are complete. Review those gaps before proposing a transition to GBA. Other
+systems remain deferred during this work.
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
 

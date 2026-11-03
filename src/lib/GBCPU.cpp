@@ -6,16 +6,37 @@
 
 namespace LOTUSGB {
 
+namespace {
+
+struct InterruptSelection {
+    uint8_t mask = 0;
+    uint16_t vector = 0;
+};
+
+InterruptSelection selectInterrupt(uint8_t pendingInterrupts) {
+    constexpr uint8_t masks[] = {
+        INTERRUPT_VBLANK, INTERRUPT_LCD_STAT, INTERRUPT_TIMER,
+        INTERRUPT_SERIAL, INTERRUPT_JOYPAD};
+    constexpr uint16_t vectors[] = {0x0040, 0x0048, 0x0050, 0x0058, 0x0060};
+    for (size_t i = 0; i < 5; ++i) {
+        if (pendingInterrupts & masks[i])
+            return {masks[i], vectors[i]};
+    }
+    return {};
+}
+
+}
+
 GBCPU::GBCPU(IMemoryAccess &memory, IDecoder &decoder, IDecoder &decoderCB,
              IInterruptController *interruptController)
 :memory(memory), decoder(decoder), decoderCB(decoderCB),
  interruptController(interruptController) {
 }
 
-IInstruction* GBCPU::fetch(uint16_t addr) {
+IInstruction* GBCPU::fetch(uint16_t addr, bool increment) {
     // TODO: handle deced failed
     const uint8_t OPCODE_CB = 0xCB;
-    instStat.opcode = memory.read(addr);
+    instStat.opcode = increment ? memory.readWithIdu(addr) : memory.read(addr);
     if (waitDecodeCB) {
         waitDecodeCB = false;
         return decoderCB.decode(instStat.opcode);
@@ -37,6 +58,7 @@ void GBCPU::reset() {
     interruptMasterEnable = true;
     isHalt = false;
     isStopped = false;
+    isLocked = false;
     fetchAfterStopWake = false;
     initialFetchPending = true;
     imeEnablePending = false;
@@ -56,11 +78,12 @@ void GBCPU::doFetchNextOp() {
     uint16_t &pc = reg.getRefPC();
     const uint16_t fetchAddress = pc;
     const bool fetchingCbOpcode = waitDecodeCB;
+    const bool increment = !haltBugPending;
     if (haltBugPending)
         haltBugPending = false;
     else
         ++pc;
-    pInst = fetch(fetchAddress);
+    pInst = fetch(fetchAddress, increment);
     // CB's second byte is part of the same instruction as the prefix. Do not
     // sample interrupts between fetching the CB opcode and executing it.
     instructionBoundary = !fetchingCbOpcode;
@@ -75,17 +98,33 @@ RetStepOneCycle GBCPU::stepInterruptCycle() {
         case 0:
             break;
         case 1:
+            memory.notifyIdu(reg.getRefSP());
             --reg.getRefSP();
             break;
         case 2: {
             uint16_t &sp = reg.getRefSP();
             const uint16_t highByteAddress = sp;
             --sp;
-            memory.write(highByteAddress, static_cast<uint8_t>(reg.getRefPC() >> 8));
+            memory.writeWithIdu(highByteAddress, static_cast<uint8_t>(reg.getRefPC() >> 8));
             break;
         }
         case 3: {
+            // The upper-byte stack write in the previous M-cycle can itself
+            // change IE when SP wraps through $FFFF. Hardware resolves the
+            // selected request after that write, but before the lower-byte
+            // push; a removed request is cancelled and an unmasked pending
+            // request can take its place.
+            const InterruptSelection selection = selectInterrupt(
+                interruptController ? interruptController->getPendingInterrupts() : 0);
+            activeInterruptMask = selection.mask;
+            activeInterruptVector = selection.vector;
+            if (activeInterruptMask)
+                interruptController->acknowledgeInterrupt(activeInterruptMask);
+
             memory.write(reg.getRefSP(), static_cast<uint8_t>(reg.getRefPC() & 0xFF));
+            // If the upper-byte push disabled the only pending interrupt, the
+            // cancelled dispatch resumes from $0000. The low-byte push is too
+            // late to change a vector already selected above.
             reg.getRefPC() = activeInterruptVector;
             break;
         }
@@ -105,18 +144,19 @@ RetStepOneCycle GBCPU::stepInterruptCycle() {
 }
 
 void GBCPU::doMemRead(InstState &instStat) {
-    instStat.memValue = memory.read(instStat.memAddr);
+    instStat.memValue = instStat.iduActive ? memory.readWithIdu(instStat.memAddr) : memory.read(instStat.memAddr);
 }
 void GBCPU::doMemReadAddrLSB(InstState &instStat) {
-    const uint8_t tmp = memory.read(instStat.memAddr);
+    const uint8_t tmp = instStat.iduActive ? memory.readWithIdu(instStat.memAddr) : memory.read(instStat.memAddr);
     instStat.a16Addr = HIGH_MEM_ADDR | tmp;
 }
 void GBCPU::doMemReadAddrMSB(InstState &instStat) {
-    const uint8_t tmp = memory.read(instStat.memAddr);
+    const uint8_t tmp = instStat.iduActive ? memory.readWithIdu(instStat.memAddr) : memory.read(instStat.memAddr);
     instStat.a16Addr = (tmp << 8U) | (instStat.a16Addr & 0xFF);
 }
 void GBCPU::doMemWrite(InstState &instStat) {
-    memory.write(instStat.memAddr, instStat.memValue);
+    if (instStat.iduActive) memory.writeWithIdu(instStat.memAddr, instStat.memValue);
+    else memory.write(instStat.memAddr, instStat.memValue);
 }
 
 bool GBCPU::stepInstruction() {
@@ -134,6 +174,13 @@ bool GBCPU::stepInstruction() {
 
 RetStepOneCycle GBCPU::stepOneCycle() {
     RetStepOneCycle ret;
+    if (isLocked) {
+        // Invalid SM83 opcodes wedge instruction fetch and interrupt service,
+        // while the system clock and peripherals continue to run.
+        ret.success = true;
+        ret.tCyclesElapsed = T_CYCLES_PER_M_CYCLE;
+        return ret;
+    }
     if (isStopped) {
         // STOP freezes the CPU clock until the system explicitly wakes it.
         ret.success = true;
@@ -172,17 +219,9 @@ RetStepOneCycle GBCPU::stepOneCycle() {
     }
 
     if (instructionBoundary && interruptMasterEnable && pendingInterrupts != 0) {
-        constexpr uint8_t interruptMasks[] = {
-            INTERRUPT_VBLANK, INTERRUPT_LCD_STAT, INTERRUPT_TIMER,
-            INTERRUPT_SERIAL, INTERRUPT_JOYPAD};
-        constexpr uint16_t interruptVectors[] = {0x0040, 0x0048, 0x0050, 0x0058, 0x0060};
-        for (size_t i = 0; i < 5; ++i) {
-            if ((pendingInterrupts & interruptMasks[i]) == 0)
-                continue;
-            activeInterruptMask = interruptMasks[i];
-            activeInterruptVector = interruptVectors[i];
-            break;
-        }
+        const InterruptSelection selection = selectInterrupt(pendingInterrupts);
+        activeInterruptMask = selection.mask;
+        activeInterruptVector = selection.vector;
 
         // The opcode at PC-1 was prefetched at the preceding instruction's
         // boundary. Interrupt entry discards it and returns to its address.
@@ -192,7 +231,6 @@ RetStepOneCycle GBCPU::stepOneCycle() {
         instructionBoundary = false;
         interruptMasterEnable = false;
         imeEnablePending = false;
-        interruptController->acknowledgeInterrupt(activeInterruptMask);
         interruptSequenceActive = true;
         interruptSequenceCycle = 0;
         return stepInterruptCycle();
@@ -200,6 +238,7 @@ RetStepOneCycle GBCPU::stepOneCycle() {
 
     instructionBoundary = false;
 
+    instStat.iduActive = false;
     instStat.memMode = MEM_MODE_FETCH;
     instStat.imeAction = IME_ACTION_NONE;
     instStat.clockAction = CLOCK_ACTION_NONE;
@@ -235,6 +274,8 @@ RetStepOneCycle GBCPU::stepOneCycle() {
     }
     else if (instStat.clockAction == CLOCK_ACTION_STOP)
         isStopped = true;
+    else if (instStat.clockAction == CLOCK_ACTION_LOCKUP)
+        isLocked = true;
 
     ret.fetchedNewInst = (!waitDecodeCB)
                          && (instStat.memMode == MEM_MODE_FETCH);
@@ -253,6 +294,8 @@ RetStepOneCycle GBCPU::stepOneCycle() {
         case MEM_MODE_READ_ADDR_LSB: doMemReadAddrLSB(instStat); break;
         case MEM_MODE_READ_ADDR_MSB: doMemReadAddrMSB(instStat); break;
         case MEM_MODE_SLEEP:
+            if (instStat.iduActive) memory.notifyIdu(instStat.iduAddress);
+            break;
         default:
             break;
     }

@@ -8,20 +8,23 @@
 
 namespace LOTUSGB {
 
-// DMG OAM DMA advances one byte per M-cycle, after its startup delay.
+// DMG/CGB OAM DMA advances one byte per M-cycle, after its startup delay.
 class DmgOamDma final : public IAddressRegion, public IClockedComponent,
                         public ICpuBusArbiter {
     friend class StateCodec;
 public:
-    DmgOamDma(AddressBus &bus, DmgPpu &ppu);
+    DmgOamDma(AddressBus &bus, DmgPpu &ppu, bool cgbMode = false);
 
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
     void advanceTCycles(uint64_t tCycles) override;
+    bool isActive() const { return active; }
+    size_t getPpuReadAddress(size_t address) const;
     bool ownsCpuAddress(uint16_t address) const override;
     uint8_t readConflictedCpuAddress(uint16_t address) const override;
 
 private:
+    const bool cgbMode; // Immutable model configuration; snapshot model identifies it.
     AddressBus &bus;
     DmgPpu &ppu;
     uint8_t sourcePage = 0xFF;

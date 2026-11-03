@@ -135,7 +135,7 @@ and fresh SRAM/RTC imports. These tests use original CGB fixtures and do not est
 
 ## Format and compatibility
 
-Version 1 uses a 116-byte header: eight-byte magic `LOTUSST\0`, 32-bit version,
+All supported versions use a 116-byte header: eight-byte magic `LOTUSST\0`, 32-bit version,
 32-bit hardware model (`1` = DMG), 32-bit used length, and three SHA-256 digests
 for ROM, boot ROM (empty for fast startup) and payload. Integers use little
 endian encoding, booleans one byte, enums 32 bits, and signed integers two's
@@ -153,14 +153,71 @@ zero-fills the remainder. Pending PCM is bounded to 96,000 interleaved samples
 (one second); standalone callers must drain audio regularly. Exceeding that
 limit fails explicitly. `retro_run()` already drains PCM every frame.
 
-Native CGB uses **version 2 / model 2**, with the same header layout and base
+The original native CGB format is **version 2 / model 2**, with the same header layout and base
 component sections followed by an ordered CGB extension: WRAM/VRAM banks and
 selectors; KEY1/speed-pause and native I/O state; VRAM DMA; live/completed
 RGB555 buffers; palette RAM/indices; BG fetch attributes/row; OBJ palette and
 OAM-priority metadata. The timer/APU tap and scheduler speed are rebound from
 the validated speed flag. Host callbacks, pointers and model wiring are never
-serialized. DMG continues to write/read version 1/model 1 with its original
-field order. Model mismatches are rejected before applying state.
+serialized. Current writers use **DMG version 11 / model 1** and **CGB version 13 / model 2**. Both append two strict CH1/CH2 first-duty suppression booleans
+(v3), then the DMG STAT-write override countdown (v4, zero on CGB). Version 6
+then adds three strict booleans for automatic envelope updates on CH1/CH2/CH4.
+The CGB suffix ends with the PPU mode latched at speed-switch pause entry
+(0–3, introduced in v5); outside a pause it must be 3. In CGB v5 that byte
+immediately followed the STAT countdown, before v6 added envelope flags.
+
+CGB v7 appends KEY0 bit 2 and OPRI bit 0 after that PPU latch. CGB v8 adds the
+remaining CGB IR receive-settling countdown in base T-cycles and the latched
+sensor input; host sensor/link callbacks remain external. The existing boot-mapped
+flag supplies compatibility lock state; derived register/bank/serial/renderer
+behavior is rebound before validation and after commit. Invalid reserved bits,
+sensor-state combinations and out-of-range IR countdowns are rejected.
+
+DMG v7 and CGB v9 introduced a fixed cartridge protocol block for MBC7: both RAM
+gates, ROM bank, live/latched accelerometer values and latch phase, plus EEPROM
+write-enable, pin levels and any partial command/data shift. Other cartridge
+types keep this block at its default state. EEPROM bytes remain in the existing
+battery RAM section so libretro retains the frontend-owned 256-byte save block.
+
+DMG v8 and CGB v10 append the MBC7 EEPROM pending operation, pending word,
+remaining busy time in base T-cycles and CS-low/status-poll phase. Earlier DMG
+v7 and CGB v9 states migrate with an idle EEPROM timer.
+
+DMG v9 and CGB v11 reinterpret the existing MBC7 second-gate byte as the full
+control-register value so snapshots preserve both register-access gate bit 6
+and rumble bit 3 without changing payload length. Earlier DMG v8/CGB v10 boolean
+gate values migrate to `$00` or `$40`, with rumble off.
+
+DMG v10 appends the selected OAM index for each pending Mode-3 object fetch so
+an in-flight DMA word can be sampled after restoring a snapshot. The CPU-driven
+DMG test saves during active OAM DMA before a far-right object fetch and verifies
+the restored pixels and complete state. DMG v10 and CGB v12 tag `tileRow` with
+the unresolved object row and height; earlier snapshots keep their already-resolved
+fetch data.
+
+DMG v11 and CGB v13 append the CPU's illegal-opcode lock-up state. Older
+snapshots load unlocked. A lock-up snapshot restores without instruction fetch
+or interrupt service while system clocks and peripherals continue.
+
+The loader accepts DMG v1/v3/v4/v6/v7/v8/v9/v10/v11 and CGB v2/v3/v4/v5/v6/v7/v8/v9/v10/v11/v12/v13. Missing pulse flags
+default to false; missing STAT overrides default to zero. For legacy states,
+enabled channels resume automatic envelope updates because stop history was
+not recorded. Existing divider phase and volume remain intact; period-zero
+and boundary handling thereafter use the corrected implementation. Legacy CGB
+v2/v3/v4 retain unrestricted PPU access, including mid-pause; v5 retains its
+recorded PPU latch. CGB v2–v6 load with native KEY0/OPRI defaults, preserving
+their historical mode; v7 retains its recorded KEY0/OPRI selections. Legacy CGB
+states start with no pending IR receive wait or detected-light latch. Resaving
+upgrades to the current model version. Earlier cores cannot load current DMG v11
+or CGB v13 snapshots.
+Model mismatches and invalid typed fields are rejected before applying state.
+
+Tests cover all accepted legacy versions with a recomputed payload checksum,
+unchanged legacy component bytes after migration, exact new-field round trips, and atomic
+rejection of invalid flags. The extra state replays IR receiver warm-up and
+sampled-light state, pulse retrigger phase before the first duty edge, envelope
+stop history while its divider keeps running, and an MBC7 EEPROM command stopped
+between serial bits.
 
 CGB checks cover in-flight DMA, speed-switch pause, color fetches and exact
 future PCM/state, repeated libretro rewind in both pixel formats, typed bad

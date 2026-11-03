@@ -15,17 +15,20 @@ namespace LOTUSGB {
 class CgbWorkRam final : public IAddressRegion {
     friend class StateCodec;
 public:
+    void setDmgCompatibility(bool value) { dmgCompatibility = value; }
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
 
 private:
     std::array<std::array<uint8_t, 0x1000>, 8> banks{};
+    bool dmgCompatibility = false;
     uint8_t bankSelect = 0; // Raw SVBK=0, effective bank=1.
 };
 
 class CgbVideoRam final : public IVideoRam {
     friend class StateCodec;
 public:
+    void setDmgCompatibility(bool value) { dmgCompatibility = value; }
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
     // PPU fetches select a bank independently of the CPU's VBK. This
@@ -34,6 +37,7 @@ public:
 
 private:
     std::array<std::array<uint8_t, 0x2000>, 2> banks{};
+    bool dmgCompatibility = false;
     uint8_t bankSelect = 0;
 };
 

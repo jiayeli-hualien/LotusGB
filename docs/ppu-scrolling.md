@@ -19,6 +19,21 @@ regression checks that a SCY write during this pause affects bitplanes not yet
 fetched. This catch-up predicate follows Pan Docs; SameBoy uses a different
 fetcher-state boundary, so the regression records a hypothesis rather than
 hardware-verified behavior.
+Mode 2 now checks one OAM entry every two PPU dots and retains up to ten
+Y-matching candidates in OAM order. The cadence follows the detailed
+[GBEDG PPU description](https://github.com/Ashiepaws/GBEDG/blob/master/ppu/index.md#oam-scan-mode-2),
+and the ten-object limit follows [Pan Docs](https://gbdev.io/pandocs/OAM.html#selection-priority).
+The public PPU regression changes an object's Y byte through the DMA-facing
+write path after its scan slot and checks that the current line keeps the
+sampled selection. DMG Acid2 still matches its upstream reference exactly;
+that ROM changes LCDC settings during Mode 2, so selected Y/X eligibility is
+retained from the scan while the object row size is resolved at Mode 3 entry.
+This is ROM-backed behavior, not a physical-hardware measurement. Existing
+snapshots reuse the serialized OBJ event storage, and a CPU-driven save-state
+fixture restores during Mode 2 and reproduces the same frame and state.
+Snapshots without the new Mode 2 marker finish their in-progress line using
+the legacy bulk selection.
+
 The BG fetcher exposes per-dot tile-map/bitplane address and data phases,
 followed by separate FIFO-push and tile-column-advance phases. OBJ events still
 use coarse, precomputed stalls, so shared BG/OBJ bus arbitration is not fully
@@ -50,11 +65,11 @@ reason to add or remove dots from an individual stage.
 
 | Boundary | Existing evidence | What remains open / next action |
 | --- | --- | --- |
-| Mode 2 and entry to Mode 3 | `testVisibleLineModesAndVideoMemoryAccess` checks the 80-dot boundary; Mooneye checks selected STAT and OAM-access edges. Sprite selection tests cover the ten-object limit. | Selection is prepared at Mode 3 entry, rather than scanning OAM throughout Mode 2. The SCX ROM supplies stable OAM, so first isolate its Mode 3 behavior instead of rewriting OAM scanning. |
+| Mode 2 and entry to Mode 3 | `testVisibleLineModesAndVideoMemoryAccess` checks the 80-dot boundary; `testObjectSelectionSamplesOamDuringMode2` checks scan-time Y sampling; Mooneye checks selected STAT and OAM-access edges; DMG Acid2 checks the resulting reference frame. | Exact read subphases and hardware-revision effects remain unmeasured. Keep the SCX investigation focused on Mode 3 fetch behavior. |
 | CPU register writes | CPU load/store tests cover the M-cycle sequence; SystemClock tests check device advancement before the bus transaction. The current LY 8 trace places the SCX write at dot 114. In the single-X=8 control, the dynamic value change is needed for the six-pixel cross-core difference; a same-value write is not enough. | This is the current model's write time, not a hardware bus measurement. Compare the BG fetch that samples the changing SCX value with OBJ disabled and enabled; keep instruction flow and the report marker fixed. |
 | Mode 3, BG without OBJ | Public PPU tests cover startup, fine discard, tile-map sampling and separate SCY bitplanes. The new OBJ-disabled control matches SameBoy exactly. | This agreement applies to the selected SCX ROM, not every BG/palette effect. Preserve this control while investigating OBJ interaction. |
 | Mode 3, OBJ wait/fetch/BG resume | Dynamic-SCX one-object controls at OAM X=1 and X=8 each differ from SameBoy by six pixels on LY 8–14. For X=8, holding SCX at zero removes the difference. | Trace the BG map-address sample and the SCX write around one X=8 object. The trace ordering explains the cross-core difference, but does not establish the hardware's correct phase. |
-| Mode 0 entry and line completion | The expanded 14-case Mooneye group passes, including sprite Mode 0 and SCX/HBlank timing. Public tests check several sprite penalties and 456-dot lines. | Preserve these endpoints. A correct endpoint can still contain incorrectly ordered internal fetches. Reopen an endpoint only when evidence identifies that edge. |
+| Mode 0 entry and line completion | The default 14-case Mooneye PPU group passes, including sprite Mode 0 and SCX/HBlank timing. Public tests check several sprite penalties and 456-dot lines. | Preserve these endpoints. A correct endpoint can still contain incorrectly ordered internal fetches. Reopen an endpoint only when evidence identifies that edge. |
 | Pixel composition and final image | `dmg-acid2` and the selected sprite-priority image pass; the SCX comparison localizes differences to one BG output tile. | Keep the original image as the final integration check. Do not treat a lower mismatch count as proof of a correct timing rule. |
 
 ### Controlled SCX ROM decomposition

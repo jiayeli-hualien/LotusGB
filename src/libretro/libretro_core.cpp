@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 #include <exception>
 #include <cstdint>
 #include <filesystem>
@@ -12,6 +13,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <stdexcept>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -31,8 +33,33 @@ constexpr double DMG_FRAME_RATE = 4194304.0 / GameBoySystem::DMG_FRAME_T_CYCLES;
 
 retro_environment_t environmentCallback = nullptr;
 retro_log_printf_t logCallback = nullptr;
+retro_sensor_interface sensorInterface{};
+bool sensorInterfaceAvailable = false;
+retro_rumble_interface rumbleInterface{};
+bool rumbleInterfaceAvailable = false;
+bool frontendRumbleState = false;
+bool rumbleUnsupportedReported = false;
+bool cartridgeSensorEnabled = false;
+bool loadedCartridgeHasMbc7 = false;
+bool invalidSensorValueReported = false;
 bool frameProblemReported = false;
 bool emulationFaulted = false;
+bool initializationFaulted = false;
+LOTUSGB::HardwareModel loadedHardwareModel = LOTUSGB::HardwareModel::Dmg;
+const retro_variable CORE_VARIABLES[] = {
+    {"lotusgb_model", "Hardware model (reload content); auto|dmg|cgb"},
+    {nullptr, nullptr}
+};
+LOTUSGB::HardwareModel selectHardwareModel(const std::vector<uint8_t> &rom) {
+    retro_variable option{"lotusgb_model", nullptr};
+    // Frontends without core-variable support keep the header-based default.
+    if (environmentCallback && environmentCallback(RETRO_ENVIRONMENT_GET_VARIABLE, &option) && option.value) {
+        if (std::strcmp(option.value, "dmg") == 0) return LOTUSGB::HardwareModel::Dmg;
+        if (std::strcmp(option.value, "cgb") == 0) return LOTUSGB::HardwareModel::CgbE;
+        if (std::strcmp(option.value, "auto") != 0) throw std::runtime_error("Invalid lotusgb_model core option");
+    }
+    return (rom[0x143] & 0x80) ? LOTUSGB::HardwareModel::CgbE : LOTUSGB::HardwareModel::Dmg;
+}
 
 void logMessage(retro_log_level level, const char *message) {
     if (logCallback)
@@ -41,7 +68,52 @@ void logMessage(retro_log_level level, const char *message) {
         std::fprintf(stderr, "[LotusGB] %s\n", message);
 }
 
-std::vector<uint8_t> loadOptionalDmgBootRom() {
+void setFrontendRumble(bool active) {
+    if (frontendRumbleState == active)
+        return;
+    if (!rumbleInterfaceAvailable || !rumbleInterface.set_rumble_state) {
+        frontendRumbleState = active;
+        if (active && !rumbleUnsupportedReported) {
+            logMessage(RETRO_LOG_INFO,
+                       "Frontend rumble is unavailable; cartridge motor output is ignored");
+            rumbleUnsupportedReported = true;
+        }
+        return;
+    }
+    try {
+        if (!rumbleInterface.set_rumble_state(
+                0, RETRO_RUMBLE_STRONG, active ? 0xFFFF : 0)) {
+            rumbleInterfaceAvailable = false;
+            frontendRumbleState = active;
+            if (!rumbleUnsupportedReported) {
+                logMessage(RETRO_LOG_INFO,
+                           "Frontend declined rumble; cartridge motor output is ignored");
+                rumbleUnsupportedReported = true;
+            }
+            return;
+        }
+        frontendRumbleState = active;
+    } catch (const std::exception &error) {
+        rumbleInterfaceAvailable = false;
+        frontendRumbleState = active;
+        char message[256];
+        std::snprintf(message, sizeof(message),
+                      "Frontend rumble callback failed: %s", error.what());
+        logMessage(RETRO_LOG_ERROR, message);
+    } catch (...) {
+        rumbleInterfaceAvailable = false;
+        frontendRumbleState = active;
+        logMessage(RETRO_LOG_ERROR,
+                   "Frontend rumble callback failed with an unknown error");
+    }
+}
+
+void bindCartridgeRumble(GameBoySystem &system) {
+    system.setCartridgeRumbleCallback(
+        [](bool active) { setFrontendRumble(active); });
+}
+
+std::vector<uint8_t> loadOptionalBootRom(LOTUSGB::HardwareModel model) {
     if (!environmentCallback)
         return {};
 
@@ -54,8 +126,12 @@ std::vector<uint8_t> loadOptionalDmgBootRom() {
         return {};
     }
 
+    const bool cgb = model == LOTUSGB::HardwareModel::CgbE;
+    const std::string label = cgb ? "CGB" : "DMG";
+    const size_t expectedSize = cgb ? 0x900 : 0x100;
     const std::filesystem::path directory(systemDirectory);
-    const char *const candidates[] = {"dmg_boot.bin", "gb_bios.bin"};
+    const char *const candidates[] = {cgb ? "cgb_boot.bin" : "dmg_boot.bin",
+                                      cgb ? "gbc_bios.bin" : "gb_bios.bin"};
     for (const char *filename : candidates) {
         const auto path = directory / filename;
         std::ifstream file(path, std::ios::binary);
@@ -63,29 +139,30 @@ std::vector<uint8_t> loadOptionalDmgBootRom() {
             std::error_code error;
             const bool exists = std::filesystem::exists(path, error);
             if (error)
-                throw std::runtime_error("Could not inspect DMG boot ROM path: " +
+                throw std::runtime_error("Could not inspect " + label + " boot ROM path: " +
                                          path.string() + ": " + error.message());
             if (exists)
-                throw std::runtime_error("Could not read DMG boot ROM: " +
+                throw std::runtime_error("Could not read " + label + " boot ROM: " +
                                          path.string());
             continue;
         }
 
         std::vector<uint8_t> bootRom(std::istreambuf_iterator<char>(file), {});
         if (file.bad())
-            throw std::runtime_error("Error while reading DMG boot ROM: " +
+            throw std::runtime_error("Error while reading " + label + " boot ROM: " +
                                      path.string());
-        if (bootRom.size() != 0x100)
-            throw std::runtime_error("DMG boot ROM must be exactly 256 bytes: " +
+        if (bootRom.size() != expectedSize)
+            throw std::runtime_error(label + " boot ROM must be exactly " +
+                                     std::to_string(expectedSize) + " bytes: " +
                                      path.string());
 
-        const std::string message = "Using DMG boot ROM: " + path.string();
+        const std::string message = "Using " + label + " boot ROM: " + path.string();
         logMessage(RETRO_LOG_INFO, message.c_str());
         return bootRom;
     }
 
-    logMessage(RETRO_LOG_INFO,
-               "No DMG boot ROM found in the system directory; using fast post-boot startup");
+    const std::string missing = "No " + label + " boot ROM found in the system directory; using fast post-boot startup";
+    logMessage(RETRO_LOG_INFO, missing.c_str());
     return {};
 }
 
@@ -96,7 +173,7 @@ retro_input_poll_t inputPollCallback = nullptr;
 retro_input_state_t inputStateCallback = nullptr;
 
 std::vector<uint8_t> loadedRom;
-std::vector<uint8_t> loadedDmgBootRom;
+std::vector<uint8_t> loadedBootRom;
 std::unique_ptr<GameBoySystem> emulatorSystem;
 bool useXrgb8888 = false;
 std::array<uint32_t, VIDEO_PIXEL_COUNT> xrgb8888Frame{};
@@ -214,11 +291,68 @@ bool isSupportedRom(const std::vector<uint8_t> &rom) {
     if (type >= 0x0F && type <= 0x13)
         return rom.size() >= 0x8000 && rom.size() <= 0x400000 &&
                rom.size() % 0x4000 == 0;
+    if (type == 0x22)
+        return rom.size() >= 0x8000 && rom.size() <= MAX_BANKED_ROM_SIZE &&
+               rom.size() % 0x4000 == 0;
     const bool supportedBankedType =
         type == 0x01 || type == 0x02 || type == 0x03;
     return supportedBankedType && rom.size() >= 0x8000 &&
            rom.size() <= MAX_BANKED_ROM_SIZE &&
            rom.size() % 0x4000 == 0;
+}
+
+void disableCartridgeSensor() noexcept {
+    if (!cartridgeSensorEnabled || !sensorInterface.set_sensor_state) {
+        cartridgeSensorEnabled = false;
+        return;
+    }
+    try {
+        sensorInterface.set_sensor_state(
+            0, RETRO_SENSOR_ACCELEROMETER_DISABLE, 0);
+    } catch (const std::exception &error) {
+        logMessage(RETRO_LOG_WARN,
+                   (std::string("Could not disable cartridge accelerometer: ") +
+                    error.what()).c_str());
+    } catch (...) {
+        logMessage(RETRO_LOG_WARN,
+                   "Could not disable cartridge accelerometer");
+    }
+    cartridgeSensorEnabled = false;
+}
+
+bool enableCartridgeSensor() noexcept {
+    if (!sensorInterfaceAvailable || !sensorInterface.set_sensor_state)
+        return false;
+    try {
+        return sensorInterface.set_sensor_state(
+            0, RETRO_SENSOR_ACCELEROMETER_ENABLE, 60);
+    } catch (const std::exception &error) {
+        logMessage(RETRO_LOG_WARN,
+                   (std::string("Could not enable cartridge accelerometer: ") +
+                    error.what()).c_str());
+    } catch (...) {
+        logMessage(RETRO_LOG_WARN,
+                   "Could not enable cartridge accelerometer");
+    }
+    return false;
+}
+
+uint16_t mbc7AxisValue(float acceleration, bool invert) {
+    if (!std::isfinite(acceleration)) {
+        if (!invalidSensorValueReported) {
+            logMessage(RETRO_LOG_WARN,
+                       "Frontend returned a non-finite accelerometer value; using neutral axis value");
+            invalidSensorValueReported = true;
+        }
+        return 0x81D0;
+    }
+    constexpr double CENTER = 0x81D0;
+    constexpr double REGISTER_UNITS_PER_G = 112.0;
+    const double direction = invert ? -1.0 : 1.0;
+    const double raw = std::clamp(
+        CENTER + direction * static_cast<double>(acceleration) * REGISTER_UNITS_PER_G,
+        0.0, 65535.0);
+    return static_cast<uint16_t>(std::lround(raw));
 }
 
 void pollInput() {
@@ -232,6 +366,19 @@ void pollInput() {
         const bool pressed = inputStateCallback &&
             inputStateCallback(0, RETRO_DEVICE_JOYPAD, 0, binding.retroButton) != 0;
         emulatorSystem->setButtonState(binding.gbButton, pressed);
+    }
+    if (loadedCartridgeHasMbc7) {
+        uint16_t x = 0x81D0;
+        uint16_t y = 0x81D0;
+        if (cartridgeSensorEnabled && sensorInterface.get_sensor_input) {
+            x = mbc7AxisValue(
+                sensorInterface.get_sensor_input(0, RETRO_SENSOR_ACCELEROMETER_X),
+                true);
+            y = mbc7AxisValue(
+                sensorInterface.get_sensor_input(0, RETRO_SENSOR_ACCELEROMETER_Y),
+                false);
+        }
+        emulatorSystem->setCartridgeAccelerometerData(x, y);
     }
 }
 
@@ -321,28 +468,56 @@ unsigned retro_api_version(void) {
 }
 
 void retro_init(void) {
+    if (frontendRumbleState)
+        setFrontendRumble(false);
     useXrgb8888 = false;
     logCallback = nullptr;
     frameProblemReported = false;
     emulationFaulted = false;
-    if (environmentCallback) {
+    initializationFaulted = false;
+    rumbleInterface = {};
+    rumbleInterfaceAvailable = false;
+    rumbleUnsupportedReported = false;
+    LOTUSGB::LibretroInternal::invokeCallbackSafely(initializationFaulted, [] {
+        if (!environmentCallback) return;
         retro_log_callback logging{};
-        if (environmentCallback(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
-            logCallback = logging.log;
+        if (environmentCallback(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging)) logCallback = logging.log;
+        sensorInterface = {};
+        sensorInterfaceAvailable =
+            environmentCallback(RETRO_ENVIRONMENT_GET_SENSOR_INTERFACE,
+                                &sensorInterface) &&
+            sensorInterface.set_sensor_state &&
+            sensorInterface.get_sensor_input;
+        rumbleInterface = {};
+        rumbleInterfaceAvailable =
+            environmentCallback(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE,
+                                &rumbleInterface) &&
+            rumbleInterface.set_rumble_state;
+        // Core variables are optional. Unsupported frontends fall back to the
+        // header-based default when GET_VARIABLE is unavailable.
+        environmentCallback(RETRO_ENVIRONMENT_SET_VARIABLES, const_cast<retro_variable *>(CORE_VARIABLES));
         unsigned pixelFormat = RETRO_PIXEL_FORMAT_XRGB8888;
-        useXrgb8888 = environmentCallback(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT,
-                                          &pixelFormat);
-        environmentCallback(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS,
-                            INPUT_DESCRIPTORS);
-    }
+        useXrgb8888 = environmentCallback(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixelFormat);
+        environmentCallback(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, INPUT_DESCRIPTORS);
+    }, [](const char *error) { logMessage(RETRO_LOG_ERROR, error); });
+    emulationFaulted = initializationFaulted;
 }
 
 void retro_deinit(void) {
+    setFrontendRumble(false);
+    disableCartridgeSensor();
     logCallback = nullptr;
     audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
-    loadedDmgBootRom.clear();
+    loadedBootRom.clear();
+    loadedCartridgeHasMbc7 = false;
+    sensorInterface = {};
+    sensorInterfaceAvailable = false;
+    rumbleInterface = {};
+    rumbleInterfaceAvailable = false;
+    frontendRumbleState = false;
+    rumbleUnsupportedReported = false;
     frameProblemReported = false;
     emulationFaulted = false;
 }
@@ -372,7 +547,7 @@ void retro_get_system_av_info(retro_system_av_info *info) {
 void retro_set_controller_port_device(unsigned, unsigned) {}
 
 void retro_reset(void) {
-    if (loadedRom.empty())
+    if (initializationFaulted || loadedRom.empty())
         return;
     try {
         const auto saveRam = emulatorSystem
@@ -382,9 +557,9 @@ void retro_reset(void) {
                                  ? emulatorSystem->getRtcStorage()
                                  : nullptr;
         auto newSystem =
-            std::make_unique<GameBoySystem>(loadedRom, (loadedRom[0x143] & 0x80)
-                ? LOTUSGB::HardwareModel::CgbE : LOTUSGB::HardwareModel::Dmg,
-                saveRam, saveRtc, loadedDmgBootRom);
+            std::make_unique<GameBoySystem>(loadedRom, loadedHardwareModel,
+                saveRam, saveRtc, loadedBootRom);
+        bindCartridgeRumble(*newSystem);
         emulatorSystem = std::move(newSystem);
         frameProblemReported = false;
         emulationFaulted = false;
@@ -472,6 +647,7 @@ bool retro_unserialize(const void *data, size_t size) {
     return LOTUSGB::LibretroInternal::invokeCallbackSafely(
         snapshotFailed, [&] {
             emulatorSystem->loadState(data, size);
+            setFrontendRumble(emulatorSystem->isCartridgeRumbleActive());
             // A valid snapshot may recover a machine faulted after the save.
             emulationFaulted = false;
             frameProblemReported = false;
@@ -483,6 +659,10 @@ void retro_cheat_reset(void) {}
 void retro_cheat_set(unsigned, bool, const char *) {}
 
 bool retro_load_game(const retro_game_info *game) {
+    if (initializationFaulted) {
+        logMessage(RETRO_LOG_ERROR, "Core initialization failed; reinitialize before loading content");
+        return false;
+    }
     constexpr size_t MINIMUM_ROM_SIZE = 0x150;
     constexpr size_t MAXIMUM_ROM_SIZE = 0x800000;
     if (!game || !game->data || game->size < MINIMUM_ROM_SIZE ||
@@ -502,15 +682,26 @@ bool retro_load_game(const retro_game_info *game) {
             logMessage(RETRO_LOG_ERROR, message);
             return false;
         }
-        const auto model = (rom[0x143] & 0x80) ? LOTUSGB::HardwareModel::CgbE : LOTUSGB::HardwareModel::Dmg;
-        std::vector<uint8_t> bootRom = model == LOTUSGB::HardwareModel::Dmg ? loadOptionalDmgBootRom() : std::vector<uint8_t>{};
+        const auto model = selectHardwareModel(rom);
+        std::vector<uint8_t> bootRom = loadOptionalBootRom(model);
         if (model == LOTUSGB::HardwareModel::CgbE)
-            logMessage(RETRO_LOG_INFO, "Native CGB: fast post-boot startup");
+            logMessage(RETRO_LOG_INFO, (rom[0x143] & 0x80) ? "CGB hardware: native cartridge" : "CGB hardware: monochrome compatibility cartridge");
         std::unique_ptr<GameBoySystem> newSystem =
             std::make_unique<GameBoySystem>(rom, model, nullptr, nullptr, bootRom);
+        bindCartridgeRumble(*newSystem);
+        const bool hasMbc7Sensor = rom[0x0147] == 0x22;
+        disableCartridgeSensor();
+        const bool sensorEnabled = hasMbc7Sensor && enableCartridgeSensor();
+        if (hasMbc7Sensor && !sensorEnabled)
+            logMessage(RETRO_LOG_INFO,
+                       "No frontend accelerometer available; MBC7 starts at neutral sensor values");
+        loadedHardwareModel = model;
         loadedRom = std::move(rom);
-        loadedDmgBootRom = std::move(bootRom);
+        loadedBootRom = std::move(bootRom);
         emulatorSystem = std::move(newSystem);
+        loadedCartridgeHasMbc7 = hasMbc7Sensor;
+        cartridgeSensorEnabled = sensorEnabled;
+        invalidSensorValueReported = false;
         frameProblemReported = false;
         emulationFaulted = false;
     } catch (const std::exception &error) {
@@ -528,10 +719,13 @@ bool retro_load_game_special(unsigned, const retro_game_info *, size_t) {
 }
 
 void retro_unload_game(void) {
+    setFrontendRumble(false);
+    disableCartridgeSensor();
     audioDiagnostics.flush();
     emulatorSystem.reset();
     loadedRom.clear();
-    loadedDmgBootRom.clear();
+    loadedBootRom.clear();
+    loadedCartridgeHasMbc7 = false;
     frameProblemReported = false;
     emulationFaulted = false;
 }

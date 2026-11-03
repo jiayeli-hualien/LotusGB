@@ -38,7 +38,18 @@ public:
     void initializeCgbPostBootState();
     const ColorFrameBuffer &getCompletedColorFrameBuffer() const { return completedColorFrameBuffer; }
     void setHBlankCallback(std::function<void()> callback) { hblankCallback = std::move(callback); }
+    void setLcdDisabledCallback(std::function<void()> callback) { lcdDisabledCallback = std::move(callback); }
+    void setOamDmaActiveCallback(std::function<bool()> callback) { oamDmaActiveCallback = std::move(callback); }
+    void setOamDmaPpuReadAddressCallback(std::function<size_t(size_t)> callback) {
+        oamDmaPpuReadAddressCallback = std::move(callback);
+    }
     void writeOamFromDma(size_t offset, uint8_t value);
+    bool isVramWriteBlocked() const { return lcdEnabled() && getMode() == 3; }
+    void onCpuBusAccess(uint16_t address, CpuBusEvent event);
+    // Latch PPU bus permissions across a CGB KEY1/STOP pause.
+    void setDmgCompatibility(bool enabled, bool xPriority);
+    void beginSpeedSwitchPause();
+    void endSpeedSwitchPause();
 
     // Each pixel is a DMG shade index (0 is lightest, 3 is darkest), after
     // applying BGP/OBP0/OBP1. The frontend chooses the actual output colors.
@@ -289,11 +300,18 @@ private:
     void advanceActiveObjectFetch();
     void emitMode3Pixel();
     void prepareScanline();
+    void beginOamScanForLine();
+    void scanOamObject(size_t index);
     void renderPixel(size_t screenX, uint8_t backgroundColorIndex,
                      const ObjectPixel &objectPixel);
     void advanceBackgroundFetch();
     uint16_t backgroundBitplaneAddressOffset(bool high) const;
-    void prepareObjects(bool includeFetchPenalties);
+    void prepareObjects(
+        bool includeFetchPenalties, bool progressiveOamScan,
+        const std::array<ObjectFetchEvent, MAX_OBJECTS_PER_SCANLINE> &scannedObjects,
+        uint8_t scannedObjectCount);
+    void resolveObjectDataForFetch(ObjectFetchEvent &event);
+    uint8_t readObjectOamForPpu(size_t address) const;
     void readObjectTilePlane(ObjectFetchEvent &event, bool high) const;
     void decodeObjectTileRow(ObjectFetchEvent &event) const;
     uint8_t getTilePixel(uint8_t tileIndex, uint8_t x, uint8_t y,
@@ -304,7 +322,11 @@ private:
 
     IInterruptController &interrupts;
     IVideoRam *externalVideoRam;
-    bool cgbMode;
+    bool cgbMode; // Physical hardware; CGB quirks remain in compatibility mode.
+    bool dmgCompatibility = false;
+    bool cgbXPriority = false;
+    bool nativeColorMode() const { return cgbMode && !dmgCompatibility; }
+    uint8_t speedSwitchPpuMode = 3; // 3 also denotes unrestricted, outside a pause.
     ColorFrameBuffer colorFrameBuffer{};
     ColorFrameBuffer completedColorFrameBuffer{};
     std::array<uint8_t, 64> cgbBgPalettes{};
@@ -312,6 +334,9 @@ private:
     uint8_t cgbBgIndex = 0, cgbObjIndex = 0;
     uint8_t cgbFetchAttributes = 0, cgbFetchRow = 0;
     std::function<void()> hblankCallback;
+    std::function<void()> lcdDisabledCallback;
+    std::function<bool()> oamDmaActiveCallback;
+    std::function<size_t(size_t)> oamDmaPpuReadAddressCallback;
     uint16_t cgbColor(bool object, uint8_t palette, uint8_t color) const;
     std::array<uint8_t, 0x2000> videoRam{};
     std::array<uint8_t, OAM_SIZE> objectRam{};
@@ -337,6 +362,7 @@ private:
     bool startupScanline = false;
     bool lycCoincidence = true;
     bool statInterruptLine = false;
+    uint8_t statWriteOverrideTCycles = 0;
 };
 
 }
