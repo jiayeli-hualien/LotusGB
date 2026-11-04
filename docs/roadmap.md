@@ -12,9 +12,12 @@ M6 rewind validation is complete for the bounded Mac and Deck scope: the Mac
 GB Pong session passed, and the user confirmed R rewind and normal control
 after release in Ping Pong on Deck. Shader startup works by user report;
 visual and performance acceptance was not separately recorded. M7's bounded
-automated input/presentation checkpoint is complete. M8 now passes its first native CGB-E playability checkpoint: color Acid2,
+automated input/presentation checkpoint is complete. M8 passed its first native CGB-E playability checkpoint: color Acid2,
 Tobu Tobu Girl Deluxe controls/state replay and a macOS RetroArch session.
-Further CGB hardware accuracy and game compatibility remain separate work.
+M10's bounded CGB-E Pokémon Crystal single-player target also passed user
+acceptance after the current core update: gameplay, saving and save persistence
+after reopening Steam RetroArch. Broader CGB hardware accuracy and game
+compatibility remain separate work.
 
 Rewind-audio follow-up (2026-11-02): snapshot serialization now reuses the
 immutable ROM identity rather than hashing the full ROM on every frame. The
@@ -39,6 +42,13 @@ M9 adds a bounded CGB gameplay and battery-SRAM regression. Broader CGB title
 compatibility remains exploratory; public regressions use original fixtures
 and licensed homebrew.
 
+Routine Steam Deck revalidation is deferred by user decision. Use macOS Steam
+RetroArch as the representative frontend for ongoing acceptance; retain the
+existing Deck results and reopen Deck checks if a platform-specific issue or a
+release target makes them necessary. Similar RetroArch behavior across
+platforms is the working assumption, not a claim that every host difference
+has been tested.
+
 | Order | Milestone | Deliverable and exit condition |
 | --- | --- | --- |
 | M1 — complete (2026-10-28) | Meaningful game progress | The pinned Adjustris run visibly fills and clears a bottom row, then moves the next piece right. The local checker rejects an incomplete row and a post-clear piece that does not respond. See the [profile and report](homebrew-check.md#adjustris-row-clear-and-post-clear-control-check). |
@@ -51,8 +61,9 @@ and licensed homebrew.
 | M7 — bounded automated checkpoint complete (2026-11-01) | Input response and presentation pacing | Tobu's tested short/held actions now respond in call 2 under the default bounded VBlank policy, versus call 3 in the fixed diagnostic baseline. The policy distinguishes real completion, healthy host repeat, STOP and failure; hardware clocks remain shared. Dual-mode audio/coherent-video/state/rewind regressions pass. See the [current policy and evidence](input-latency.md#current-presentation-policy). Manual Mac/Deck feel, listening and physical latency are deferred, not claimed as passed. |
 | M8 — playable checkpoint passed (2026-11-01) | Native CGB-E through RetroArch | Banked RAM, color PPU, KEY1 speed switching, VRAM DMA and model-tagged snapshots. Exact cgb-acid2 pixels and Deluxe directional/flap/dash response with state replay pass; installed macOS RetroArch loads/restores gameplay. Broader game compatibility and hardware accuracy remain work. See the [canonical evidence and limits](cgb-development.md). |
 | M9 — bounded checkpoint complete (2026-11-01) | CGB gameplay and battery SRAM | CI fixtures cover CGB-compatible MBC1 and MBC5, color/input gameplay, battery-backed progress and fresh-content SRAM restore. Optional local `make test-cgb-homebrew` adds Big2Small MBC5 save/resume and Deluxe MBC1 gameplay/state replay. See [CGB evidence](cgb-development.md#reproducible-checks). |
-| M10 — in progress | CGB-E Pokémon Crystal single-player playability | Original CGB fixtures cover MBC1/MBC5 gameplay and battery RAM, MBC5 ROM banks $100/$1FF and 128-KiB SRAM gameplay/state/battery replay, plus MBC3 guest RTC latch/read/write, running-clock offline progression/day rollover and fresh-content battery import in both libretro presentation builds. The user reports a prior manual Crystal single-player pass; the date, ROM region and route/coverage were not recorded. After the 2026-11-04 core update, the user confirmed gameplay, in-game save and save persistence after reopening Steam RetroArch. This is a bounded post-update smoke regression, not independent proof of full-story completion or real-title RTC progression. See the [CGB playability record](cgb-development.md#pokemon-crystal-post-update-check-2026-11-04). Keep ROMs and derived artifacts private; use licensed homebrew and original fixtures for reproducible public checks. |
-| Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and other systems need a concrete user or distribution target before becoming milestones. |
+| M10 — bounded user acceptance passed (2026-11-04) | CGB-E Pokémon Crystal single-player playability | Original CGB fixtures cover MBC1/MBC5 gameplay and battery RAM, MBC5 ROM banks $100/$1FF and 128-KiB SRAM gameplay/state/battery replay, plus MBC3 guest RTC latch/read/write, running-clock offline progression/day rollover and fresh-content battery import in both libretro presentation builds. The user reports Crystal single-player playability and accepted the updated macOS Steam RetroArch core after confirming gameplay, in-game saving and save persistence after reopening. ROM region and route/coverage were not recorded; this closes the bounded personal-use target, not all CGB game compatibility, full-story verification or real-title RTC progression. See the [CGB playability record](cgb-development.md#pokemon-crystal-post-update-check-2026-11-04). Keep ROMs and derived artifacts private; use licensed homebrew and original fixtures for reproducible public checks. |
+| GBA — licensed ARM and Thumb instruction suites passed (2026-11-05) | Independent LotusGBA libretro core | The separate core's automated callback test runs both MIT-licensed suites (with unlicensed Nintendo logo bytes removed), checks each Mode 4 “All tests passed” glyph, and retains ARM/ARM→Thumb Mode 3 boot fixtures. This verifies the instruction groups in those suites and basic rendering, not game playability. BIOS execution, accurate timing, interrupts, DMA, audio, save hardware and other video modes remain incomplete. See [GBA status and evidence](gba-development.md). |
+| Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and systems beyond GBA need a concrete user or distribution target before becoming milestones. |
 
 ### Active automatic route — GB/CGB specification coverage
 
@@ -245,8 +256,11 @@ the HALT bug makes interrupt return target HALT itself, and `RETI` re-executes
 it after acknowledging the request. The full local Mooneye interrupt group
 still passes 11/11, including its distinct later-arriving-interrupt HALT case.
 Current gameplay checkpoints do not mean all important GB/CGB specifications
-are complete. Review those gaps before proposing a transition to GBA. Other
-systems remain deferred during this work.
+are complete; continue the GB/CGB spec work as a separate automated route.
+GBA now has a separate libretro core and passes the licensed ARM and Thumb
+instruction suites with Mode 4 success output. Further hardware work should
+follow a named, licensed homebrew game target and the test ROMs it requires.
+Other systems remain deferred.
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
 

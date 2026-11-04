@@ -16,15 +16,16 @@ cycle with Deluxe's CGB/MBC1 gameplay and input-state replay.
 
 ## Pokemon Crystal post-update check (2026-11-04)
 
-The user reports that Pokémon Crystal single-player gameplay had passed before
-the latest core update. After installing the current Universal core into the
-macOS Steam RetroArch distribution, the user rechecked that Crystal runs, an
-in-game save can be made, and the save is still usable after reopening. The
+The user reports that Pokémon Crystal single-player playability was complete
+before the latest core update. After installing the current Universal core into
+the macOS Steam RetroArch distribution, the user confirmed that Crystal runs,
+an in-game save can be made, and the save is still usable after reopening. The
+user accepted this updated build for the bounded personal-use target. The
 installed core SHA-256 is
-`2dd7b70c1131383796da1c8e684e488ff6d5ec65eecf9abd9000d1f8292f87fa`. This is
-a post-update smoke regression; the earlier playability report did not record
-the ROM region, exact route/coverage, or test date, and the new check does not
-independently establish full-story completion or long-term RTC progression.
+`2dd7b70c1131383796da1c8e684e488ff6d5ec65eecf9abd9000d1f8292f87fa`. The ROM
+region and earlier route/coverage were not recorded; this post-update check
+confirms the tested play/save/resume path, not every story route or long-term
+real-title RTC progression.
 
 The initial hardware target is **CGB-E**. The frontend selects native CGB when
 cartridge header `$0143` bit 7 is set, including dual-mode games distributed

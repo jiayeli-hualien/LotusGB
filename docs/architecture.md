@@ -19,6 +19,13 @@ the optional libretro rumble interface, and MBC7 includes serial EEPROM and
 host-provided accelerometer input. Support remains bounded
 by the validation matrix.
 
+The experimental LotusGBA core is a separate system under `src/gba` with its
+own libretro adapter under `src/gba_libretro`; it does not extend
+`GameBoySystem` or the LotusGB core. Its first-stage status and limitations are
+tracked in the [GBA development record](gba-development.md). The licensed ARM
+and Thumb instruction suites pass through its public callbacks; this does not
+yet establish GBA game playability.
+
 The PPU renders background, window and object pixels and implements selected
 mid-scanline register behavior. Its Mode 3 BG/OBJ fetch arbitration and some
 raster timing remain approximate. The [PPU guide](ppu-scrolling.md) records the
@@ -175,6 +182,8 @@ DMG path. Exact contracts, tests and remaining scope live in the
 | Memory and hardware | `src/lib/address_bus.cpp`, `src/lib/cartridge.cpp`, `src/lib/memory_region.cpp`, `src/lib/timer.cpp`, `src/lib/dmg_apu.cpp`, `src/lib/dmg_ppu.cpp`, `src/lib/dmg_oam_dma.cpp` | Implement mapped memory regions, ROM-only/MBC1/MBC2/MBC3/MBC5 cartridges, cartridge RAM, and DMG devices. |
 | PPU video storage | `src/lib/include/video_ram.hpp`, `src/lib/cgb_memory.cpp`, `src/lib/dmg_ppu.cpp` | Separate selected-bank CPU storage access from explicit-bank PPU fetches, while the PPU owns CPU access windows. |
 | Frontend adapter | `src/libretro/libretro_core.cpp` | Load supported content, poll RetroArch input, run frames, contain runtime exceptions, and deliver video/audio callbacks. |
+| GBA system / CPU | `src/gba/gba_system.cpp`, `src/gba/arm7tdmi.cpp` | Separate experimental ARM7TDMI machine and GBA memory/video model; no GB/CGB CPU or hardware composition is reused. |
+| GBA frontend adapter | `src/gba_libretro/libretro_gba_core.cpp` | Independent `LotusGBA` libretro core and `.info` identity. |
 | Tests and test ROMs | `src/unit_test/`, `tests/roms/` | Check observable component, system, rendering, and frontend behavior. |
 
 ## Development workflow
