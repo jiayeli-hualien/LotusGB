@@ -26,11 +26,21 @@ void Arm7Tdmi::reset(uint32_t entryPoint, uint32_t stackPointer) {
     registers_.fill(0);
     userBank_.fill(0);
     fiqBank_.fill(0);
+    for (auto &bank : exceptionRegisterBanks_)
+        bank.fill(0);
+    savedStatusBanks_.fill(0);
+    irqSavedRegisters_.fill(0);
     registers_[13] = stackPointer;
     registers_[14] = 0;
+    userBank_[5] = stackPointer;
     pc_ = entryPoint & ~uint32_t{3};
     cpsr_ = 0xDF; // HLE handoff into System mode with IRQ/FIQ masked.
-    fiqSpsr_ = 0;
+    irqReturnProgramCounter_ = 0;
+    irqReturnStatus_ = 0;
+    irqActive_ = false;
+    halted_ = false;
+    haltOnAnyEnabledInterrupt_ = false;
+    haltInterruptMask_ = 0;
     fault_.clear();
 }
 
@@ -117,13 +127,98 @@ void Arm7Tdmi::switchMode(uint32_t mode) {
             fiqBank_[index] = registers_[index + 8];
             registers_[index + 8] = userBank_[index];
         }
-    } else if (mode == 0x11) { // shared User/System bank -> FIQ
+    } else if (const int exception = exceptionModeIndex(oldMode); exception >= 0) {
+        exceptionRegisterBanks_[static_cast<size_t>(exception)] = {
+            registers_[13], registers_[14]};
+    } else {
         for (unsigned index = 0; index < 7; ++index) {
             userBank_[index] = registers_[index + 8];
-            registers_[index + 8] = fiqBank_[index];
         }
     }
+
+    if (mode == 0x11) { // shared User/System bank -> FIQ
+        for (unsigned index = 0; index < 7; ++index)
+            registers_[index + 8] = fiqBank_[index];
+    } else if (const int exception = exceptionModeIndex(mode); exception >= 0) {
+        const auto &bank = exceptionRegisterBanks_[static_cast<size_t>(exception)];
+        registers_[13] = bank[0];
+        registers_[14] = bank[1];
+    } else {
+        for (unsigned index = 0; index < 7; ++index)
+            registers_[index + 8] = userBank_[index];
+    }
     cpsr_ = (cpsr_ & ~MODE_MASK) | mode;
+}
+
+int Arm7Tdmi::exceptionModeIndex(uint32_t mode) {
+    switch (mode & 0x1F) {
+    case 0x12: return 0; // IRQ
+    case 0x13: return 1; // Supervisor
+    case 0x17: return 2; // Abort
+    case 0x1B: return 3; // Undefined
+    default: return -1;
+    }
+}
+
+uint32_t *Arm7Tdmi::savedStatusForMode(uint32_t mode) {
+    mode &= 0x1F;
+    if (mode == 0x11)
+        return &savedStatusBanks_[0];
+    const int exception = exceptionModeIndex(mode);
+    if (exception < 0)
+        return nullptr;
+    return &savedStatusBanks_[static_cast<size_t>(exception + 1)];
+}
+
+void Arm7Tdmi::wakeFromInterrupts(uint16_t flags, uint16_t enable) {
+    if (!halted_)
+        return;
+    if (haltOnAnyEnabledInterrupt_ ? (flags & enable) != 0
+                                   : (flags & haltInterruptMask_) != 0) {
+        halted_ = false;
+        haltOnAnyEnabledInterrupt_ = false;
+        haltInterruptMask_ = 0;
+    }
+}
+
+bool Arm7Tdmi::enterIrq(uint32_t handlerAddress) {
+    if (irqDisabled() || irqActive_)
+        return false;
+    uint32_t *savedStatus = savedStatusForMode(0x12);
+    if (!savedStatus)
+        return false;
+    *savedStatus = cpsr_;
+    irqSavedRegisters_ = {registers_[0], registers_[1], registers_[2],
+                          registers_[3], registers_[12]};
+    irqReturnProgramCounter_ = pc_;
+    irqReturnStatus_ = cpsr_;
+    switchMode(0x12);
+    // The HLE BIOS vector saves the caller context, invokes the pointer at
+    // 0x03007FFC, then restores that context and returns from the exception.
+    registers_[14] = IRQ_RETURN_SENTINEL;
+    cpsr_ |= CPSR_I;
+    cpsr_ &= ~CPSR_T;
+    pc_ = handlerAddress == 0 ? IRQ_RETURN_SENTINEL
+                              : handlerAddress & ~uint32_t{3};
+    irqActive_ = true;
+    halted_ = false;
+    haltOnAnyEnabledInterrupt_ = false;
+    haltInterruptMask_ = 0;
+    return true;
+}
+
+void Arm7Tdmi::finishIrqReturn() {
+    if (!irqActive_ || (cpsr_ & 0x1F) != 0x12)
+        return;
+    switchMode(irqReturnStatus_ & 0x1F);
+    registers_[0] = irqSavedRegisters_[0];
+    registers_[1] = irqSavedRegisters_[1];
+    registers_[2] = irqSavedRegisters_[2];
+    registers_[3] = irqSavedRegisters_[3];
+    registers_[12] = irqSavedRegisters_[4];
+    cpsr_ = irqReturnStatus_;
+    pc_ = irqReturnProgramCounter_;
+    irqActive_ = false;
 }
 
 uint32_t Arm7Tdmi::readUserRegister(unsigned index) const {
@@ -145,9 +240,10 @@ bool Arm7Tdmi::executeStatusTransfer(uint32_t instruction,
         const bool saved = (instruction & (1u << 22)) != 0;
         const unsigned rd = (instruction >> 12) & 0xF;
         if (saved) {
-            if ((cpsr_ & 0x1F) != 0x11)
+            const uint32_t *status = savedStatusForMode(cpsr_ & 0x1F);
+            if (!status)
                 return false;
-            registers_[rd] = fiqSpsr_;
+            registers_[rd] = *status;
         } else {
             registers_[rd] = cpsr_;
         }
@@ -178,9 +274,10 @@ bool Arm7Tdmi::executeStatusTransfer(uint32_t instruction,
     if (fieldMask & 8) mask |= 0xFF000000;
 
     if (saved) {
-        if ((cpsr_ & 0x1F) != 0x11)
+        uint32_t *status = savedStatusForMode(cpsr_ & 0x1F);
+        if (!status)
             return false;
-        fiqSpsr_ = (fiqSpsr_ & ~mask) | (value & mask);
+        *status = (*status & ~mask) | (value & mask);
     } else {
         // User mode may update only condition flags. This prototype runs in
         // System mode and supports the control and flag fields used by tests.
@@ -188,7 +285,8 @@ bool Arm7Tdmi::executeStatusTransfer(uint32_t instruction,
             mask &= 0xF0000000;
         const uint32_t newCpsr = (cpsr_ & ~mask) | (value & mask);
         const uint32_t mode = newCpsr & 0x1F;
-        if (mode != 0x10 && mode != 0x11 && mode != 0x1F)
+        if (mode != 0x10 && mode != 0x11 && mode != 0x12 &&
+            mode != 0x13 && mode != 0x17 && mode != 0x1B && mode != 0x1F)
             return false;
         const uint32_t nonModeMask = mask & ~uint32_t{0x1F};
         cpsr_ = (cpsr_ & ~nonModeMask) | (value & nonModeMask);
@@ -198,8 +296,7 @@ bool Arm7Tdmi::executeStatusTransfer(uint32_t instruction,
     return true;
 }
 
-bool Arm7Tdmi::executeSoftwareInterrupt(uint32_t instruction) {
-    const uint32_t service = instruction & 0x00FFFFFF;
+bool Arm7Tdmi::executeSoftwareInterrupt(uint32_t service, GbaBus &bus) {
     if (service == 0x000006) { // BIOS Div
         const int32_t numerator = static_cast<int32_t>(registers_[0]);
         const int32_t denominator = static_cast<int32_t>(registers_[1]);
@@ -220,6 +317,36 @@ bool Arm7Tdmi::executeSoftwareInterrupt(uint32_t instruction) {
         registers_[3] = quotient < 0
             ? static_cast<uint32_t>(-static_cast<int64_t>(quotient))
             : static_cast<uint32_t>(quotient);
+        return true;
+    }
+    if (service == 0x000002) { // BIOS Halt
+        halted_ = true;
+        haltOnAnyEnabledInterrupt_ = true;
+        haltInterruptMask_ = 0;
+        return true;
+    }
+    if (service == 0x000004 || service == 0x000005) { // IntrWait / VBlankIntrWait
+        const bool discard = service == 0x000005 || registers_[0] != 0;
+        const uint16_t mask = static_cast<uint16_t>(
+            (service == 0x000005 ? 1u : registers_[1]) & 0x3FFFu);
+        bus.write16(0x04000208, 1); // BIOS wait services force IME on.
+        if (discard) {
+            bus.write16(0x04000202, mask);
+            bus.write16(0x03007FF8, mask);
+        } else {
+            const uint16_t pending = static_cast<uint16_t>(
+                (bus.read16(0x04000202) | bus.read16(0x03007FF8)) & mask);
+            if (pending != 0) {
+                bus.write16(0x04000202, pending);
+                bus.write16(0x03007FF8,
+                            static_cast<uint16_t>(bus.read16(0x03007FF8) &
+                                                  ~mask));
+                return true;
+            }
+        }
+        halted_ = true;
+        haltOnAnyEnabledInterrupt_ = false;
+        haltInterruptMask_ = mask;
         return true;
     }
     return false;
@@ -499,7 +626,11 @@ bool Arm7Tdmi::executeDataProcessing(uint32_t instruction,
         }
     }
     if (exceptionReturn) {
-        const uint32_t savedStatus = fiqSpsr_;
+        const uint32_t *savedStatusPointer =
+            savedStatusForMode(cpsr_ & 0x1F);
+        if (!savedStatusPointer)
+            return false;
+        const uint32_t savedStatus = *savedStatusPointer;
         switchMode(savedStatus & 0x1F);
         cpsr_ = savedStatus;
         if (writesResult)
@@ -691,7 +822,7 @@ bool Arm7Tdmi::executeBlockTransfer(uint32_t instruction, GbaBus &bus,
 bool Arm7Tdmi::executeArm(uint32_t instruction, GbaBus &bus,
                           uint32_t instructionAddress) {
     if ((instruction & 0x0F000000) == 0x0F000000)
-        return executeSoftwareInterrupt(instruction);
+        return executeSoftwareInterrupt(instruction & 0x00FFFFFF, bus);
     if ((instruction & 0x0FB00FF0) == 0x01000090)
         return executeSwap(instruction, bus, instructionAddress);
     if ((instruction & 0x0FC000F0) == 0x00000090 ||
@@ -1137,7 +1268,9 @@ bool Arm7Tdmi::executeThumb(uint16_t instruction, GbaBus &bus,
 
     if ((instruction & 0xF000) == 0xD000) { // Conditional branch / SWI
         const unsigned condition = (instruction >> 8) & 0xF;
-        if (condition >= 0xE)
+        if (condition == 0xF)
+            return executeSoftwareInterrupt(instruction & 0xFF, bus);
+        if (condition == 0xE)
             return false;
         if (conditionPassed(condition)) {
             int32_t offset = static_cast<int8_t>(instruction & 0xFF);
@@ -1181,6 +1314,12 @@ bool Arm7Tdmi::executeThumb(uint16_t instruction, GbaBus &bus,
 Arm7Tdmi::StepResult Arm7Tdmi::step(GbaBus &bus) {
     if (!fault_.empty())
         return {};
+    if (irqActive_ && pc_ == IRQ_RETURN_SENTINEL) {
+        finishIrqReturn();
+        return {true, 1};
+    }
+    if (halted_)
+        return {true, 1};
 
     const uint32_t instructionAddress = pc_;
     if (thumbState()) {

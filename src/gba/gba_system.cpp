@@ -10,6 +10,10 @@ constexpr uint32_t REG_DISPCNT = 0x04000000;
 constexpr uint32_t REG_DISPSTAT = 0x04000004;
 constexpr uint32_t REG_VCOUNT = 0x04000006;
 constexpr uint32_t REG_KEYINPUT = 0x04000130;
+constexpr uint32_t REG_IE = 0x04000200;
+constexpr uint32_t REG_IF = 0x04000202;
+constexpr uint32_t REG_IME = 0x04000208;
+constexpr uint16_t IRQ_VBLANK = 1u << 0;
 constexpr uint32_t VRAM_BASE = 0x06000000;
 
 } // namespace
@@ -55,6 +59,12 @@ uint8_t GbaSystem::read8(uint32_t address) const {
             const uint16_t value = static_cast<uint16_t>(~pressedButtons_) & 0x03FF;
             return static_cast<uint8_t>(value >> ((address - REG_KEYINPUT) * 8));
         }
+        if (address == REG_IE + 1 || address == REG_IF + 1)
+            return static_cast<uint8_t>(io_[address - 0x04000000] & 0x3F);
+        if (address == REG_IME)
+            return static_cast<uint8_t>(io_[address - 0x04000000] & 1);
+        if (address == REG_IME + 1)
+            return 0;
         return io_[address - 0x04000000];
     }
     if (address >= 0x05000000 && address < 0x06000000)
@@ -94,6 +104,34 @@ void GbaSystem::write8(uint32_t address, uint8_t value) {
     if (address >= 0x04000000 && address < 0x04000400) {
         if (address == REG_KEYINPUT || address == REG_KEYINPUT + 1)
             return;
+        if (address == REG_VCOUNT || address == REG_VCOUNT + 1)
+            return;
+        if (address == REG_DISPSTAT) {
+            auto &stored = io_[address - 0x04000000];
+            stored = static_cast<uint8_t>((stored & ~0x38u) | (value & 0x38u));
+            return;
+        }
+        if (address == REG_DISPSTAT + 1) {
+            io_[address - 0x04000000] = value;
+            return;
+        }
+        if (address == REG_IE || address == REG_IE + 1) {
+            io_[address - 0x04000000] = address == REG_IE
+                ? value
+                : static_cast<uint8_t>(value & 0x3F);
+            return;
+        }
+        if (address == REG_IF || address == REG_IF + 1) {
+            io_[address - 0x04000000] = static_cast<uint8_t>(
+                io_[address - 0x04000000] & ~value);
+            return;
+        }
+        if (address == REG_IME) {
+            io_[address - 0x04000000] = value & 1;
+            return;
+        }
+        if (address == REG_IME + 1)
+            return;
         io_[address - 0x04000000] = value;
         return;
     }
@@ -122,7 +160,17 @@ void GbaSystem::write32(uint32_t address, uint32_t value) {
 }
 
 void GbaSystem::tick(uint32_t cycles) {
+    const uint16_t oldLine = static_cast<uint16_t>(frameCycle_ / 1232);
     frameCycle_ = (frameCycle_ + cycles) % CYCLES_PER_FRAME;
+    const uint16_t newLine = static_cast<uint16_t>(frameCycle_ / 1232);
+    if (oldLine < 160 && newLine >= 160) {
+        const size_t offset = REG_IF - 0x04000000;
+        const uint16_t flags = static_cast<uint16_t>(io_[offset] |
+            (static_cast<uint16_t>(io_[offset + 1]) << 8));
+        const uint16_t requested = static_cast<uint16_t>(flags | IRQ_VBLANK);
+        io_[offset] = static_cast<uint8_t>(requested);
+        io_[offset + 1] = static_cast<uint8_t>(requested >> 8);
+    }
     updateDisplayStatus();
 }
 
@@ -133,6 +181,9 @@ void GbaSystem::updateDisplayStatus() {
     uint16_t status = static_cast<uint16_t>(io_[REG_DISPSTAT - 0x04000000] |
         (static_cast<uint16_t>(io_[REG_DISPSTAT - 0x04000000 + 1]) << 8));
     status = static_cast<uint16_t>((status & ~0x0007) | (line >= 160 ? 1 : 0));
+    const uint8_t compare = io_[REG_DISPSTAT - 0x04000000 + 1];
+    const bool matched = line == compare;
+    status = static_cast<uint16_t>((status & ~0x0004) | (matched ? 4 : 0));
     io_[REG_DISPSTAT - 0x04000000] = static_cast<uint8_t>(status);
     io_[REG_DISPSTAT - 0x04000000 + 1] = static_cast<uint8_t>(status >> 8);
 }
@@ -168,6 +219,14 @@ void GbaSystem::renderFrame() {
 GbaSystem::FrameResult GbaSystem::runFrame() {
     uint32_t elapsed = 0;
     while (elapsed < CYCLES_PER_FRAME) {
+        const uint16_t flags = read16(REG_IF);
+        const uint16_t enable = read16(REG_IE);
+        cpu_.wakeFromInterrupts(flags, enable);
+        if ((read16(REG_IME) & 1) != 0 && (flags & enable) != 0 &&
+            !cpu_.irqDisabled()) {
+            const uint32_t handler = read32(0x03007FFC);
+            cpu_.enterIrq(handler != 0 ? handler : 0x00000018);
+        }
         const Arm7Tdmi::StepResult result = cpu_.step(*this);
         if (!result.success)
             return {false, elapsed};

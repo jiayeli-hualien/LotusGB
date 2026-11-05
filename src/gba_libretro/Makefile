@@ -33,6 +33,7 @@ $(build_dir)/gba_libretro_core_test: gba_libretro_core_test.cpp libretro_gba_cor
 		$(gba_sources) ../../tests/include/gba_boot_rom.hpp \
 		../../tests/roms/gba-arm-tests/arm.gba \
 		../../tests/roms/gba-thumb-tests/thumb.gba \
+		../../tests/roms/gba-pong/pong.gba \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
 		../libretro/include/libretro.h | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ gba_libretro_core_test.cpp \
