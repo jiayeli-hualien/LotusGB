@@ -63,6 +63,7 @@ has been tested.
 | M9 — bounded checkpoint complete (2026-11-01) | CGB gameplay and battery SRAM | CI fixtures cover CGB-compatible MBC1 and MBC5, color/input gameplay, battery-backed progress and fresh-content SRAM restore. Optional local `make test-cgb-homebrew` adds Big2Small MBC5 save/resume and Deluxe MBC1 gameplay/state replay. See [CGB evidence](cgb-development.md#reproducible-checks). |
 | M10 — bounded user acceptance passed (2026-11-04) | CGB-E Pokémon Crystal single-player playability | Original CGB fixtures cover MBC1/MBC5 gameplay and battery RAM, MBC5 ROM banks $100/$1FF and 128-KiB SRAM gameplay/state/battery replay, plus MBC3 guest RTC latch/read/write, running-clock offline progression/day rollover and fresh-content battery import in both libretro presentation builds. The user reports Crystal single-player playability and accepted the updated macOS Steam RetroArch core after confirming gameplay, in-game saving and save persistence after reopening. ROM region and route/coverage were not recorded; this closes the bounded personal-use target, not all CGB game compatibility, full-story verification or real-title RTC progression. See the [CGB playability record](cgb-development.md#pokemon-crystal-post-update-check-2026-11-04). Keep ROMs and derived artifacts private; use licensed homebrew and original fixtures for reproducible public checks. |
 | GBA — Pong and battery-save checkpoint passed (automated, 2026-11-08) | Independent LotusGBA libretro core | The callback test passes the MIT ARM and Thumb instruction suites, then runs the MIT-licensed Pong-Homebrew-GBA ROM through its tested gameplay path. Original fixtures verify SRAM, 64-KiB Flash, banked 128-KiB Flash, and DMA-driven 512-byte/8-KiB EEPROM read/write and retention; libretro save-memory exposure is checked for each family. This is implementation and synthetic-test evidence, not manual RetroArch acceptance or commercial-game save validation. Accurate timing, RTC, sound FIFO DMA and other video modes remain incomplete. See [GBA status and evidence](gba-development.md). |
+| GBA — basic audio path passed (automated, 2026-11-08) | PSG, Direct Sound FIFO and RetroArch audio output | Synthetic system tests exercise PSG stereo output and timer-driven FIFO playback through DMA1 special timing. A libretro callback check receives about 803 stereo frames per video frame at 48 kHz. This confirms the implemented path and test fixtures only; it is not game-level listening or hardware-accuracy evidence. See [GBA status and evidence](gba-development.md). |
 | Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and systems beyond GBA need a concrete user or distribution target before becoming milestones. |
 
 ### Active automatic route — GB/CGB specification coverage
@@ -262,9 +263,10 @@ instruction suites, runs the tested Pong gameplay path through the libretro
 callbacks, and exposes marker-detected SRAM, Flash and DMA EEPROM battery
 memory. Synthetic tests cover the save protocols and persistence, but
 commercial-game save behavior and manual RetroArch persistence have not been
-verified. This remains a bounded compatibility checkpoint; timing, RTC, sound
-FIFO DMA and other video modes are still incomplete. Other systems remain
-deferred.
+verified. The core now has an automated baseline for PSG audio, Direct Sound
+FIFO playback, timer-driven sound DMA and libretro audio callbacks; game-level
+listening, exact audio timing/analog behavior, RTC/GPIO and other video modes
+remain incomplete. Other systems remain deferred.
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
 

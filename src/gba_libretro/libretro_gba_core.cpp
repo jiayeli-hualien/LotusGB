@@ -37,8 +37,6 @@ std::unique_ptr<GbaSystem> gbaSystem;
 std::vector<uint8_t> loadedRom;
 std::array<uint32_t, PIXELS> xrgbFrame{};
 std::array<uint16_t, PIXELS> rgb1555Frame{};
-std::array<int16_t, 1100> silence{};
-uint64_t audioRemainder = 0;
 bool useXrgb8888 = false;
 bool coreFaulted = false;
 
@@ -182,16 +180,16 @@ void submitVideo() {
     videoCallback(rgb1555Frame.data(), WIDTH, HEIGHT, WIDTH * sizeof(uint16_t));
 }
 
-void submitSilence() {
-    const uint64_t total = audioRemainder +
-        static_cast<uint64_t>(32768) * GbaSystem::CYCLES_PER_FRAME;
-    const size_t frames = static_cast<size_t>(total / GBA_CLOCK_HZ);
-    audioRemainder = total % GBA_CLOCK_HZ;
+void submitAudio() {
+    if (!gbaSystem)
+        return;
+    const std::vector<int16_t> samples = gbaSystem->takeAudioSamples();
+    const size_t frames = samples.size() / 2;
     if (audioBatchCallback) {
-        audioBatchCallback(silence.data(), frames);
+        audioBatchCallback(samples.data(), frames);
     } else if (audioCallback) {
         for (size_t i = 0; i < frames; ++i)
-            audioCallback(0, 0);
+            audioCallback(samples[i * 2], samples[i * 2 + 1]);
     }
 }
 
@@ -245,7 +243,6 @@ void retro_set_input_state(retro_input_state_t callback) { inputStateCallback = 
 
 void retro_init(void) {
     coreFaulted = false;
-    audioRemainder = 0;
     if (environmentCallback) {
         retro_log_callback logging{};
         if (environmentCallback(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
@@ -264,7 +261,6 @@ void retro_deinit(void) {
     loadedRom.clear();
     logCallback = nullptr;
     coreFaulted = false;
-    audioRemainder = 0;
 }
 
 void retro_get_system_info(retro_system_info *info) {
@@ -286,7 +282,7 @@ void retro_get_system_av_info(retro_system_av_info *info) {
     info->geometry.max_height = HEIGHT;
     info->geometry.aspect_ratio = 3.0f / 2.0f;
     info->timing.fps = GBA_FPS;
-    info->timing.sample_rate = 32768.0;
+    info->timing.sample_rate = GbaSystem::AUDIO_SAMPLE_RATE;
 }
 
 void retro_set_controller_port_device(unsigned, unsigned) {}
@@ -296,7 +292,6 @@ void retro_reset(void) {
         return;
     gbaSystem->reset();
     coreFaulted = false;
-    audioRemainder = 0;
 }
 
 void retro_run(void) {
@@ -313,7 +308,7 @@ void retro_run(void) {
             return;
         }
         submitVideo();
-        submitSilence();
+        submitAudio();
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());
         coreFaulted = true;
@@ -346,7 +341,6 @@ bool retro_load_game(const retro_game_info *game) {
         loadedRom = std::move(candidate);
         gbaSystem = std::move(candidateSystem);
         coreFaulted = false;
-        audioRemainder = 0;
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());
         return false;

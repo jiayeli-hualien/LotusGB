@@ -44,7 +44,7 @@ The normal `make test` route also runs this GBA core test.
 
 - Libretro identifies itself as `LotusGBA`, accepts in-memory `.gba` content,
   reports 240×160 at the GBA frame rate, reads standard joypad input and submits
-  silence while audio hardware is absent.
+  interleaved 48 kHz stereo audio.
 - Startup can execute an external 16 KiB GBA BIOS from RetroArch's system
   directory (`gba_bios.bin` or `bios.bin`). When no BIOS is available, the
   core falls back to an HLE handoff to `0x08000000` in ARM state, with a stack
@@ -104,8 +104,15 @@ The normal `make test` route also runs this GBA core test.
   Timers 0–3 support the four prescalers, count-up cascade and overflow IRQ
   flags. HLE also implements `RegisterRamReset`, `CpuSet`, `CpuFastSet`, LZ77
   decompression to WRAM/VRAM, `BgAffineSet` and `ObjAffineSet`.
+- Basic audio reuses the four-channel DMG/CGB PSG implementation for GBA square,
+  wave and noise channels. Direct Sound A/B use signed 8-bit FIFOs, timer
+  overflow sampling, stereo routing and DMA1/2 special-timing refills. The core
+  mixes these into 48 kHz stereo PCM. Synthetic tests cover PSG output, FIFO
+  playback, special DMA and libretro sample delivery; game-level audio has not
+  been manually evaluated.
 - DMA supports immediate, VBlank and HBlank transfers, including repeat and
-  address-control modes. Sound FIFO special-timing DMA is not implemented.
+  address-control modes, plus the four-word fixed-destination transfers used
+  to refill Direct Sound FIFOs.
 - ARM coverage includes the instruction groups exercised by the licensed ARM
   suite: conditions, branches, shifts and data processing; selected CPSR/SPSR
   behavior; multiply; word, byte and halfword transfers; SWP; and block
@@ -125,10 +132,12 @@ states. BIOS loading checks for a readable 16 KiB file but does not yet verify
 its recognized checksum. Without an external BIOS, implemented BIOS calls are
 HLE-substituted.
 With a BIOS, SWIs and IRQs enter their BIOS vectors, though unsupported CPU
-instructions can still stop execution. Sound FIFO DMA and state serialization
-remain unimplemented. Cartridge battery saves are detected from the ROM's
-`SRAM_V`, `FLASH_V`/`FLASH512_V`, `FLASH1M_V`, or `EEPROM_V` marker. The core
-supports 32 KiB SRAM, 64 KiB Flash, 128 KiB banked Flash, and 512-byte or
+instructions can still stop execution. GBA-specific wave-bank/dimension
+behavior, SOUNDBIAS output shaping, analog mixing and more exact sound timing
+remain approximations; state serialization is unimplemented. Cartridge
+battery saves are detected from the ROM's `SRAM_V`,
+`FLASH_V`/`FLASH512_V`, `FLASH1M_V`, or `EEPROM_V` marker. The core supports
+32 KiB SRAM, 64 KiB Flash, 128 KiB banked Flash, and 512-byte or
 8-KiB EEPROM; EEPROM transactions use DMA and expand to 8 KiB when the game
 uses the longer address form. GBA tests cover read/write and reset/reload
 retention for these save types, plus the libretro save-memory interface. RTC
@@ -230,10 +239,11 @@ The cartridge library defines its 1-megabit Flash size as 131,072 bytes in
    Free overworld movement and additional game scenes remain follow-up
    coverage. Add rendering behavior when a scene demonstrates a gap, including
    more accurate mid-scanline writes and PPU timing.
-4. **Complete single-player experience:** add the sound hardware and FIFO DMA
-   needed for game audio, and RTC/GPIO behavior for clock-based events. These
-   are not the first blockers for reaching a visible scene. Link/RFU support
-   and save-state serialization can remain outside this single-player gate.
+4. **Complete single-player experience:** the core now has a tested baseline
+   for PSG audio, Direct Sound FIFO playback and timer-driven sound DMA.
+   Validate it with a licensed homebrew soundtrack, then add RTC/GPIO behavior for
+   clock-based events if a target game requires it. Link/RFU support and
+   save-state serialization can remain outside this single-player gate.
 
 Public game-level ROM checks must use clearly licensed homebrew. Use private
 commercial ROMs only for local manual play checks; keep their ROMs, saves and

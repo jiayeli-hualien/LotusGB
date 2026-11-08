@@ -983,6 +983,51 @@ void testGbaTimersPrescalersCascadeAndIrq() {
     }
 }
 
+void testGbaPsgProducesStereoAudio() {
+    GbaSystem system(loopingRom());
+    system.write8(0x04000084, 0x80); // Master sound enable.
+    system.write16(0x04000080, 0x7777); // Full PSG volume, both sides.
+    system.write16(0x04000062, 0xF080); // Square 1 duty and envelope.
+    system.write16(0x04000064, 0x86D6); // Trigger square 1.
+
+    assert(system.runFrame().success);
+    const std::vector<int16_t> samples = system.takeAudioSamples();
+    assert(samples.size() >= 800 * 2 && samples.size() <= 804 * 2);
+    bool leftHasSignal = false;
+    bool rightHasSignal = false;
+    for (size_t index = 0; index + 1 < samples.size(); index += 2) {
+        leftHasSignal |= samples[index] != 0;
+        rightHasSignal |= samples[index + 1] != 0;
+    }
+    assert(leftHasSignal && rightHasSignal);
+    assert(system.takeAudioSamples().empty());
+}
+
+void testGbaDirectSoundFifoUsesTimerAndSpecialDma() {
+    GbaSystem system(loopingRom());
+    system.write8(0x04000084, 0x80); // Master sound enable.
+    system.write16(0x04000082, 0x0B00); // FIFO A, both sides, reset FIFO.
+    system.write16(0x04000082, 0x0300); // Release FIFO reset.
+    for (unsigned word = 0; word < 64; ++word)
+        system.write32(0x02000000 + word * 4, 0x20202020);
+    system.write32(0x040000BC, 0x02000000); // DMA1 source.
+    system.write32(0x040000C0, 0x040000A0); // FIFO A destination.
+    system.write16(0x040000C4, 1); // Sound DMA always transfers four words.
+    system.write16(0x040000C6, 0xB640); // Enable, FIFO timing, repeat, 32-bit.
+    system.write16(0x04000100, 0xF000);
+    system.write16(0x04000102, 0x0080); // Timer 0 clocks FIFO A.
+
+    assert(system.runFrame().success);
+    const std::vector<int16_t> samples = system.takeAudioSamples();
+    bool leftHasSignal = false;
+    bool rightHasSignal = false;
+    for (size_t index = 0; index + 1 < samples.size(); index += 2) {
+        leftHasSignal |= samples[index] != 0;
+        rightHasSignal |= samples[index + 1] != 0;
+    }
+    assert(leftHasSignal && rightHasSignal);
+}
+
 void testLz77SoftwareInterrupts() {
     {
         GbaSystem system(lz77Rom(0x12, VRAM));
@@ -1913,6 +1958,8 @@ int main() {
     testIrqAndSystemShareR8ThroughR12();
     testDisplayInterruptEnableBits();
     testGbaTimersPrescalersCascadeAndIrq();
+    testGbaPsgProducesStereoAudio();
+    testGbaDirectSoundFifoUsesTimerAndSpecialDma();
     testHBlankDmaUpdatesFollowingScanlines();
     testLz77SoftwareInterrupts();
     testAffineSetSoftwareInterrupts();

@@ -131,6 +131,10 @@ std::shared_ptr<std::vector<uint8_t>> GbaSystem::getSaveRamStorage() const {
     return saveData_;
 }
 
+std::vector<int16_t> GbaSystem::takeAudioSamples() {
+    return audio_.takeSamples();
+}
+
 void GbaSystem::reset() {
     externalWorkRam_.fill(0);
     internalWorkRam_.fill(0);
@@ -147,6 +151,7 @@ void GbaSystem::reset() {
     timerReload_.fill(0);
     timerCounter_.fill(0);
     timerPrescalerCycles_.fill(0);
+    audio_.reset();
     flashCommandState_ = FlashCommandState::Ready;
     flashBank_ = 0;
     flashIdMode_ = false;
@@ -384,6 +389,8 @@ uint8_t GbaSystem::read8(uint32_t address) const {
     if (address >= 0x03000000 && address < 0x04000000)
         return internalWorkRam_[(address - 0x03000000) & 0x7FFF];
     if (address >= 0x04000000 && address < 0x04000400) {
+        if (audio_.handlesRegister(address))
+            return audio_.readRegister(address);
         if (address == REG_KEYINPUT || address == REG_KEYINPUT + 1) {
             const uint16_t value = static_cast<uint16_t>(~pressedButtons_) & 0x03FF;
             return static_cast<uint8_t>(value >> ((address - REG_KEYINPUT) * 8));
@@ -444,6 +451,12 @@ void GbaSystem::write8(uint32_t address, uint8_t value) {
     }
     if (address >= 0x03000000 && address < 0x04000000) {
         internalWorkRam_[(address - 0x03000000) & 0x7FFF] = value;
+        return;
+    }
+    if (audio_.writeFifo(address, value))
+        return;
+    if (audio_.writeRegister(address, value)) {
+        io_[address - 0x04000000] = value;
         return;
     }
     if (address >= 0x04000000 && address < 0x04000400) {
@@ -645,6 +658,7 @@ void GbaSystem::registerRamReset(uint8_t flags) {
 }
 
 void GbaSystem::tick(uint32_t cycles) {
+    audio_.advanceCycles(cycles);
     tickTimers(cycles);
     const auto requestInterrupt = [this](uint16_t interrupt) {
         const size_t offset = REG_IF - 0x04000000;
@@ -764,6 +778,11 @@ void GbaSystem::incrementTimer(unsigned timer, uint32_t ticks) {
 
         ticks -= ticksUntilOverflow;
         timerCounter_[timer] = timerReload_[timer];
+        const uint8_t refillMask = audio_.onTimerOverflow(timer);
+        for (unsigned fifo = 0; fifo < 2; ++fifo) {
+            if ((refillMask & (1u << fifo)) != 0)
+                requestSoundDma(fifo);
+        }
         if ((control & 0x0040) != 0) {
             const uint32_t interrupt = 1u << (3 + timer);
             const size_t offset = REG_IF - 0x04000000;
@@ -783,6 +802,20 @@ void GbaSystem::incrementTimer(unsigned timer, uint32_t ticks) {
     }
 }
 
+void GbaSystem::requestSoundDma(unsigned fifo) {
+    if (fifo >= 2)
+        return;
+    const uint32_t target = audio_.fifoAddress(fifo);
+    for (unsigned channel = 1; channel <= 2; ++channel) {
+        const uint32_t registerBase = 0x040000B0 + channel * 12;
+        const uint16_t control = read16(registerBase + 10);
+        if ((control & 0x8000) == 0 || ((control >> 12) & 3) != 3 ||
+            (read32(registerBase + 4) & ~uint32_t{3}) != target)
+            continue;
+        triggerDma(channel, 3);
+    }
+}
+
 void GbaSystem::triggerDma(unsigned channel, unsigned timing) {
     if (channel >= 4 || dmaActive_)
         return;
@@ -792,9 +825,17 @@ void GbaSystem::triggerDma(unsigned channel, unsigned timing) {
     if ((control & 0x8000) == 0 || ((control >> 12) & 3) != timing)
         return;
 
-    const bool wordTransfer = (control & (1u << 10)) != 0;
+    const uint32_t programmedDestination = read32(registerBase + 4) &
+        ~uint32_t{3};
+    const bool soundTransfer = timing == 3 && channel >= 1 && channel <= 2 &&
+        (programmedDestination == audio_.fifoAddress(0) ||
+         programmedDestination == audio_.fifoAddress(1));
+    if (timing == 3 && !soundTransfer)
+        return;
+
+    const bool wordTransfer = soundTransfer || (control & (1u << 10)) != 0;
     const uint32_t unitSize = wordTransfer ? 4 : 2;
-    uint32_t count = read16(registerBase + 8) &
+    uint32_t count = soundTransfer ? 4 : read16(registerBase + 8) &
         (channel == 0 ? 0x3FFFu : 0xFFFFu);
     if (count == 0)
         count = channel == 0 ? 0x4000 : 0x10000;
@@ -809,7 +850,7 @@ void GbaSystem::triggerDma(unsigned channel, unsigned timing) {
     uint32_t source = dmaSource_[channel];
     uint32_t destination = dmaDestination_[channel];
     const unsigned sourceMode = (control >> 7) & 3;
-    const unsigned destinationMode = (control >> 5) & 3;
+    const unsigned destinationMode = soundTransfer ? 2 : (control >> 5) & 3;
     const bool eepromWriteDma = saveType_ == SaveType::Eeprom &&
         !wordTransfer && isEepromAddress(destination);
     if (eepromWriteDma) {

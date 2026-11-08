@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "arm7tdmi.hpp"
+#include "gba_audio.hpp"
 
 namespace LOTUSGBA {
 
@@ -23,6 +24,7 @@ public:
     static constexpr size_t FLASH1M_SIZE = 128 * 1024;
     static constexpr size_t EEPROM512_SIZE = 512;
     static constexpr size_t EEPROM_SIZE = 8 * 1024;
+    static constexpr unsigned AUDIO_SAMPLE_RATE = GbaAudio::SAMPLE_RATE;
 
     struct FrameResult {
         bool success = false;
@@ -45,6 +47,7 @@ public:
     uint8_t *getSaveRamData();
     size_t getSaveRamSize() const;
     std::shared_ptr<std::vector<uint8_t>> getSaveRamStorage() const;
+    std::vector<int16_t> takeAudioSamples();
 
     uint8_t read8(uint32_t address) const override;
     uint16_t read16(uint32_t address) const override;
@@ -144,6 +147,7 @@ private:
                        ObjectBuffer &objects,
                        unsigned firstPixel, unsigned endPixel) const;
     void triggerDma(unsigned channel, unsigned timing);
+    void requestSoundDma(unsigned fifo);
 
     std::vector<uint8_t> rom_;
     std::vector<uint8_t> bios_;
@@ -171,6 +175,7 @@ private:
     std::array<uint16_t, 4> timerReload_{};
     std::array<uint16_t, 4> timerCounter_{};
     std::array<uint32_t, 4> timerPrescalerCycles_{};
+    mutable GbaAudio audio_;
     std::array<uint16_t, PIXEL_COUNT> frameBuffer_{};
     Arm7Tdmi cpu_;
     uint16_t pressedButtons_ = 0;

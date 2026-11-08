@@ -1,9 +1,10 @@
 CXX ?= g++
 CPPFLAGS := -Wall -Wextra -Wconversion -std=c++17 -O2 -fPIC \
-	-Iinclude -I../libretro/include -I../gba/include -I../../tests/include
+	-Iinclude -I../libretro/include -I../gba/include -I../lib/include -I../../tests/include
 build_dir ?= build
 
-gba_sources := ../gba/arm7tdmi.cpp ../gba/gba_system.cpp
+gba_sources := ../gba/arm7tdmi.cpp ../gba/gba_system.cpp ../gba/gba_audio.cpp \
+	../lib/dmg_apu.cpp
 core_info := lotusgba_libretro.info
 
 ifeq ($(shell uname -s),Darwin)
@@ -21,7 +22,9 @@ test: $(build_dir)/gba_libretro_core_test $(build_dir)/gba_video_test
 	$(build_dir)/gba_video_test
 
 $(build_dir)/lotusgba_libretro.so: libretro_gba_core.cpp $(gba_sources) \
-		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp ../libretro/include/libretro.h | $(build_dir)
+		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
+		../gba/include/gba_audio.hpp ../lib/include/dmg_apu.hpp \
+		../libretro/include/libretro.h | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ libretro_gba_core.cpp $(gba_sources) -shared
 
 $(build_dir)/lotusgba_libretro.dylib: $(build_dir)/lotusgba_libretro.so
@@ -36,12 +39,14 @@ $(build_dir)/gba_libretro_core_test: gba_libretro_core_test.cpp libretro_gba_cor
 		../../tests/roms/gba-thumb-tests/thumb.gba \
 		../../tests/roms/gba-pong/pong.gba \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
+		../gba/include/gba_audio.hpp ../lib/include/dmg_apu.hpp \
 		../libretro/include/libretro.h | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ gba_libretro_core_test.cpp \
 		libretro_gba_core.cpp $(gba_sources)
 
 $(build_dir)/gba_video_test: gba_video_test.cpp $(gba_sources) \
-		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp | $(build_dir)
+		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
+		../gba/include/gba_audio.hpp ../lib/include/dmg_apu.hpp | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ gba_video_test.cpp $(gba_sources)
 
 $(build_dir):

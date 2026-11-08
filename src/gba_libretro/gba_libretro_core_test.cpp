@@ -19,6 +19,7 @@ bool videoReceived = false;
 unsigned receivedWidth = 0;
 unsigned receivedHeight = 0;
 std::vector<uint32_t> receivedPixels;
+std::vector<int16_t> receivedAudio;
 enum retro_pixel_format selectedFormat = RETRO_PIXEL_FORMAT_0RGB1555;
 bool acceptXrgb8888 = true;
 uint16_t pressedJoypad = 0;
@@ -27,6 +28,14 @@ std::string biosStartupMode = "Automatic";
 bool biosOptionRegistered = false;
 
 void inputPoll() {}
+
+size_t audioBatch(const int16_t *samples, size_t frames) {
+    if (frames != 0) {
+        assert(samples != nullptr);
+        receivedAudio.insert(receivedAudio.end(), samples, samples + frames * 2);
+    }
+    return frames;
+}
 
 int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
     if (port != 0 || device != RETRO_DEVICE_JOYPAD || index != 0 || id >= 16)
@@ -399,6 +408,7 @@ int main() {
     retro_set_environment(environment);
     assert(biosOptionRegistered);
     retro_set_video_refresh(videoRefresh);
+    retro_set_audio_sample_batch(audioBatch);
     retro_set_input_poll(inputPoll);
     retro_set_input_state(inputState);
     retro_init();
@@ -414,6 +424,7 @@ int main() {
     assert(avInfo.geometry.base_width == 240);
     assert(avInfo.geometry.base_height == 160);
     assert(std::fabs(avInfo.timing.fps - 59.7275) < 0.01);
+    assert(std::fabs(avInfo.timing.sample_rate - 48000.0) < 0.01);
 
     const auto runAndCheck = [](std::vector<uint8_t> rom) {
         retro_game_info game{};
@@ -421,6 +432,7 @@ int main() {
         game.size = rom.size();
         videoReceived = false;
         receivedPixels.clear();
+        receivedAudio.clear();
         assert(retro_load_game(&game));
         retro_run();
         retro_run();
@@ -428,6 +440,8 @@ int main() {
         assert(videoReceived);
         assert(receivedWidth == 240 && receivedHeight == 160);
         assert(receivedPixels.size() == 240 * 160);
+        assert(receivedAudio.size() >= 1604 * 2);
+        assert(receivedAudio.size() <= 1608 * 2);
         if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
             for (uint32_t pixel : receivedPixels)
                 assert(pixel == 0x00FF0000);
