@@ -125,9 +125,16 @@ states. BIOS loading checks for a readable 16 KiB file but does not yet verify
 its recognized checksum. Without an external BIOS, implemented BIOS calls are
 HLE-substituted.
 With a BIOS, SWIs and IRQs enter their BIOS vectors, though unsupported CPU
-instructions can still stop execution. Sound FIFO DMA, save hardware other
-than Flash 1M, and state serialization remain unimplemented. Flash operations
-complete immediately; busy status and write timing are not modeled. The
+instructions can still stop execution. Sound FIFO DMA and state serialization
+remain unimplemented. Cartridge battery saves are detected from the ROM's
+`SRAM_V`, `FLASH_V`/`FLASH512_V`, `FLASH1M_V`, or `EEPROM_V` marker. The core
+supports 32 KiB SRAM, 64 KiB Flash, 128 KiB banked Flash, and 512-byte or
+8-KiB EEPROM; EEPROM transactions use DMA and expand to 8 KiB when the game
+uses the longer address form. GBA tests cover read/write and reset/reload
+retention for these save types, plus the libretro save-memory interface. RTC
+cartridge devices remain unimplemented. Flash operations complete immediately;
+busy status and write timing are not modeled, and EEPROM busy timing is not
+modeled. The
 mid-scanline raster split uses prototype CPU cycles and does not model video
 bus wait states or the PPU's exact fetch pipeline. OBJ attributes are staged
 for the incoming scanline at H-Blank; H-Blank DMA writes to OAM therefore take

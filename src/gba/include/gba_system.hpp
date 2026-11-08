@@ -18,7 +18,11 @@ public:
     static constexpr unsigned SCREEN_HEIGHT = 160;
     static constexpr size_t PIXEL_COUNT = SCREEN_WIDTH * SCREEN_HEIGHT;
     static constexpr uint32_t CYCLES_PER_FRAME = 1232 * 228;
+    static constexpr size_t SRAM_SIZE = 32 * 1024;
+    static constexpr size_t FLASH_SIZE = 64 * 1024;
     static constexpr size_t FLASH1M_SIZE = 128 * 1024;
+    static constexpr size_t EEPROM512_SIZE = 512;
+    static constexpr size_t EEPROM_SIZE = 8 * 1024;
 
     struct FrameResult {
         bool success = false;
@@ -27,7 +31,7 @@ public:
 
     explicit GbaSystem(std::vector<uint8_t> rom,
                        std::vector<uint8_t> bios = {},
-                       std::shared_ptr<std::vector<uint8_t>> saveFlash = nullptr);
+                       std::shared_ptr<std::vector<uint8_t>> saveData = nullptr);
 
     void reset();
     FrameResult runFrame();
@@ -82,6 +86,14 @@ private:
         BankData,
     };
 
+    enum class SaveType {
+        None,
+        Sram,
+        Flash64,
+        Flash128,
+        Eeprom,
+    };
+
     using LayerBuffer = std::array<PixelLayers, SCREEN_WIDTH>;
     using ObjectBuffer = std::array<LayerPixel, SCREEN_WIDTH>;
     using ObjectVisibility = std::array<bool, 128>;
@@ -90,9 +102,13 @@ private:
 
     static uint32_t videoRamOffset(uint32_t address);
     uint16_t readOamForRendering(uint32_t address) const;
-    static bool romHasFlash1M(const std::vector<uint8_t> &rom);
+    static SaveType detectSaveType(const std::vector<uint8_t> &rom);
+    static bool isEepromAddress(uint32_t address);
     uint8_t readFlash(uint32_t address) const;
     void writeFlash(uint32_t address, uint8_t value);
+    uint16_t readEeprom() const;
+    void writeEeprom(uint16_t value);
+    void finishEepromDma(uint32_t transferCount);
     static void offerPixel(LayerBuffer &pixels, size_t index, uint16_t color,
                            unsigned priority, unsigned layer,
                            unsigned order = 0);
@@ -131,10 +147,16 @@ private:
 
     std::vector<uint8_t> rom_;
     std::vector<uint8_t> bios_;
-    std::shared_ptr<std::vector<uint8_t>> saveFlash_;
+    SaveType saveType_ = SaveType::None;
+    std::shared_ptr<std::vector<uint8_t>> saveData_;
     FlashCommandState flashCommandState_ = FlashCommandState::Ready;
     uint8_t flashBank_ = 0;
     bool flashIdMode_ = false;
+    std::vector<uint8_t> eepromInputBits_;
+    uint16_t eepromAddress_ = 0;
+    mutable unsigned eepromReadCursor_ = 0;
+    mutable bool eepromReadActive_ = false;
+    bool eepromDmaWriteActive_ = false;
     std::array<uint8_t, 256 * 1024> externalWorkRam_{};
     std::array<uint8_t, 32 * 1024> internalWorkRam_{};
     std::array<uint8_t, 0x400> io_{};

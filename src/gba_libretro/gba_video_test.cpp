@@ -65,11 +65,78 @@ std::vector<uint8_t> flash1mRom() {
     return rom;
 }
 
+std::vector<uint8_t> saveMarkerRom(const char *marker) {
+    std::vector<uint8_t> rom = loopingRom();
+    const size_t length = std::char_traits<char>::length(marker);
+    rom.insert(rom.end(), marker, marker + length);
+    return rom;
+}
+
 void flashUnlockCommand(GbaSystem &system, uint8_t command) {
     constexpr uint32_t flash = 0x0E000000;
     system.write8(flash + 0x5555, 0xAA);
     system.write8(flash + 0x2AAA, 0x55);
     system.write8(flash + 0x5555, command);
+}
+
+void dma3Transfer(GbaSystem &system, uint32_t source, uint32_t destination,
+                  uint16_t count) {
+    constexpr uint32_t dma3 = 0x040000D4;
+    system.write32(dma3, source);
+    system.write32(dma3 + 4, destination);
+    system.write16(dma3 + 8, count);
+    system.write16(dma3 + 10, 0x8000); // Immediate 16-bit transfer.
+}
+
+std::vector<uint16_t> eepromCommandBits(unsigned command, uint16_t address,
+                                        unsigned addressBits,
+                                        const std::array<uint8_t, 8> *data) {
+    std::vector<uint16_t> bits;
+    bits.push_back(1); // Start.
+    bits.push_back(static_cast<uint16_t>((command >> 1) & 1));
+    bits.push_back(static_cast<uint16_t>(command & 1));
+    for (unsigned bit = addressBits; bit > 0; --bit)
+        bits.push_back(static_cast<uint16_t>((address >> (bit - 1)) & 1));
+    if (data) {
+        for (uint8_t byte : *data) {
+            for (int bit = 7; bit >= 0; --bit)
+                bits.push_back(static_cast<uint16_t>((byte >> bit) & 1));
+        }
+    }
+    return bits;
+}
+
+void eepromDmaWrite(GbaSystem &system, uint16_t address,
+                    unsigned addressBits, const std::array<uint8_t, 8> &data) {
+    const auto bits = eepromCommandBits(2, address, addressBits, &data);
+    assert(bits.size() == (addressBits == 6 ? 73u : 81u));
+    constexpr uint32_t source = 0x02000000;
+    for (size_t index = 0; index < bits.size(); ++index)
+        system.write16(source + static_cast<uint32_t>(index * 2), bits[index]);
+    dma3Transfer(system, source, 0x0D000000,
+                 static_cast<uint16_t>(bits.size()));
+}
+
+std::array<uint8_t, 8> eepromDmaRead(GbaSystem &system, uint16_t address,
+                                    unsigned addressBits) {
+    const auto bits = eepromCommandBits(3, address, addressBits, nullptr);
+    assert(bits.size() == (addressBits == 6 ? 9u : 17u));
+    constexpr uint32_t commandSource = 0x02000000;
+    for (size_t index = 0; index < bits.size(); ++index)
+        system.write16(commandSource + static_cast<uint32_t>(index * 2), bits[index]);
+    dma3Transfer(system, commandSource, 0x0D000000,
+                 static_cast<uint16_t>(bits.size()));
+
+    constexpr uint32_t resultDestination = 0x02000400;
+    dma3Transfer(system, 0x0D000000, resultDestination, 68);
+    for (unsigned bit = 0; bit < 4; ++bit)
+        assert(system.read16(resultDestination + bit * 2) == 0);
+    std::array<uint8_t, 8> result{};
+    for (unsigned bit = 0; bit < 64; ++bit) {
+        const uint16_t value = system.read16(resultDestination + (bit + 4) * 2);
+        result[bit / 8] = static_cast<uint8_t>((result[bit / 8] << 1) | value);
+    }
+    return result;
 }
 
 std::vector<uint8_t> registerRamResetRom() {
@@ -660,6 +727,97 @@ void testFlash1mIdentificationCommandsBankingAndPersistence() {
     GbaSystem noSaveRom(loopingRom());
     assert(noSaveRom.getSaveRamData() == nullptr);
     assert(noSaveRom.getSaveRamSize() == 0);
+    assert(noSaveRom.read8(flash) == 0xFF);
+}
+
+void testSramMappingAndPersistence() {
+    const auto rom = saveMarkerRom("SRAM_V");
+    GbaSystem system(rom);
+    assert(system.getSaveRamSize() == GbaSystem::SRAM_SIZE);
+    assert(system.read8(0x0E000123) == 0xFF);
+    system.write8(0x0E000123, 0x5A);
+    assert(system.read8(0x0E008123) == 0x5A); // 32 KiB SRAM mirrors.
+    const auto storage = system.getSaveRamStorage();
+    GbaSystem reloaded(rom, {}, storage);
+    assert(reloaded.read8(0x0E000123) == 0x5A);
+    assert(reloaded.getSaveRamData() == storage->data());
+}
+
+void testFlash512CommandsAndPersistence() {
+    constexpr uint32_t flash = 0x0E000000;
+    const auto rom = saveMarkerRom("FLASH_V123");
+    GbaSystem system(rom);
+    assert(system.getSaveRamSize() == GbaSystem::FLASH_SIZE);
+    assert(system.read8(flash) == 0xFF);
+
+    flashUnlockCommand(system, 0x90);
+    assert(system.read8(flash) == 0x32); // Panasonic MN63F805 maker ID.
+    assert(system.read8(flash + 1) == 0x1B);
+    system.write8(flash, 0xF0);
+
+    flashUnlockCommand(system, 0xA0);
+    system.write8(flash + 0x2345, 0xA6);
+    assert(system.read8(flash + 0x2345) == 0xA6);
+    flashUnlockCommand(system, 0xB0);
+    system.write8(flash, 1); // 64 KiB flash ignores the 128 KiB bank command.
+    assert(system.read8(flash + 0x2345) == 0xA6);
+    flashUnlockCommand(system, 0xA0);
+    system.write8(flash + 0x2350, 0x00);
+    flashUnlockCommand(system, 0xA0);
+    system.write8(flash + 0x3345, 0x00);
+    system.write8(flash + 0x5555, 0xAA);
+    system.write8(flash + 0x2AAA, 0x55);
+    system.write8(flash + 0x5555, 0x80);
+    system.write8(flash + 0x5555, 0xAA);
+    system.write8(flash + 0x2AAA, 0x55);
+    system.write8(flash + 0x2345, 0x30); // Erase one 4 KiB sector.
+    assert(system.read8(flash + 0x2345) == 0xFF);
+    assert(system.read8(flash + 0x2350) == 0xFF);
+    assert(system.read8(flash + 0x3345) == 0x00);
+    flashUnlockCommand(system, 0xA0);
+    system.write8(flash + 0x2345, 0xA6);
+    const auto storage = system.getSaveRamStorage();
+    GbaSystem reloaded(rom, {}, storage);
+    assert(reloaded.read8(flash + 0x2345) == 0xA6);
+}
+
+void testEeprom512DmaReadWriteAndPersistence() {
+    const auto rom = saveMarkerRom("EEPROM_V");
+    GbaSystem system(rom);
+    assert(system.getSaveRamSize() == GbaSystem::EEPROM512_SIZE);
+    assert(system.read16(0x0D000000) == 1); // Idle serial data line.
+    const std::array<uint8_t, 8> expected =
+        {{0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0}};
+    eepromDmaWrite(system, 17, 6, expected);
+    assert(system.getSaveRamSize() == GbaSystem::EEPROM512_SIZE);
+    assert(std::equal(expected.begin(), expected.end(), system.getSaveRamData() + 17 * 8));
+    assert(eepromDmaRead(system, 17, 6) == expected);
+    assert(system.read16(0x0D000000) == 1);
+
+    const auto storage = system.getSaveRamStorage();
+    system.reset();
+    GbaSystem reloaded(rom, {}, storage);
+    assert(reloaded.getSaveRamSize() == GbaSystem::EEPROM512_SIZE);
+    assert(reloaded.getSaveRamData() == storage->data());
+    assert(eepromDmaRead(reloaded, 17, 6) == expected);
+}
+
+void testEeprom8kDmaReadWriteAndExpansion() {
+    const auto rom = saveMarkerRom("EEPROM_V");
+    GbaSystem system(rom);
+    uint8_t *publishedSaveData = system.getSaveRamData();
+    const std::array<uint8_t, 8> expected =
+        {{0xA5, 0x5A, 0xC3, 0x3C, 0x96, 0x69, 0xF0, 0x0F}};
+    eepromDmaWrite(system, 1023, 14, expected);
+    assert(system.getSaveRamSize() == GbaSystem::EEPROM_SIZE);
+    assert(system.getSaveRamData() == publishedSaveData);
+    assert(std::equal(expected.begin(), expected.end(),
+                      system.getSaveRamData() + GbaSystem::EEPROM_SIZE - 8));
+    assert(eepromDmaRead(system, 1023, 14) == expected);
+    const auto storage = system.getSaveRamStorage();
+    GbaSystem reloaded(rom, {}, storage);
+    assert(reloaded.getSaveRamSize() == GbaSystem::EEPROM_SIZE);
+    assert(eepromDmaRead(reloaded, 1023, 14) == expected);
 }
 
 void testBiosIrqVectorAndExceptionReturn() {
@@ -1744,6 +1902,10 @@ int main() {
     testOptionalBiosEntry();
     testSkipBiosStartsWithInitializedCartridgeState();
     testFlash1mIdentificationCommandsBankingAndPersistence();
+    testSramMappingAndPersistence();
+    testFlash512CommandsAndPersistence();
+    testEeprom512DmaReadWriteAndPersistence();
+    testEeprom8kDmaReadWriteAndExpansion();
     testVideoMemoryAccessWidths();
     testRegisterRamResetSoftwareInterrupt();
     testCpuSetAndCpuFastSetSoftwareInterrupts();

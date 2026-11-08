@@ -62,7 +62,7 @@ has been tested.
 | M8 — playable checkpoint passed (2026-11-01) | Native CGB-E through RetroArch | Banked RAM, color PPU, KEY1 speed switching, VRAM DMA and model-tagged snapshots. Exact cgb-acid2 pixels and Deluxe directional/flap/dash response with state replay pass; installed macOS RetroArch loads/restores gameplay. Broader game compatibility and hardware accuracy remain work. See the [canonical evidence and limits](cgb-development.md). |
 | M9 — bounded checkpoint complete (2026-11-01) | CGB gameplay and battery SRAM | CI fixtures cover CGB-compatible MBC1 and MBC5, color/input gameplay, battery-backed progress and fresh-content SRAM restore. Optional local `make test-cgb-homebrew` adds Big2Small MBC5 save/resume and Deluxe MBC1 gameplay/state replay. See [CGB evidence](cgb-development.md#reproducible-checks). |
 | M10 — bounded user acceptance passed (2026-11-04) | CGB-E Pokémon Crystal single-player playability | Original CGB fixtures cover MBC1/MBC5 gameplay and battery RAM, MBC5 ROM banks $100/$1FF and 128-KiB SRAM gameplay/state/battery replay, plus MBC3 guest RTC latch/read/write, running-clock offline progression/day rollover and fresh-content battery import in both libretro presentation builds. The user reports Crystal single-player playability and accepted the updated macOS Steam RetroArch core after confirming gameplay, in-game saving and save persistence after reopening. ROM region and route/coverage were not recorded; this closes the bounded personal-use target, not all CGB game compatibility, full-story verification or real-title RTC progression. See the [CGB playability record](cgb-development.md#pokemon-crystal-post-update-check-2026-11-04). Keep ROMs and derived artifacts private; use licensed homebrew and original fixtures for reproducible public checks. |
-| GBA — Pong playable checkpoint passed (automated, 2026-11-05) | Independent LotusGBA libretro core | The callback test passes the MIT ARM and Thumb instruction suites, then runs the MIT-licensed Pong-Homebrew-GBA ROM through its title menu, Start input, ball movement, Up/Down paddle control, paddle collision and return, and first CPU score. Its distributed ROM has the unlicensed Nintendo logo bytes cleared. This establishes the tested gameplay path, not manual RetroArch acceptance or broad GBA compatibility. Accurate timing, other IRQ sources, DMA, audio, saves and other video modes remain incomplete. See [GBA status and evidence](gba-development.md). |
+| GBA — Pong and battery-save checkpoint passed (automated, 2026-11-08) | Independent LotusGBA libretro core | The callback test passes the MIT ARM and Thumb instruction suites, then runs the MIT-licensed Pong-Homebrew-GBA ROM through its tested gameplay path. Original fixtures verify SRAM, 64-KiB Flash, banked 128-KiB Flash, and DMA-driven 512-byte/8-KiB EEPROM read/write and retention; libretro save-memory exposure is checked for each family. This is implementation and synthetic-test evidence, not manual RetroArch acceptance or commercial-game save validation. Accurate timing, RTC, sound FIFO DMA and other video modes remain incomplete. See [GBA status and evidence](gba-development.md). |
 | Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and systems beyond GBA need a concrete user or distribution target before becoming milestones. |
 
 ### Active automatic route — GB/CGB specification coverage
@@ -258,11 +258,13 @@ still passes 11/11, including its distinct later-arriving-interrupt HALT case.
 Current gameplay checkpoints do not mean all important GB/CGB specifications
 are complete; continue the GB/CGB spec work as a separate automated route.
 GBA now has a separate libretro core, passes the licensed ARM and Thumb
-instruction suites, and runs the tested Pong menu, controls, ball movement and
-first score through the libretro callbacks. This is a bounded playable
-checkpoint, not a manual frontend or general compatibility claim. Further GBA
-expansion should follow another named, licensed game target. Other systems
-remain deferred.
+instruction suites, runs the tested Pong gameplay path through the libretro
+callbacks, and exposes marker-detected SRAM, Flash and DMA EEPROM battery
+memory. Synthetic tests cover the save protocols and persistence, but
+commercial-game save behavior and manual RetroArch persistence have not been
+verified. This remains a bounded compatibility checkpoint; timing, RTC, sound
+FIFO DMA and other video modes are still incomplete. Other systems remain
+deferred.
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
 

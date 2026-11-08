@@ -48,6 +48,13 @@ std::vector<uint8_t> makeFlash1mMode3Rom() {
     return rom;
 }
 
+std::vector<uint8_t> makeSaveMarkerMode3Rom(const char *marker) {
+    std::vector<uint8_t> rom = makeGbaMode3BootRom();
+    const size_t length = std::char_traits<char>::length(marker);
+    rom.insert(rom.end(), marker, marker + length);
+    return rom;
+}
+
 bool environment(unsigned command, void *data) {
     if (command == RETRO_ENVIRONMENT_SET_VARIABLES) {
         const auto *options = static_cast<const retro_variable *>(data);
@@ -156,6 +163,29 @@ void runFlashBatteryMemoryCheck() {
     assert(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == flashSize);
     std::copy(savedBattery.begin(), savedBattery.end(), reloadedSave);
     assert(reloadedSave[0x1234] == 0x5A);
+
+    retro_unload_game();
+    biosStartupMode = "Automatic";
+}
+
+void runSaveMemoryTypeCheck(const char *marker, size_t expectedSize) {
+    biosStartupMode = "Skip BIOS";
+    auto rom = makeSaveMarkerMode3Rom(marker);
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    assert(retro_load_game(&game));
+
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    assert(saveRam != nullptr);
+    assert(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == expectedSize);
+    assert(saveRam[0] == 0xFF);
+    saveRam[0] = 0x6D;
+    retro_reset();
+    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == saveRam);
+    assert(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == expectedSize);
+    assert(saveRam[0] == 0x6D);
 
     retro_unload_game();
     biosStartupMode = "Automatic";
@@ -452,6 +482,9 @@ int main() {
         readFile("../../tests/roms/gba-thumb-tests/thumb.gba"));
     runPongGameplayAndCheck();
     runFlashBatteryMemoryCheck();
+    runSaveMemoryTypeCheck("SRAM_V", 32 * 1024);
+    runSaveMemoryTypeCheck("FLASH512_V", 64 * 1024);
+    runSaveMemoryTypeCheck("EEPROM_V", 512);
     runOptionalBiosCheck();
     runSkipBiosOptionCheck();
     runRequiredBiosMissingCheck();

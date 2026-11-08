@@ -29,6 +29,8 @@ constexpr uint32_t FLASH_BASE = 0x0E000000;
 constexpr uint32_t FLASH_WINDOW_SIZE = 0x10000;
 constexpr uint32_t FLASH_BANK_SIZE = 0x10000;
 constexpr uint32_t FLASH_SECTOR_SIZE = 0x1000;
+constexpr uint32_t EEPROM_BASE = 0x0D000000;
+constexpr uint32_t EEPROM_WINDOW_SIZE = 0x01000000;
 
 int64_t fixedToInteger(int64_t value) {
     return value >= 0 ? value / 256 : -((-value + 255) / 256);
@@ -64,36 +66,69 @@ constexpr unsigned OBJ_DIMENSIONS[3][4][2] = {
 
 GbaSystem::GbaSystem(
     std::vector<uint8_t> rom, std::vector<uint8_t> bios,
-    std::shared_ptr<std::vector<uint8_t>> saveFlash)
+    std::shared_ptr<std::vector<uint8_t>> saveData)
     : rom_(std::move(rom)), bios_(std::move(bios)),
-      saveFlash_(std::move(saveFlash)) {
+      saveType_(detectSaveType(rom_)), saveData_(std::move(saveData)) {
     if (rom_.size() < 0xC4)
         throw std::invalid_argument("GBA ROM must contain a cartridge entry point");
     if (!bios_.empty() && bios_.size() != 0x4000)
         throw std::invalid_argument("GBA BIOS must contain exactly 16 KiB");
-    if (!saveFlash_ && romHasFlash1M(rom_))
-        saveFlash_ = std::make_shared<std::vector<uint8_t>>(FLASH1M_SIZE, 0xFF);
-    if (saveFlash_ && saveFlash_->size() != FLASH1M_SIZE)
-        throw std::invalid_argument("GBA Flash 1M save data must be exactly 128 KiB");
+    size_t expectedSize = 0;
+    switch (saveType_) {
+    case SaveType::None: break;
+    case SaveType::Sram: expectedSize = SRAM_SIZE; break;
+    case SaveType::Flash64: expectedSize = FLASH_SIZE; break;
+    case SaveType::Flash128: expectedSize = FLASH1M_SIZE; break;
+    case SaveType::Eeprom: expectedSize = EEPROM512_SIZE; break;
+    }
+    if (!saveData_ && expectedSize != 0) {
+        saveData_ = std::make_shared<std::vector<uint8_t>>(expectedSize, 0xFF);
+        if (saveType_ == SaveType::Eeprom)
+            saveData_->reserve(EEPROM_SIZE);
+    } else if (saveData_) {
+        const bool validEepromSize = saveType_ == SaveType::Eeprom &&
+            (saveData_->size() == EEPROM512_SIZE ||
+             saveData_->size() == EEPROM_SIZE);
+        if (saveType_ == SaveType::None ||
+            (saveData_->size() != expectedSize && !validEepromSize))
+            throw std::invalid_argument("GBA save data size does not match ROM save hardware");
+        if (saveType_ == SaveType::Eeprom)
+            saveData_->reserve(EEPROM_SIZE);
+    }
     reset();
 }
 
-bool GbaSystem::romHasFlash1M(const std::vector<uint8_t> &rom) {
-    constexpr char marker[] = "FLASH1M_V";
-    return std::search(rom.begin(), rom.end(), marker,
-                       marker + sizeof(marker) - 1) != rom.end();
+GbaSystem::SaveType GbaSystem::detectSaveType(const std::vector<uint8_t> &rom) {
+    const auto hasMarker = [&rom](const char *marker) {
+        const size_t length = std::char_traits<char>::length(marker);
+        return std::search(rom.begin(), rom.end(), marker,
+                           marker + length) != rom.end();
+    };
+    if (hasMarker("FLASH1M_V"))
+        return SaveType::Flash128;
+    if (hasMarker("EEPROM_V"))
+        return SaveType::Eeprom;
+    if (hasMarker("SRAM_V"))
+        return SaveType::Sram;
+    if (hasMarker("FLASH512_V") || hasMarker("FLASH_V"))
+        return SaveType::Flash64;
+    return SaveType::None;
+}
+
+bool GbaSystem::isEepromAddress(uint32_t address) {
+    return address >= EEPROM_BASE && address < EEPROM_BASE + EEPROM_WINDOW_SIZE;
 }
 
 uint8_t *GbaSystem::getSaveRamData() {
-    return saveFlash_ && !saveFlash_->empty() ? saveFlash_->data() : nullptr;
+    return saveData_ && !saveData_->empty() ? saveData_->data() : nullptr;
 }
 
 size_t GbaSystem::getSaveRamSize() const {
-    return saveFlash_ ? saveFlash_->size() : 0;
+    return saveData_ ? saveData_->size() : 0;
 }
 
 std::shared_ptr<std::vector<uint8_t>> GbaSystem::getSaveRamStorage() const {
-    return saveFlash_;
+    return saveData_;
 }
 
 void GbaSystem::reset() {
@@ -115,6 +150,11 @@ void GbaSystem::reset() {
     flashCommandState_ = FlashCommandState::Ready;
     flashBank_ = 0;
     flashIdMode_ = false;
+    eepromInputBits_.clear();
+    eepromAddress_ = 0;
+    eepromReadCursor_ = 0;
+    eepromReadActive_ = false;
+    eepromDmaWriteActive_ = false;
     for (unsigned object = 0; object < 128; ++object)
         oam_[object * 8 + 1] = 0x02; // HLE BIOS leaves regular objects disabled.
     frameBuffer_.fill(0x7FFF);
@@ -156,24 +196,24 @@ uint16_t GbaSystem::readOamForRendering(uint32_t address) const {
 }
 
 uint8_t GbaSystem::readFlash(uint32_t address) const {
-    if (!saveFlash_)
+    if (!saveData_)
         return 0xFF;
 
     const uint32_t offset = address - FLASH_BASE;
     if (flashIdMode_) {
         if (offset == 0)
-            return 0xC2; // Macronix MX29L010 maker ID.
+            return saveType_ == SaveType::Flash64 ? 0x32 : 0xC2;
         if (offset == 1)
-            return 0x09; // Macronix MX29L010 device ID.
+            return saveType_ == SaveType::Flash64 ? 0x1B : 0x09;
         return 0xFF;
     }
 
-    return (*saveFlash_)[static_cast<size_t>(flashBank_) * FLASH_BANK_SIZE +
-                         (offset & (FLASH_WINDOW_SIZE - 1))];
+    return (*saveData_)[static_cast<size_t>(flashBank_) * FLASH_BANK_SIZE +
+                        (offset & (FLASH_WINDOW_SIZE - 1))];
 }
 
 void GbaSystem::writeFlash(uint32_t address, uint8_t value) {
-    if (!saveFlash_)
+    if (!saveData_)
         return;
 
     const uint32_t offset = address - FLASH_BASE;
@@ -230,31 +270,109 @@ void GbaSystem::writeFlash(uint32_t address, uint8_t value) {
         break;
     case FlashCommandState::EraseCommand:
         if (value == 0x10 && offset == 0x5555) {
-            std::fill(saveFlash_->begin(), saveFlash_->end(), 0xFF);
+            std::fill(saveData_->begin(), saveData_->end(), 0xFF);
         } else if (value == 0x30) {
             const uint32_t sectorOffset = offset & ~(FLASH_SECTOR_SIZE - 1);
-            const size_t start = static_cast<size_t>(flashBank_) * FLASH_BANK_SIZE +
-                                 sectorOffset;
-            std::fill(saveFlash_->begin() + static_cast<std::ptrdiff_t>(start),
-                      saveFlash_->begin() + static_cast<std::ptrdiff_t>(
+            const size_t start = saveType_ == SaveType::Flash128
+                ? static_cast<size_t>(flashBank_) * FLASH_BANK_SIZE + sectorOffset
+                : sectorOffset;
+            std::fill(saveData_->begin() + static_cast<std::ptrdiff_t>(start),
+                      saveData_->begin() + static_cast<std::ptrdiff_t>(
                           start + FLASH_SECTOR_SIZE), 0xFF);
         }
         flashCommandState_ = FlashCommandState::Ready;
         flashIdMode_ = false;
         break;
     case FlashCommandState::ProgramData: {
-        const size_t index = static_cast<size_t>(flashBank_) * FLASH_BANK_SIZE + offset;
-        (*saveFlash_)[index] &= value;
+        const size_t index = (saveType_ == SaveType::Flash128
+            ? static_cast<size_t>(flashBank_) * FLASH_BANK_SIZE : 0) + offset;
+        (*saveData_)[index] &= value;
         flashCommandState_ = FlashCommandState::Ready;
         flashIdMode_ = false;
         break;
     }
     case FlashCommandState::BankData:
         if (offset == 0)
-            flashBank_ = value & 1;
+            flashBank_ = saveType_ == SaveType::Flash128 ? value & 1 : 0;
         flashCommandState_ = FlashCommandState::Ready;
         flashIdMode_ = false;
         break;
+    }
+}
+
+uint16_t GbaSystem::readEeprom() const {
+    if (!eepromReadActive_)
+        return 1;
+    if (eepromReadCursor_ >= 68)
+        return 1;
+    if (eepromReadCursor_ < 4) {
+        ++eepromReadCursor_;
+        return 0;
+    }
+
+    const unsigned dataBit = eepromReadCursor_ - 4;
+    ++eepromReadCursor_;
+    if (eepromReadCursor_ == 68)
+        eepromReadActive_ = false;
+    const size_t byteIndex = static_cast<size_t>(eepromAddress_) * 8 +
+                             dataBit / 8;
+    if (!saveData_ || byteIndex >= saveData_->size())
+        return 1;
+    const uint8_t value = (*saveData_)[byteIndex];
+    return static_cast<uint16_t>((value >> (7 - (dataBit & 7))) & 1);
+}
+
+void GbaSystem::writeEeprom(uint16_t value) {
+    if (eepromDmaWriteActive_)
+        eepromInputBits_.push_back(static_cast<uint8_t>(value & 1));
+}
+
+void GbaSystem::finishEepromDma(uint32_t transferCount) {
+    eepromDmaWriteActive_ = false;
+    if (eepromInputBits_.size() != transferCount || eepromInputBits_.size() < 9 ||
+        eepromInputBits_[0] != 1)
+        return;
+
+    const unsigned command =
+        (static_cast<unsigned>(eepromInputBits_[1]) << 1) | eepromInputBits_[2];
+    const bool writeCommand = command == 2;
+    const bool readCommand = command == 3;
+    if (!writeCommand && !readCommand)
+        return;
+
+    const bool largeAddress = transferCount == 17 || transferCount == 81;
+    const unsigned addressBits = largeAddress ? 14 : 6;
+    if ((writeCommand && transferCount != 73 && transferCount != 81) ||
+        (readCommand && transferCount != 9 && transferCount != 17))
+        return;
+    if (saveType_ == SaveType::Eeprom && largeAddress &&
+        saveData_->size() == EEPROM512_SIZE) {
+        saveData_->resize(EEPROM_SIZE, 0xFF);
+    }
+
+    size_t cursor = 3;
+    uint16_t blockAddress = 0;
+    for (unsigned bit = 0; bit < addressBits; ++bit)
+        blockAddress = static_cast<uint16_t>((blockAddress << 1) |
+                                              eepromInputBits_[cursor++]);
+    eepromAddress_ = blockAddress;
+
+    if (writeCommand) {
+        const size_t firstByte = static_cast<size_t>(blockAddress) * 8;
+        if (!saveData_ || firstByte + 8 > saveData_->size())
+            return;
+        for (size_t byte = 0; byte < 8; ++byte) {
+            uint8_t value = 0;
+            for (unsigned bit = 0; bit < 8; ++bit)
+                value = static_cast<uint8_t>((value << 1) |
+                    eepromInputBits_[cursor++]);
+            (*saveData_)[firstByte + byte] = value;
+        }
+        eepromReadCursor_ = 0;
+        eepromReadActive_ = false;
+    } else {
+        eepromReadCursor_ = 0;
+        eepromReadActive_ = true;
     }
 }
 
@@ -291,8 +409,13 @@ uint8_t GbaSystem::read8(uint32_t address) const {
         return videoRam_[videoRamOffset(address)];
     if (address >= 0x07000000 && address < 0x08000000)
         return oam_[(address - 0x07000000) & 0x3FF];
-    if (address >= FLASH_BASE && address < FLASH_BASE + FLASH_WINDOW_SIZE)
-        return readFlash(address);
+    if (address >= FLASH_BASE && address < FLASH_BASE + FLASH_WINDOW_SIZE) {
+        if (saveType_ == SaveType::Sram)
+            return (*saveData_)[(address - FLASH_BASE) & (SRAM_SIZE - 1)];
+        if (saveType_ == SaveType::Flash64 || saveType_ == SaveType::Flash128)
+            return readFlash(address);
+        return 0xFF;
+    }
     if (address >= 0x08000000 && address < 0x0E000000 && !rom_.empty()) {
         const size_t offset = (address & 0x01FFFFFF) % rom_.size();
         return rom_[offset];
@@ -302,6 +425,8 @@ uint8_t GbaSystem::read8(uint32_t address) const {
 
 uint16_t GbaSystem::read16(uint32_t address) const {
     address &= ~uint32_t{1};
+    if (saveType_ == SaveType::Eeprom && isEepromAddress(address))
+        return readEeprom();
     return static_cast<uint16_t>(read8(address) |
                                  (static_cast<uint16_t>(read8(address + 1)) << 8));
 }
@@ -420,13 +545,22 @@ void GbaSystem::write8(uint32_t address, uint8_t value) {
     if (address >= OAM_BASE && address < 0x08000000)
         return;
     if (address >= FLASH_BASE && address < FLASH_BASE + FLASH_WINDOW_SIZE) {
-        writeFlash(address, value);
+        if (saveType_ == SaveType::Sram) {
+            (*saveData_)[(address - FLASH_BASE) & (SRAM_SIZE - 1)] = value;
+            return;
+        }
+        if (saveType_ == SaveType::Flash64 || saveType_ == SaveType::Flash128)
+            writeFlash(address, value);
         return;
     }
 }
 
 void GbaSystem::write16(uint32_t address, uint16_t value) {
     address &= ~uint32_t{1};
+    if (saveType_ == SaveType::Eeprom && isEepromAddress(address)) {
+        writeEeprom(value);
+        return;
+    }
     if (address >= PALETTE_BASE && address < 0x06000000) {
         flushCurrentScanline();
         const uint32_t offset = (address - PALETTE_BASE) & 0x3FE;
@@ -676,6 +810,12 @@ void GbaSystem::triggerDma(unsigned channel, unsigned timing) {
     uint32_t destination = dmaDestination_[channel];
     const unsigned sourceMode = (control >> 7) & 3;
     const unsigned destinationMode = (control >> 5) & 3;
+    const bool eepromWriteDma = saveType_ == SaveType::Eeprom &&
+        !wordTransfer && isEepromAddress(destination);
+    if (eepromWriteDma) {
+        eepromInputBits_.clear();
+        eepromDmaWriteActive_ = true;
+    }
     dmaActive_ = true;
     for (uint32_t transfer = 0; transfer < count; ++transfer) {
         const uint32_t value = wordTransfer
@@ -697,6 +837,8 @@ void GbaSystem::triggerDma(unsigned channel, unsigned timing) {
             destination -= unitSize;
     }
     dmaActive_ = false;
+    if (eepromWriteDma)
+        finishEepromDma(count);
 
     dmaSource_[channel] = source;
     dmaDestination_[channel] = destinationMode == 3
