@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17,13 +18,16 @@ public:
     static constexpr unsigned SCREEN_HEIGHT = 160;
     static constexpr size_t PIXEL_COUNT = SCREEN_WIDTH * SCREEN_HEIGHT;
     static constexpr uint32_t CYCLES_PER_FRAME = 1232 * 228;
+    static constexpr size_t FLASH1M_SIZE = 128 * 1024;
 
     struct FrameResult {
         bool success = false;
         uint32_t cycles = 0;
     };
 
-    explicit GbaSystem(std::vector<uint8_t> rom);
+    explicit GbaSystem(std::vector<uint8_t> rom,
+                       std::vector<uint8_t> bios = {},
+                       std::shared_ptr<std::vector<uint8_t>> saveFlash = nullptr);
 
     void reset();
     FrameResult runFrame();
@@ -34,6 +38,9 @@ public:
     }
     const Arm7Tdmi &cpu() const { return cpu_; }
     const std::string &fault() const { return cpu_.fault(); }
+    uint8_t *getSaveRamData();
+    size_t getSaveRamSize() const;
+    std::shared_ptr<std::vector<uint8_t>> getSaveRamStorage() const;
 
     uint8_t read8(uint32_t address) const override;
     uint16_t read16(uint32_t address) const override;
@@ -41,24 +48,114 @@ public:
     void write8(uint32_t address, uint8_t value) override;
     void write16(uint32_t address, uint16_t value) override;
     void write32(uint32_t address, uint32_t value) override;
+    void registerRamReset(uint8_t flags) override;
+    bool hasBios() const override { return !bios_.empty(); }
 
 private:
+    struct LayerPixel {
+        uint16_t color = 0;
+        uint16_t order = 0;
+        uint8_t priority = 4;
+        uint8_t layer = 5;
+        bool semiTransparent = false;
+        bool valid = false;
+    };
+
+    struct PixelLayers {
+        LayerPixel top;
+        LayerPixel second;
+    };
+
+    struct WindowPixel {
+        uint8_t layers = 0x3F;
+        bool colorEffects = true;
+    };
+
+    enum class FlashCommandState {
+        Ready,
+        UnlockSecond,
+        Command,
+        EraseUnlockFirst,
+        EraseUnlockSecond,
+        EraseCommand,
+        ProgramData,
+        BankData,
+    };
+
+    using LayerBuffer = std::array<PixelLayers, SCREEN_WIDTH>;
+    using ObjectBuffer = std::array<LayerPixel, SCREEN_WIDTH>;
+    using ObjectVisibility = std::array<bool, 128>;
+    using ObjectWindowBuffer = std::array<uint8_t, SCREEN_WIDTH>;
+    using WindowBuffer = std::array<WindowPixel, SCREEN_WIDTH>;
+
     static uint32_t videoRamOffset(uint32_t address);
+    uint16_t readOamForRendering(uint32_t address) const;
+    static bool romHasFlash1M(const std::vector<uint8_t> &rom);
+    uint8_t readFlash(uint32_t address) const;
+    void writeFlash(uint32_t address, uint8_t value);
+    static void offerPixel(LayerBuffer &pixels, size_t index, uint16_t color,
+                           unsigned priority, unsigned layer,
+                           unsigned order = 0);
+    static void offerObjectPixel(LayerPixel &pixel, uint16_t color,
+                                 unsigned priority,
+                                 unsigned object, bool semiTransparent);
     void tick(uint32_t cycles);
+    void tickTimers(uint32_t cycles);
+    void incrementTimer(unsigned timer, uint32_t ticks);
     void updateDisplayStatus();
-    void renderFrame();
+    void flushCurrentScanline();
+    void renderScanline(unsigned y, unsigned firstPixel, unsigned endPixel);
+    void renderTextBackground(unsigned background, unsigned y,
+                              LayerBuffer &pixels,
+                             const WindowBuffer &windows,
+                             unsigned firstPixel, unsigned endPixel) const;
+    void renderAffineBackground(unsigned background, unsigned y,
+                                LayerBuffer &pixels,
+                                const WindowBuffer &windows,
+                                unsigned firstPixel, unsigned endPixel) const;
+    void renderBitmapBackground(unsigned mode, unsigned y, uint16_t display,
+                                LayerBuffer &pixels,
+                                const WindowBuffer &windows,
+                                unsigned firstPixel, unsigned endPixel) const;
+    ObjectVisibility selectObjectsForScanline(unsigned y,
+                                               uint16_t display) const;
+    void renderObjectWindow(unsigned y, bool oneDimensional, bool bitmapMode,
+                            const ObjectVisibility &objectVisibility,
+                            ObjectWindowBuffer &objectWindow,
+                            unsigned firstPixel, unsigned endPixel) const;
+    void renderObjects(unsigned y, bool oneDimensional, bool bitmapMode,
+                       const ObjectVisibility &objectVisibility,
+                       ObjectBuffer &objects,
+                       unsigned firstPixel, unsigned endPixel) const;
+    void triggerDma(unsigned channel, unsigned timing);
 
     std::vector<uint8_t> rom_;
+    std::vector<uint8_t> bios_;
+    std::shared_ptr<std::vector<uint8_t>> saveFlash_;
+    FlashCommandState flashCommandState_ = FlashCommandState::Ready;
+    uint8_t flashBank_ = 0;
+    bool flashIdMode_ = false;
     std::array<uint8_t, 256 * 1024> externalWorkRam_{};
     std::array<uint8_t, 32 * 1024> internalWorkRam_{};
     std::array<uint8_t, 0x400> io_{};
     std::array<uint8_t, 1024> paletteRam_{};
     std::array<uint8_t, 96 * 1024> videoRam_{};
     std::array<uint8_t, 1024> oam_{};
+    std::array<uint8_t, 1024> renderedOam_{};
+    std::array<uint32_t, 4> dmaSource_{};
+    std::array<uint32_t, 4> dmaDestination_{};
+    std::array<bool, 4> dmaInitialized_{};
+    bool dmaActive_ = false;
+    std::array<uint16_t, 4> timerReload_{};
+    std::array<uint16_t, 4> timerCounter_{};
+    std::array<uint32_t, 4> timerPrescalerCycles_{};
     std::array<uint16_t, PIXEL_COUNT> frameBuffer_{};
     Arm7Tdmi cpu_;
     uint16_t pressedButtons_ = 0;
     uint32_t frameCycle_ = 0;
+    bool renderedOamInitialized_ = false;
+    uint16_t renderedScanline_ = 0xFFFF;
+    unsigned renderedPixel_ = 0;
 };
 
 } // namespace LOTUSGBA

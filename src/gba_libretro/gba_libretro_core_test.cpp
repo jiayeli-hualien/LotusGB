@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -21,6 +22,9 @@ std::vector<uint32_t> receivedPixels;
 enum retro_pixel_format selectedFormat = RETRO_PIXEL_FORMAT_0RGB1555;
 bool acceptXrgb8888 = true;
 uint16_t pressedJoypad = 0;
+std::string systemDirectoryPath;
+std::string biosStartupMode = "Automatic";
+bool biosOptionRegistered = false;
 
 void inputPoll() {}
 
@@ -37,7 +41,35 @@ std::vector<uint8_t> readFile(const std::string &path) {
                                  std::istreambuf_iterator<char>());
 }
 
+std::vector<uint8_t> makeFlash1mMode3Rom() {
+    std::vector<uint8_t> rom = makeGbaMode3BootRom();
+    constexpr char marker[] = "FLASH1M_V103";
+    rom.insert(rom.end(), marker, marker + sizeof(marker) - 1);
+    return rom;
+}
+
 bool environment(unsigned command, void *data) {
+    if (command == RETRO_ENVIRONMENT_SET_VARIABLES) {
+        const auto *options = static_cast<const retro_variable *>(data);
+        for (size_t index = 0; options[index].key; ++index)
+            biosOptionRegistered |=
+                std::string(options[index].key) == "lotusgba_bios_mode";
+        return true;
+    }
+    if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
+        auto *option = static_cast<retro_variable *>(data);
+        if (option && option->key &&
+            std::string(option->key) == "lotusgba_bios_mode") {
+            option->value = biosStartupMode.c_str();
+            return true;
+        }
+    }
+    if (command == RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY) {
+        if (systemDirectoryPath.empty())
+            return false;
+        *static_cast<const char **>(data) = systemDirectoryPath.c_str();
+        return true;
+    }
     if (command == RETRO_ENVIRONMENT_SET_PIXEL_FORMAT) {
         selectedFormat = *static_cast<retro_pixel_format *>(data);
         return selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888
@@ -45,6 +77,145 @@ bool environment(unsigned command, void *data) {
                    : selectedFormat == RETRO_PIXEL_FORMAT_0RGB1555;
     }
     return false;
+}
+
+void runOptionalBiosCheck() {
+    const auto directory = std::filesystem::temp_directory_path() /
+                           "lotusgba_core_test_system";
+    std::filesystem::create_directories(directory);
+    const auto biosPath = directory / "gba_bios.bin";
+    std::vector<uint8_t> bios(0x4000, 0);
+    constexpr uint32_t loadPcFromLiteral = 0xE51FF004; // ldr pc, [pc, #-4]
+    constexpr uint32_t cartridgeEntry = 0x08000000;
+    for (unsigned byte = 0; byte < 4; ++byte) {
+        bios[byte] = static_cast<uint8_t>(loadPcFromLiteral >> (byte * 8));
+        bios[4 + byte] = static_cast<uint8_t>(cartridgeEntry >> (byte * 8));
+    }
+    {
+        std::ofstream file(biosPath, std::ios::binary | std::ios::trunc);
+        assert(file.good());
+        file.write(reinterpret_cast<const char *>(bios.data()),
+                   static_cast<std::streamsize>(bios.size()));
+        assert(file.good());
+    }
+
+    systemDirectoryPath = directory.string();
+    biosStartupMode = "Use BIOS";
+    auto rom = makeGbaMode3BootRom();
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    videoReceived = false;
+    receivedPixels.clear();
+    assert(retro_load_game(&game));
+    retro_run();
+    retro_run();
+    assert(videoReceived);
+    assert(receivedWidth == 240 && receivedHeight == 160);
+    if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
+        for (uint32_t pixel : receivedPixels)
+            assert(pixel == 0x00FF0000);
+    } else {
+        for (uint32_t pixel : receivedPixels)
+            assert(pixel == 0x7C00);
+    }
+    retro_unload_game();
+    biosStartupMode = "Automatic";
+    systemDirectoryPath.clear();
+    std::filesystem::remove_all(directory);
+}
+
+void runFlashBatteryMemoryCheck() {
+    biosStartupMode = "Skip BIOS";
+    auto rom = makeFlash1mMode3Rom();
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    assert(retro_load_game(&game));
+
+    constexpr size_t flashSize = 128 * 1024;
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    assert(saveRam != nullptr);
+    assert(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == flashSize);
+    assert(saveRam[0] == 0xFF && saveRam[0x1234] == 0xFF);
+    saveRam[0x1234] = 0x5A; // Simulate a frontend restoring battery data.
+
+    retro_reset();
+    auto *afterReset = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    assert(afterReset == saveRam && afterReset[0x1234] == 0x5A);
+    std::vector<uint8_t> savedBattery(afterReset, afterReset + flashSize);
+
+    retro_unload_game();
+    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == nullptr);
+    assert(retro_load_game(&game));
+    auto *reloadedSave = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    assert(reloadedSave != nullptr);
+    assert(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == flashSize);
+    std::copy(savedBattery.begin(), savedBattery.end(), reloadedSave);
+    assert(reloadedSave[0x1234] == 0x5A);
+
+    retro_unload_game();
+    biosStartupMode = "Automatic";
+}
+
+void runRequiredBiosMissingCheck() {
+    systemDirectoryPath.clear();
+    biosStartupMode = "Use BIOS";
+    auto rom = makeGbaMode3BootRom();
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    assert(!retro_load_game(&game));
+    biosStartupMode = "Automatic";
+}
+
+void runSkipBiosOptionCheck() {
+    const auto directory = std::filesystem::temp_directory_path() /
+                           "lotusgba_skip_bios_test_system";
+    std::filesystem::create_directories(directory);
+    const auto biosPath = directory / "gba_bios.bin";
+    std::vector<uint8_t> bios(0x4000, 0);
+    constexpr uint32_t branchToSelf = 0xEAFFFFFE;
+    for (unsigned byte = 0; byte < 4; ++byte)
+        bios[byte] = static_cast<uint8_t>(branchToSelf >> (byte * 8));
+    {
+        std::ofstream file(biosPath, std::ios::binary | std::ios::trunc);
+        assert(file.good());
+        file.write(reinterpret_cast<const char *>(bios.data()),
+                   static_cast<std::streamsize>(bios.size()));
+        assert(file.good());
+    }
+
+    // A looping BIOS fixture makes the selected startup path observable:
+    // Skip BIOS must boot the cartridge even though a BIOS file is present.
+    systemDirectoryPath = directory.string();
+    biosStartupMode = "Skip BIOS";
+    auto rom = makeGbaMode3BootRom();
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    videoReceived = false;
+    receivedPixels.clear();
+    assert(retro_load_game(&game));
+    retro_run();
+    retro_run();
+    assert(videoReceived);
+    assert(receivedWidth == 240 && receivedHeight == 160);
+    if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
+        for (uint32_t pixel : receivedPixels)
+            assert(pixel == 0x00FF0000);
+    } else {
+        for (uint32_t pixel : receivedPixels)
+            assert(pixel == 0x7C00);
+    }
+
+    retro_unload_game();
+    biosStartupMode = "Automatic";
+    systemDirectoryPath.clear();
+    std::filesystem::remove_all(directory);
 }
 
 void videoRefresh(const void *data, unsigned width, unsigned height, size_t pitch) {
@@ -115,6 +286,11 @@ void runPongGameplayAndCheck() {
     game.size = rom.size();
     assert(retro_load_game(&game));
 
+    // Let the first VBlank-driven menu draw reach the following visible frame.
+    pressedJoypad = 0;
+    retro_run();
+    retro_run();
+
     std::pair<int, int> initialBall{};
     std::pair<int, int> beforePaddleReturn{};
     unsigned initialPlayerScore = 0;
@@ -157,23 +333,27 @@ void runPongGameplayAndCheck() {
         if (frame == 129)
             assert(leftPaddleTop() == 68);
         if (frame == 139)
+            assert(leftPaddleTop() == 50); // Visible one frame after the VBlank draw.
+        if (frame == 140)
             assert(leftPaddleTop() == 48);
         if (frame == 150)
+            assert(leftPaddleTop() == 66);
+        if (frame == 151)
             assert(leftPaddleTop() == 68);
         if (frame == 219)
             assert(leftPaddleTop() == 0);
         if (frame == 220)
             beforePaddleReturn = ballTopLeft();
-        if (frame == 245) {
-            // The human paddle catches the ball at the left edge and sends it
-            // back across the screen.
+        if (frame == 247) {
             const auto returnedBall = ballTopLeft();
             assert(returnedBall.first > beforePaddleReturn.first);
             assert(returnedBall.first < 80);
         }
         if (frame == 433)
+            assert(leftPaddleTop() == 66);
+        if (frame == 434)
             assert(leftPaddleTop() == 68);
-        if (frame == 454 || frame == 460) {
+        if (frame == 455 || frame == 460) {
             // Moving away for the next return lets the CPU score once.
             assert(scorePixels(52) == initialPlayerScore);
             assert(scorePixels(172) != initialComputerScore);
@@ -187,6 +367,7 @@ void runPongGameplayAndCheck() {
 
 int main() {
     retro_set_environment(environment);
+    assert(biosOptionRegistered);
     retro_set_video_refresh(videoRefresh);
     retro_set_input_poll(inputPoll);
     retro_set_input_state(inputState);
@@ -211,6 +392,7 @@ int main() {
         videoReceived = false;
         receivedPixels.clear();
         assert(retro_load_game(&game));
+        retro_run();
         retro_run();
 
         assert(videoReceived);
@@ -269,6 +451,10 @@ int main() {
     runInstructionSuiteAndCheck(
         readFile("../../tests/roms/gba-thumb-tests/thumb.gba"));
     runPongGameplayAndCheck();
+    runFlashBatteryMemoryCheck();
+    runOptionalBiosCheck();
+    runSkipBiosOptionCheck();
+    runRequiredBiosMissingCheck();
 
     retro_deinit();
 

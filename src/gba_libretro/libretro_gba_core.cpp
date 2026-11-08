@@ -4,7 +4,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -38,11 +42,114 @@ uint64_t audioRemainder = 0;
 bool useXrgb8888 = false;
 bool coreFaulted = false;
 
+enum class BiosStartupMode {
+    Automatic,
+    RequireExternal,
+    SkipExternal,
+};
+
+constexpr const char *BIOS_MODE_OPTION = "lotusgba_bios_mode";
+
+void registerCoreOptions() {
+    if (!environmentCallback)
+        return;
+    retro_variable options[] = {
+        {BIOS_MODE_OPTION,
+         "GBA BIOS startup (restart content to apply); Automatic|Use BIOS|Skip BIOS"},
+        {nullptr, nullptr},
+    };
+    environmentCallback(RETRO_ENVIRONMENT_SET_VARIABLES, options);
+}
+
 void logMessage(retro_log_level level, const char *message) {
     if (logCallback)
         logCallback(level, "[LotusGBA] %s\n", message);
     else
         std::fprintf(stderr, "[LotusGBA] %s\n", message);
+}
+
+BiosStartupMode readBiosStartupMode() {
+    if (!environmentCallback)
+        return BiosStartupMode::Automatic;
+
+    retro_variable option{BIOS_MODE_OPTION, nullptr};
+    if (!environmentCallback(RETRO_ENVIRONMENT_GET_VARIABLE, &option) ||
+        !option.value || std::string(option.value) == "Automatic")
+        return BiosStartupMode::Automatic;
+    if (std::string(option.value) == "Use BIOS")
+        return BiosStartupMode::RequireExternal;
+    if (std::string(option.value) == "Skip BIOS")
+        return BiosStartupMode::SkipExternal;
+
+    logMessage(RETRO_LOG_WARN,
+               "Unknown BIOS startup option; using Automatic mode");
+    return BiosStartupMode::Automatic;
+}
+
+std::vector<uint8_t> loadBios(BiosStartupMode mode) {
+    if (mode == BiosStartupMode::SkipExternal) {
+        logMessage(RETRO_LOG_INFO,
+                   "Skipping external BIOS; using initialized HLE cartridge startup");
+        return {};
+    }
+
+    if (!environmentCallback) {
+        if (mode == BiosStartupMode::RequireExternal)
+            throw std::runtime_error(
+                "GBA BIOS startup is set to Use BIOS, but RetroArch has no system directory");
+        logMessage(RETRO_LOG_INFO,
+                   "No RetroArch system directory; using HLE BIOS startup");
+        return {};
+    }
+
+    const char *systemDirectory = nullptr;
+    if (!environmentCallback(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY,
+                             &systemDirectory) ||
+        !systemDirectory || systemDirectory[0] == '\0') {
+        if (mode == BiosStartupMode::RequireExternal)
+            throw std::runtime_error(
+                "GBA BIOS startup is set to Use BIOS, but RetroArch has no system directory");
+        logMessage(RETRO_LOG_INFO,
+                   "No RetroArch system directory; using HLE BIOS startup");
+        return {};
+    }
+
+    const std::filesystem::path directory(systemDirectory);
+    constexpr const char *filenames[] = {"gba_bios.bin", "bios.bin"};
+    for (const char *filename : filenames) {
+        const auto path = directory / filename;
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            std::error_code error;
+            const bool exists = std::filesystem::exists(path, error);
+            if (error)
+                throw std::runtime_error("Could not inspect GBA BIOS path: " +
+                                         path.string() + ": " + error.message());
+            if (exists)
+                throw std::runtime_error("Could not read GBA BIOS: " +
+                                         path.string());
+            continue;
+        }
+
+        std::vector<uint8_t> bios(std::istreambuf_iterator<char>(file), {});
+        if (file.bad())
+            throw std::runtime_error("Error while reading GBA BIOS: " +
+                                     path.string());
+        if (bios.size() != 0x4000)
+            throw std::runtime_error("GBA BIOS must be exactly 16 KiB: " +
+                                     path.string());
+
+        const std::string message = "Using GBA BIOS: " + path.string();
+        logMessage(RETRO_LOG_INFO, message.c_str());
+        return bios;
+    }
+
+    if (mode == BiosStartupMode::RequireExternal)
+        throw std::runtime_error(
+            "GBA BIOS startup is set to Use BIOS, but gba_bios.bin or bios.bin was not found");
+    logMessage(RETRO_LOG_INFO,
+               "No GBA BIOS found; using HLE BIOS startup");
+    return {};
 }
 
 uint32_t expand5(uint32_t value) {
@@ -126,6 +233,7 @@ void retro_set_environment(retro_environment_t callback) {
     if (environmentCallback) {
         bool noGame = false;
         environmentCallback(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &noGame);
+        registerCoreOptions();
     }
 }
 
@@ -229,7 +337,12 @@ bool retro_load_game(const retro_game_info *game) {
     try {
         const auto *begin = static_cast<const uint8_t *>(game->data);
         std::vector<uint8_t> candidate(begin, begin + game->size);
-        auto candidateSystem = std::make_unique<GbaSystem>(candidate);
+        auto candidateBios = loadBios(readBiosStartupMode());
+        std::shared_ptr<std::vector<uint8_t>> candidateSaveFlash;
+        if (gbaSystem && loadedRom == candidate)
+            candidateSaveFlash = gbaSystem->getSaveRamStorage();
+        auto candidateSystem = std::make_unique<GbaSystem>(
+            candidate, std::move(candidateBios), std::move(candidateSaveFlash));
         loadedRom = std::move(candidate);
         gbaSystem = std::move(candidateSystem);
         coreFaulted = false;
@@ -247,7 +360,16 @@ bool retro_load_game(const retro_game_info *game) {
 bool retro_load_game_special(unsigned, const retro_game_info *, size_t) { return false; }
 void retro_unload_game(void) { gbaSystem.reset(); loadedRom.clear(); coreFaulted = false; }
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
-void *retro_get_memory_data(unsigned) { return nullptr; }
-size_t retro_get_memory_size(unsigned) { return 0; }
+void *retro_get_memory_data(unsigned id) {
+    if (!gbaSystem || id != RETRO_MEMORY_SAVE_RAM)
+        return nullptr;
+    return gbaSystem->getSaveRamData();
+}
+
+size_t retro_get_memory_size(unsigned id) {
+    if (!gbaSystem || id != RETRO_MEMORY_SAVE_RAM)
+        return 0;
+    return gbaSystem->getSaveRamSize();
+}
 
 } // extern "C"

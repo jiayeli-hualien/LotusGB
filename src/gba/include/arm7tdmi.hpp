@@ -16,6 +16,8 @@ public:
     virtual void write8(uint32_t address, uint8_t value) = 0;
     virtual void write16(uint32_t address, uint16_t value) = 0;
     virtual void write32(uint32_t address, uint32_t value) = 0;
+    virtual void registerRamReset(uint8_t flags) = 0;
+    virtual bool hasBios() const { return false; }
 };
 
 class Arm7Tdmi {
@@ -26,12 +28,17 @@ public:
     };
 
     void reset(uint32_t entryPoint = 0x08000000,
-               uint32_t stackPointer = 0x03007F00);
+               uint32_t stackPointer = 0x03007F00,
+               uint32_t initialCpsr = 0xDF,
+               uint32_t irqStackPointer = 0,
+               uint32_t supervisorStackPointer = 0);
     StepResult step(GbaBus &bus);
     bool irqDisabled() const { return (cpsr_ & CPSR_I) != 0; }
     bool halted() const { return halted_; }
     void wakeFromInterrupts(uint16_t flags, uint16_t enable);
     bool enterIrq(uint32_t handlerAddress);
+    bool enterIrqVector();
+    bool enterSwiVector(uint32_t returnAddress);
 
     uint32_t programCounter() const { return pc_; }
     uint32_t registerValue(unsigned index) const;
@@ -67,7 +74,8 @@ private:
     void finishIrqReturn();
     bool executeStatusTransfer(uint32_t instruction,
                                uint32_t instructionAddress);
-    bool executeSoftwareInterrupt(uint32_t service, GbaBus &bus);
+    bool executeSoftwareInterrupt(uint32_t service, GbaBus &bus,
+                                  uint32_t returnAddress);
     bool executeMultiply(uint32_t instruction);
     bool executeSwap(uint32_t instruction, GbaBus &bus,
                      uint32_t instructionAddress);

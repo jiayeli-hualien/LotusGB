@@ -1,7 +1,9 @@
 #include "arm7tdmi.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <limits>
+#include <vector>
 
 namespace LOTUSGBA {
 namespace {
@@ -22,19 +24,23 @@ int32_t signExtend24(uint32_t value) {
 
 } // namespace
 
-void Arm7Tdmi::reset(uint32_t entryPoint, uint32_t stackPointer) {
+void Arm7Tdmi::reset(uint32_t entryPoint, uint32_t stackPointer,
+                     uint32_t initialCpsr, uint32_t irqStackPointer,
+                     uint32_t supervisorStackPointer) {
     registers_.fill(0);
     userBank_.fill(0);
     fiqBank_.fill(0);
     for (auto &bank : exceptionRegisterBanks_)
         bank.fill(0);
+    exceptionRegisterBanks_[0][0] = irqStackPointer;
+    exceptionRegisterBanks_[1][0] = supervisorStackPointer;
     savedStatusBanks_.fill(0);
     irqSavedRegisters_.fill(0);
     registers_[13] = stackPointer;
     registers_[14] = 0;
     userBank_[5] = stackPointer;
     pc_ = entryPoint & ~uint32_t{3};
-    cpsr_ = 0xDF; // HLE handoff into System mode with IRQ/FIQ masked.
+    cpsr_ = initialCpsr;
     irqReturnProgramCounter_ = 0;
     irqReturnStatus_ = 0;
     irqActive_ = false;
@@ -122,30 +128,40 @@ void Arm7Tdmi::switchMode(uint32_t mode) {
     if (oldMode == mode)
         return;
 
-    if (oldMode == 0x11) { // FIQ -> shared User/System bank
+    if (oldMode == 0x11) { // Save the FIQ bank.
         for (unsigned index = 0; index < 7; ++index) {
             fiqBank_[index] = registers_[index + 8];
-            registers_[index + 8] = userBank_[index];
         }
     } else if (const int exception = exceptionModeIndex(oldMode); exception >= 0) {
         exceptionRegisterBanks_[static_cast<size_t>(exception)] = {
             registers_[13], registers_[14]};
-    } else {
-        for (unsigned index = 0; index < 7; ++index) {
+        for (unsigned index = 0; index < 5; ++index)
             userBank_[index] = registers_[index + 8];
-        }
+    } else {
+        for (unsigned index = 0; index < 5; ++index)
+            userBank_[index] = registers_[index + 8];
+        userBank_[5] = registers_[13];
+        userBank_[6] = registers_[14];
     }
 
     if (mode == 0x11) { // shared User/System bank -> FIQ
         for (unsigned index = 0; index < 7; ++index)
             registers_[index + 8] = fiqBank_[index];
     } else if (const int exception = exceptionModeIndex(mode); exception >= 0) {
+        if (oldMode == 0x11) {
+            for (unsigned index = 0; index < 5; ++index)
+                registers_[index + 8] = userBank_[index];
+        }
         const auto &bank = exceptionRegisterBanks_[static_cast<size_t>(exception)];
         registers_[13] = bank[0];
         registers_[14] = bank[1];
     } else {
-        for (unsigned index = 0; index < 7; ++index)
-            registers_[index + 8] = userBank_[index];
+        if (oldMode == 0x11) {
+            for (unsigned index = 0; index < 5; ++index)
+                registers_[index + 8] = userBank_[index];
+        }
+        registers_[13] = userBank_[5];
+        registers_[14] = userBank_[6];
     }
     cpsr_ = (cpsr_ & ~MODE_MASK) | mode;
 }
@@ -201,6 +217,40 @@ bool Arm7Tdmi::enterIrq(uint32_t handlerAddress) {
     pc_ = handlerAddress == 0 ? IRQ_RETURN_SENTINEL
                               : handlerAddress & ~uint32_t{3};
     irqActive_ = true;
+    halted_ = false;
+    haltOnAnyEnabledInterrupt_ = false;
+    haltInterruptMask_ = 0;
+    return true;
+}
+
+bool Arm7Tdmi::enterIrqVector() {
+    if (irqDisabled() || irqActive_)
+        return false;
+    uint32_t *savedStatus = savedStatusForMode(0x12);
+    if (!savedStatus)
+        return false;
+    *savedStatus = cpsr_;
+    switchMode(0x12);
+    registers_[14] = pc_ + 4;
+    cpsr_ |= CPSR_I;
+    cpsr_ &= ~CPSR_T;
+    pc_ = 0x00000018;
+    halted_ = false;
+    haltOnAnyEnabledInterrupt_ = false;
+    haltInterruptMask_ = 0;
+    return true;
+}
+
+bool Arm7Tdmi::enterSwiVector(uint32_t returnAddress) {
+    uint32_t *savedStatus = savedStatusForMode(0x13);
+    if (!savedStatus)
+        return false;
+    *savedStatus = cpsr_;
+    switchMode(0x13);
+    registers_[14] = returnAddress;
+    cpsr_ |= CPSR_I;
+    cpsr_ &= ~CPSR_T;
+    pc_ = 0x00000008;
     halted_ = false;
     haltOnAnyEnabledInterrupt_ = false;
     haltInterruptMask_ = 0;
@@ -296,7 +346,180 @@ bool Arm7Tdmi::executeStatusTransfer(uint32_t instruction,
     return true;
 }
 
-bool Arm7Tdmi::executeSoftwareInterrupt(uint32_t service, GbaBus &bus) {
+bool Arm7Tdmi::executeSoftwareInterrupt(uint32_t service, GbaBus &bus,
+                                        uint32_t returnAddress) {
+    if (bus.hasBios())
+        return enterSwiVector(returnAddress);
+    if (service == 0x000001) { // BIOS RegisterRamReset
+        bus.registerRamReset(static_cast<uint8_t>(registers_[0]));
+        return true;
+    }
+    if (service == 0x00000B || service == 0x00000C) { // CpuSet / CpuFastSet
+        const uint32_t source = registers_[0];
+        uint32_t destination = registers_[1];
+        const uint32_t control = registers_[2];
+        const bool fixedSource = (control & (1u << 24)) != 0;
+        if (service == 0x00000B) {
+            const bool wordTransfer = (control & (1u << 26)) != 0;
+            const uint32_t unitSize = wordTransfer ? 4 : 2;
+            const uint32_t count = control & 0x001FFFFF;
+            const uint32_t fillValue = fixedSource
+                ? (wordTransfer ? bus.read32(source) : bus.read16(source))
+                : 0;
+            for (uint32_t index = 0; index < count; ++index) {
+                const uint32_t value = fixedSource
+                    ? fillValue
+                    : (wordTransfer
+                        ? bus.read32(source + index * unitSize)
+                        : bus.read16(source + index * unitSize));
+                if (wordTransfer)
+                    bus.write32(destination, value);
+                else
+                    bus.write16(destination, static_cast<uint16_t>(value));
+                destination += unitSize;
+            }
+        } else {
+            const uint32_t count = ((control & 0x001FFFFF) + 7u) & ~7u;
+            const uint32_t fillValue = fixedSource ? bus.read32(source) : 0;
+            for (uint32_t index = 0; index < count; ++index) {
+                const uint32_t value = fixedSource
+                    ? fillValue
+                    : bus.read32(source + index * 4);
+                bus.write32(destination, value);
+                destination += 4;
+            }
+        }
+        return true;
+    }
+    if (service == 0x000011 || service == 0x000012) { // LZ77UnCompWRAM / VRAM
+        const uint32_t sourceStart = registers_[0];
+        uint32_t source = sourceStart + 4;
+        const uint32_t destination = registers_[1];
+        const uint32_t outputSize = (bus.read32(sourceStart) >> 8) & 0x00FFFFFF;
+        std::vector<uint8_t> output;
+        output.reserve(outputSize);
+
+        while (output.size() < outputSize) {
+            const uint8_t flags = bus.read8(source++);
+            for (unsigned bit = 0; bit < 8 && output.size() < outputSize; ++bit) {
+                if ((flags & (0x80u >> bit)) == 0) {
+                    output.push_back(bus.read8(source++));
+                    continue;
+                }
+
+                const uint8_t first = bus.read8(source++);
+                const uint8_t second = bus.read8(source++);
+                const unsigned length = (first >> 4) + 3;
+                const unsigned displacement =
+                    ((static_cast<unsigned>(first & 0x0F) << 8) |
+                     static_cast<unsigned>(second)) + 1u;
+                for (unsigned index = 0;
+                     index < length && output.size() < outputSize; ++index) {
+                    output.push_back(output.size() >= displacement
+                        ? output[output.size() - displacement]
+                        : 0);
+                }
+            }
+        }
+
+        if (service == 0x000011) {
+            for (size_t index = 0; index < output.size(); ++index)
+                bus.write8(destination + static_cast<uint32_t>(index), output[index]);
+        } else {
+            uint32_t outputAddress = destination;
+            size_t outputOffset = 0;
+            while (outputOffset < output.size()) {
+                const uint32_t halfwordAddress = outputAddress & ~uint32_t{1};
+                uint16_t value = bus.read16(halfwordAddress);
+                if ((outputAddress & 1) != 0) {
+                    value = static_cast<uint16_t>((value & 0x00FF) |
+                        (static_cast<uint16_t>(output[outputOffset++]) << 8));
+                    ++outputAddress;
+                } else {
+                    value = static_cast<uint16_t>((value & 0xFF00) |
+                        output[outputOffset++]);
+                    ++outputAddress;
+                    if (outputOffset < output.size()) {
+                        value = static_cast<uint16_t>((value & 0x00FF) |
+                            (static_cast<uint16_t>(output[outputOffset++]) << 8));
+                        ++outputAddress;
+                    }
+                }
+                bus.write16(halfwordAddress, value);
+            }
+        }
+
+        registers_[0] = source;
+        registers_[1] = destination + outputSize;
+        registers_[3] = 0;
+        return true;
+    }
+    if (service == 0x00000E || service == 0x00000F) { // BgAffineSet / ObjAffineSet
+        const bool background = service == 0x00000E;
+        uint32_t source = registers_[0];
+        uint32_t destination = registers_[1];
+        const uint32_t count = registers_[2];
+        const uint32_t stride = registers_[3];
+        constexpr float PI = 3.14159265358979323846f;
+
+        for (uint32_t item = 0; item < count; ++item) {
+            float originX = 0;
+            float originY = 0;
+            int16_t centerX = 0;
+            int16_t centerY = 0;
+            const float scaleX = static_cast<int16_t>(bus.read16(source +
+                (background ? 12 : 0))) / 256.0f;
+            const float scaleY = static_cast<int16_t>(bus.read16(source +
+                (background ? 14 : 2))) / 256.0f;
+            const uint32_t rotationOffset = background ? 16 : 4;
+            const uint8_t rotation = static_cast<uint8_t>(
+                bus.read16(source + rotationOffset) >> 8);
+            if (background) {
+                originX = static_cast<float>(static_cast<int32_t>(
+                    bus.read32(source))) / 256.0f;
+                originY = static_cast<float>(static_cast<int32_t>(
+                    bus.read32(source + 4))) / 256.0f;
+                centerX = static_cast<int16_t>(bus.read16(source + 8));
+                centerY = static_cast<int16_t>(bus.read16(source + 10));
+            }
+
+            const float theta = static_cast<float>(rotation) / 128.0f * PI;
+            const float sine = std::sin(theta);
+            const float cosine = std::cos(theta);
+            const float pa = cosine * scaleX;
+            const float pb = -sine * scaleX;
+            const float pc = sine * scaleY;
+            const float pd = cosine * scaleY;
+            bus.write16(destination, static_cast<uint16_t>(
+                static_cast<int16_t>(pa * 256.0f)));
+            if (background) {
+                bus.write16(destination + 2, static_cast<uint16_t>(
+                    static_cast<int16_t>(pb * 256.0f)));
+                bus.write16(destination + 4, static_cast<uint16_t>(
+                    static_cast<int16_t>(pc * 256.0f)));
+                bus.write16(destination + 6, static_cast<uint16_t>(
+                    static_cast<int16_t>(pd * 256.0f)));
+                const float referenceX = originX - (pa * centerX + pb * centerY);
+                const float referenceY = originY - (pc * centerX + pd * centerY);
+                bus.write32(destination + 8, static_cast<uint32_t>(
+                    static_cast<int32_t>(referenceX * 256.0f)));
+                bus.write32(destination + 12, static_cast<uint32_t>(
+                    static_cast<int32_t>(referenceY * 256.0f)));
+                source += 20;
+                destination += 16;
+            } else {
+                bus.write16(destination + stride, static_cast<uint16_t>(
+                    static_cast<int16_t>(pb * 256.0f)));
+                bus.write16(destination + stride * 2, static_cast<uint16_t>(
+                    static_cast<int16_t>(pc * 256.0f)));
+                bus.write16(destination + stride * 3, static_cast<uint16_t>(
+                    static_cast<int16_t>(pd * 256.0f)));
+                source += 8;
+                destination += stride * 4;
+            }
+        }
+        return true;
+    }
     if (service == 0x000006) { // BIOS Div
         const int32_t numerator = static_cast<int32_t>(registers_[0]);
         const int32_t denominator = static_cast<int32_t>(registers_[1]);
@@ -578,7 +801,7 @@ bool Arm7Tdmi::executeDataProcessing(uint32_t instruction,
     }
 
     const bool exceptionReturn = rd == 15 && setFlags &&
-                                 (cpsr_ & 0x1F) == 0x11;
+        savedStatusForMode(cpsr_ & 0x1F) != nullptr;
     if (writesResult && rd == 15 && setFlags && !exceptionReturn)
         return false;
 
@@ -822,7 +1045,7 @@ bool Arm7Tdmi::executeBlockTransfer(uint32_t instruction, GbaBus &bus,
 bool Arm7Tdmi::executeArm(uint32_t instruction, GbaBus &bus,
                           uint32_t instructionAddress) {
     if ((instruction & 0x0F000000) == 0x0F000000)
-        return executeSoftwareInterrupt(instruction & 0x00FFFFFF, bus);
+        return executeSoftwareInterrupt(instruction & 0x00FFFFFF, bus, pc_);
     if ((instruction & 0x0FB00FF0) == 0x01000090)
         return executeSwap(instruction, bus, instructionAddress);
     if ((instruction & 0x0FC000F0) == 0x00000090 ||
@@ -1269,7 +1492,7 @@ bool Arm7Tdmi::executeThumb(uint16_t instruction, GbaBus &bus,
     if ((instruction & 0xF000) == 0xD000) { // Conditional branch / SWI
         const unsigned condition = (instruction >> 8) & 0xF;
         if (condition == 0xF)
-            return executeSoftwareInterrupt(instruction & 0xFF, bus);
+            return executeSoftwareInterrupt(instruction & 0xFF, bus, pc_);
         if (condition == 0xE)
             return false;
         if (conditionPassed(condition)) {

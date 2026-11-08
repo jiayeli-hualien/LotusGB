@@ -16,8 +16,9 @@ all: build
 
 build: $(build_dir)/lotusgba_libretro.so $(build_dir)/lotusgba_libretro.info $(macos_core)
 
-test: $(build_dir)/gba_libretro_core_test
+test: $(build_dir)/gba_libretro_core_test $(build_dir)/gba_video_test
 	$(build_dir)/gba_libretro_core_test
+	$(build_dir)/gba_video_test
 
 $(build_dir)/lotusgba_libretro.so: libretro_gba_core.cpp $(gba_sources) \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp ../libretro/include/libretro.h | $(build_dir)
@@ -38,6 +39,10 @@ $(build_dir)/gba_libretro_core_test: gba_libretro_core_test.cpp libretro_gba_cor
 		../libretro/include/libretro.h | $(build_dir)
 	$(CXX) $(CPPFLAGS) -o $@ gba_libretro_core_test.cpp \
 		libretro_gba_core.cpp $(gba_sources)
+
+$(build_dir)/gba_video_test: gba_video_test.cpp $(gba_sources) \
+		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp | $(build_dir)
+	$(CXX) $(CPPFLAGS) -o $@ gba_video_test.cpp $(gba_sources)
 
 $(build_dir):
 	mkdir -p $@
