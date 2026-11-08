@@ -1544,6 +1544,11 @@ Arm7Tdmi::StepResult Arm7Tdmi::step(GbaBus &bus) {
     if (halted_)
         return {true, 1};
 
+    bus.beginCpuStep();
+    const auto finishStep = [&bus](bool success, uint32_t baseCycles) {
+        const uint32_t cycles = bus.endCpuStep(baseCycles);
+        return Arm7Tdmi::StepResult{success, success ? cycles : 0};
+    };
     const uint32_t instructionAddress = pc_;
     if (thumbState()) {
         const uint16_t instruction = bus.read16(instructionAddress);
@@ -1551,7 +1556,7 @@ Arm7Tdmi::StepResult Arm7Tdmi::step(GbaBus &bus) {
         if (!executeThumb(instruction, bus, instructionAddress)) {
             setFault("Unsupported Thumb instruction", instructionAddress,
                      instruction);
-            return {};
+            return finishStep(false, 0);
         }
     } else {
         const uint32_t instruction = bus.read32(instructionAddress);
@@ -1560,17 +1565,17 @@ Arm7Tdmi::StepResult Arm7Tdmi::step(GbaBus &bus) {
         if (condition == 0xF) {
             setFault("Unconditional ARM extension is not implemented",
                      instructionAddress, instruction);
-            return {};
+            return finishStep(false, 0);
         }
         if (conditionPassed(condition)) {
             if (!executeArm(instruction, bus, instructionAddress)) {
                 setFault("Unsupported ARM instruction", instructionAddress,
                          instruction);
-                return {};
+                return finishStep(false, 0);
             }
         }
     }
-    return {true, 1};
+    return finishStep(true, 1);
 }
 
 } // namespace LOTUSGBA

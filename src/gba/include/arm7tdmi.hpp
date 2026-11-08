@@ -18,6 +18,8 @@ public:
     virtual void write32(uint32_t address, uint32_t value) = 0;
     virtual void registerRamReset(uint8_t flags) = 0;
     virtual bool hasBios() const { return false; }
+    virtual void beginCpuStep() {}
+    virtual uint32_t endCpuStep(uint32_t baseCycles) { return baseCycles; }
 };
 
 class Arm7Tdmi {

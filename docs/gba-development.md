@@ -104,6 +104,14 @@ The normal `make test` route also runs this GBA core test.
   Timers 0–3 support the four prescalers, count-up cascade and overflow IRQ
   flags. HLE also implements `RegisterRamReset`, `CpuSet`, `CpuFastSet`, LZ77
   decompression to WRAM/VRAM, `BgAffineSet` and `ObjAffineSet`.
+- `WAITCNT` at `0x04000204` supports the Game Pak RAM wait selector, the three
+  ROM wait-state regions' first and sequential access selectors, and PHI/prefetch
+  register readback. CPU-step accesses to Game Pak ROM/EEPROM and Game Pak RAM
+  add the selected wait clocks plus one normal transfer clock; 32-bit ROM
+  accesses use two 16-bit transfers. The prefetch bit is stored but its buffer
+  behavior is deferred. Tests cover register masks/reset, exact first and
+  sequential ROM transfer totals, all three ROM regions, 32-bit splitting,
+  Game Pak RAM timing, and loop progress under faster/slower settings.
 - Basic audio reuses the four-channel DMG/CGB PSG implementation for GBA square,
   wave and noise channels. Direct Sound A/B use signed 8-bit FIFOs, timer
   overflow sampling, stereo routing and DMA1/2 special-timing refills. The core
@@ -120,15 +128,20 @@ The normal `make test` route also runs this GBA core test.
 - Thumb mode passes the external suite's logical, shift, arithmetic, branch
   and memory groups, including stack operations, multiple transfers and
   interworking. This is test-suite coverage, not proof of every Thumb edge case.
-- Each supported instruction currently advances one prototype cycle.
+- Each supported instruction has one prototype base cycle. WAITCNT-selected
+  Game Pak bus waits are added to CPU steps, but internal CPU cycles, exact
+  sequential-pipeline behavior and video/HBlank DMA transfer timing remain
+  approximate.
 
 ## Known limits
 
 This is a testable GBA prototype, not a general compatibility claim. The
 external ARM and Thumb suites pass, but untested instruction edge cases remain;
-unsupported instructions stop with an explicit CPU fault. Timing is still a
-one-cycle-per-supported-instruction prototype and does not model hardware wait
-states. BIOS loading checks for a readable 16 KiB file but does not yet verify
+unsupported instructions stop with an explicit CPU fault. Each supported
+instruction still has one prototype base cycle; WAITCNT-selected Game Pak bus
+waits are added, while internal CPU cycles, exact pipeline behavior, and
+video/HBlank DMA transfer timing remain approximate. BIOS loading checks for a
+readable 16 KiB file but does not yet verify
 its recognized checksum. Without an external BIOS, implemented BIOS calls are
 HLE-substituted.
 With a BIOS, SWIs and IRQs enter their BIOS vectors, though unsupported CPU
@@ -224,12 +237,13 @@ The cartridge library defines its 1-megabit Flash size as 131,072 bytes in
    the new-game introduction; the user accepts this as a successful game boot.
    In-game save/reload remains a separate playability check and is not required
    to claim that Emerald boots.
-2. **Stable game loop:** improve CPU and GamePak timing beyond the current
-   one-cycle-per-instruction model, starting with `WAITCNT` ROM wait states and
-   sequential access/prefetch behavior. Keep the existing VBlank, HBlank,
-   VCount, timer and DMA behavior under focused tests, then add a private probe
-   that records progress through startup without saving game-derived captures.
-   Emerald sets `WAITCNT` during startup and enables a VCount interrupt.
+2. **Stable game loop:** the first timing stage now models WAITCNT register
+   readback and basic CPU-side ROM/RAM wait cycles. Add prefetch-buffer behavior
+   as a separate stage, then improve CPU internal-cycle and DMA timing. Keep the
+   existing VBlank, HBlank, VCount, timer and DMA behavior under focused tests,
+   then add a private probe that records progress through startup without
+   saving game-derived captures. Emerald sets `WAITCNT` during startup and
+   enables a VCount interrupt.
 3. **Broaden actual-scene graphics coverage:** the core already implements Mode 0/1
    tiled backgrounds, affine backgrounds, 4bpp/8bpp tiles, palettes, regular
    and affine objects, windows and color effects. Keep the original

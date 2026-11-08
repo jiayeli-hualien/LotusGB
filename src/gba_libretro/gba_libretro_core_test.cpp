@@ -50,6 +50,9 @@ std::vector<uint8_t> readFile(const std::string &path) {
                                  std::istreambuf_iterator<char>());
 }
 
+uint32_t expectedSolidRedPixel();
+void runUntilSolidRed(unsigned additionalFrames = 16);
+
 std::vector<uint8_t> makeFlash1mMode3Rom() {
     std::vector<uint8_t> rom = makeGbaMode3BootRom();
     constexpr char marker[] = "FLASH1M_V103";
@@ -126,6 +129,7 @@ void runOptionalBiosCheck() {
     assert(retro_load_game(&game));
     retro_run();
     retro_run();
+    runUntilSolidRed();
     assert(videoReceived);
     assert(receivedWidth == 240 && receivedHeight == 160);
     if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
@@ -241,6 +245,7 @@ void runSkipBiosOptionCheck() {
     assert(retro_load_game(&game));
     retro_run();
     retro_run();
+    runUntilSolidRed();
     assert(videoReceived);
     assert(receivedWidth == 240 && receivedHeight == 160);
     if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
@@ -281,6 +286,22 @@ void videoRefresh(const void *data, unsigned width, unsigned height, size_t pitc
             }
         }
     }
+}
+
+uint32_t expectedSolidRedPixel() {
+    return selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888 ? 0x00FF0000 : 0x7C00;
+}
+
+void runUntilSolidRed(unsigned additionalFrames) {
+    const uint32_t expected = expectedSolidRedPixel();
+    for (unsigned frame = 0; frame < additionalFrames; ++frame) {
+        if (std::all_of(receivedPixels.begin(), receivedPixels.end(),
+                [expected](uint32_t pixel) { return pixel == expected; }))
+            return;
+        retro_run();
+    }
+    assert(std::all_of(receivedPixels.begin(), receivedPixels.end(),
+        [expected](uint32_t pixel) { return pixel == expected; }));
 }
 
 unsigned countColor(uint32_t color, unsigned x0 = 0, unsigned y0 = 0,
@@ -325,10 +346,20 @@ void runPongGameplayAndCheck() {
     game.size = rom.size();
     assert(retro_load_game(&game));
 
-    // Let the first VBlank-driven menu draw reach the following visible frame.
+    // WAITCNT makes ROM execution take longer, so wait for the first complete
+    // title/menu draw instead of assuming it fits in two frontend frames.
+    bool menuVisible = false;
+    for (unsigned frame = 0; frame < 12 && !menuVisible; ++frame) {
+        pressedJoypad = 0;
+        videoReceived = false;
+        retro_run();
+        assert(videoReceived);
+        menuVisible = countColor(0x00FFFFFF, 80, 64, 160, 72) > 0 &&
+                      countColor(0x00FFFFFF, 72, 88, 160, 112) > 0;
+    }
+    assert(menuVisible);
     pressedJoypad = 0;
-    retro_run();
-    retro_run();
+    retro_run(); // Let the completed menu draw reach the following frame.
 
     std::pair<int, int> initialBall{};
     std::pair<int, int> beforePaddleReturn{};
@@ -436,12 +467,27 @@ int main() {
         assert(retro_load_game(&game));
         retro_run();
         retro_run();
+        assert(receivedAudio.size() >= 1604 * 2);
+        assert(receivedAudio.size() <= 1608 * 2);
+
+        const uint32_t expectedPixel =
+            selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888
+                ? 0x00FF0000
+                : 0x7C00;
+        for (unsigned frame = 0; frame < 16; ++frame) {
+            if (std::all_of(receivedPixels.begin(), receivedPixels.end(),
+                    [expectedPixel](uint32_t pixel) {
+                        return pixel == expectedPixel;
+                    }))
+                break;
+            retro_run();
+        }
 
         assert(videoReceived);
         assert(receivedWidth == 240 && receivedHeight == 160);
         assert(receivedPixels.size() == 240 * 160);
-        assert(receivedAudio.size() >= 1604 * 2);
-        assert(receivedAudio.size() <= 1608 * 2);
+        assert(std::all_of(receivedPixels.begin(), receivedPixels.end(),
+            [expectedPixel](uint32_t pixel) { return pixel == expectedPixel; }));
         if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
             for (uint32_t pixel : receivedPixels)
                 assert(pixel == 0x00FF0000);

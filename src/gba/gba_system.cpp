@@ -13,6 +13,7 @@ constexpr uint32_t REG_POSTFLG = 0x04000300;
 constexpr uint32_t REG_KEYINPUT = 0x04000130;
 constexpr uint32_t REG_IE = 0x04000200;
 constexpr uint32_t REG_IF = 0x04000202;
+constexpr uint32_t REG_WAITCNT = 0x04000204;
 constexpr uint32_t REG_IME = 0x04000208;
 constexpr uint32_t TIMER_BASE = 0x04000100;
 constexpr uint32_t CYCLES_PER_SCANLINE = 1232;
@@ -135,6 +136,90 @@ std::vector<int16_t> GbaSystem::takeAudioSamples() {
     return audio_.takeSamples();
 }
 
+void GbaSystem::beginCpuStep() {
+    cpuStepActive_ = true;
+    cpuStepFirstBusAccess_ = true;
+    cpuStepWaitCycles_ = 0;
+}
+
+uint32_t GbaSystem::endCpuStep(uint32_t baseCycles) {
+    cpuStepActive_ = false;
+    const uint32_t cycles = baseCycles + cpuStepWaitCycles_;
+    cpuStepWaitCycles_ = 0;
+    return cycles;
+}
+
+uint32_t GbaSystem::gamePakAccessCycles(unsigned region,
+                                       bool sequential) const {
+    const uint16_t waitcnt = static_cast<uint16_t>(
+        io_[REG_WAITCNT - 0x04000000] |
+        (static_cast<uint16_t>(io_[REG_WAITCNT - 0x04000000 + 1] & 0x5F)
+         << 8));
+    constexpr uint32_t WAIT_CYCLES[] = {4, 3, 2, 8};
+    constexpr uint32_t BUS_CYCLE = 1;
+    if (region >= 3) {
+        return BUS_CYCLE + WAIT_CYCLES[waitcnt & 3];
+    }
+    if (!sequential) {
+        const unsigned shift = 2 + region * 3;
+        return BUS_CYCLE + WAIT_CYCLES[(waitcnt >> shift) & 3];
+    }
+
+    const unsigned secondAccessBit = 4 + region * 3;
+    const uint32_t waitCycles = ((waitcnt >> secondAccessBit) & 1) != 0
+        ? 1
+        : region == 0 ? 2 : region == 1 ? 4 : 8;
+    return BUS_CYCLE + waitCycles;
+}
+
+void GbaSystem::recordCpuBusAccess(uint32_t address, unsigned width) const {
+    if (!cpuStepActive_)
+        return;
+
+    const bool gamePakRom = address >= 0x08000000 && address < 0x0E000000;
+    const bool gamePakRam = address >= FLASH_BASE &&
+                            address < FLASH_BASE + FLASH_WINDOW_SIZE;
+    if (!gamePakRom && !gamePakRam) {
+        cpuStepFirstBusAccess_ = false;
+        lastGamePakAccessValid_ = false;
+        return;
+    }
+
+    const auto recordTransaction = [this](uint32_t transactionAddress,
+                                          unsigned transactionWidth,
+                                          unsigned region) {
+        const bool sequential = lastGamePakAccessValid_ &&
+            lastGamePakAccessRegion_ == region &&
+            lastGamePakAccessAddress_ + lastGamePakAccessWidth_ ==
+                transactionAddress;
+        const uint32_t accessCycles = gamePakAccessCycles(region, sequential);
+        if (cpuStepFirstBusAccess_) {
+            cpuStepWaitCycles_ += accessCycles - 1;
+            cpuStepFirstBusAccess_ = false;
+        } else {
+            cpuStepWaitCycles_ += accessCycles;
+        }
+        lastGamePakAccessValid_ = true;
+        lastGamePakAccessAddress_ = transactionAddress;
+        lastGamePakAccessWidth_ = transactionWidth;
+        lastGamePakAccessRegion_ = region;
+    };
+
+    if (gamePakRam) {
+        for (unsigned byte = 0; byte < width; ++byte)
+            recordTransaction(address + byte, 1, 3);
+        return;
+    }
+
+    const uint32_t firstHalfword = address & ~uint32_t{1};
+    const unsigned halfwords = width == 4 ? 2 : 1;
+    for (unsigned halfword = 0; halfword < halfwords; ++halfword) {
+        const uint32_t transactionAddress = firstHalfword + halfword * 2;
+        const unsigned region = (transactionAddress >> 25) & 3;
+        recordTransaction(transactionAddress, 2, region);
+    }
+}
+
 void GbaSystem::reset() {
     externalWorkRam_.fill(0);
     internalWorkRam_.fill(0);
@@ -151,6 +236,13 @@ void GbaSystem::reset() {
     timerReload_.fill(0);
     timerCounter_.fill(0);
     timerPrescalerCycles_.fill(0);
+    cpuStepActive_ = false;
+    cpuStepFirstBusAccess_ = true;
+    cpuStepWaitCycles_ = 0;
+    lastGamePakAccessValid_ = false;
+    lastGamePakAccessAddress_ = 0;
+    lastGamePakAccessWidth_ = 0;
+    lastGamePakAccessRegion_ = 0;
     audio_.reset();
     flashCommandState_ = FlashCommandState::Ready;
     flashBank_ = 0;
@@ -382,6 +474,11 @@ void GbaSystem::finishEepromDma(uint32_t transferCount) {
 }
 
 uint8_t GbaSystem::read8(uint32_t address) const {
+    recordCpuBusAccess(address, 1);
+    return read8Impl(address);
+}
+
+uint8_t GbaSystem::read8Impl(uint32_t address) const {
     if (address < bios_.size())
         return bios_[address];
     if (address >= 0x02000000 && address < 0x03000000)
@@ -391,6 +488,9 @@ uint8_t GbaSystem::read8(uint32_t address) const {
     if (address >= 0x04000000 && address < 0x04000400) {
         if (audio_.handlesRegister(address))
             return audio_.readRegister(address);
+        if (address == REG_WAITCNT + 1)
+            return static_cast<uint8_t>(
+                io_[address - 0x04000000] & 0x5F);
         if (address == REG_KEYINPUT || address == REG_KEYINPUT + 1) {
             const uint16_t value = static_cast<uint16_t>(~pressedButtons_) & 0x03FF;
             return static_cast<uint8_t>(value >> ((address - REG_KEYINPUT) * 8));
@@ -432,19 +532,30 @@ uint8_t GbaSystem::read8(uint32_t address) const {
 
 uint16_t GbaSystem::read16(uint32_t address) const {
     address &= ~uint32_t{1};
+    recordCpuBusAccess(address, 2);
+    return read16Impl(address);
+}
+
+uint16_t GbaSystem::read16Impl(uint32_t address) const {
     if (saveType_ == SaveType::Eeprom && isEepromAddress(address))
         return readEeprom();
-    return static_cast<uint16_t>(read8(address) |
-                                 (static_cast<uint16_t>(read8(address + 1)) << 8));
+    return static_cast<uint16_t>(read8Impl(address) |
+        (static_cast<uint16_t>(read8Impl(address + 1)) << 8));
 }
 
 uint32_t GbaSystem::read32(uint32_t address) const {
     address &= ~uint32_t{3};
-    return static_cast<uint32_t>(read16(address)) |
-           (static_cast<uint32_t>(read16(address + 2)) << 16);
+    recordCpuBusAccess(address, 4);
+    return static_cast<uint32_t>(read16Impl(address)) |
+           (static_cast<uint32_t>(read16Impl(address + 2)) << 16);
 }
 
 void GbaSystem::write8(uint32_t address, uint8_t value) {
+    recordCpuBusAccess(address, 1);
+    write8Impl(address, value);
+}
+
+void GbaSystem::write8Impl(uint32_t address, uint8_t value) {
     if (address >= 0x02000000 && address < 0x03000000) {
         externalWorkRam_[(address - 0x02000000) & 0x3FFFF] = value;
         return;
@@ -492,6 +603,14 @@ void GbaSystem::write8(uint32_t address, uint8_t value) {
         }
         if (address == REG_IME + 1)
             return;
+        if (address == REG_WAITCNT) {
+            io_[address - 0x04000000] = value;
+            return;
+        }
+        if (address == REG_WAITCNT + 1) {
+            io_[address - 0x04000000] = value & 0x5F;
+            return;
+        }
         if (address >= TIMER_BASE && address < TIMER_BASE + 16) {
             const uint32_t timerOffset = address - TIMER_BASE;
             const unsigned timer = timerOffset / 4;
@@ -570,6 +689,11 @@ void GbaSystem::write8(uint32_t address, uint8_t value) {
 
 void GbaSystem::write16(uint32_t address, uint16_t value) {
     address &= ~uint32_t{1};
+    recordCpuBusAccess(address, 2);
+    write16Impl(address, value);
+}
+
+void GbaSystem::write16Impl(uint32_t address, uint16_t value) {
     if (saveType_ == SaveType::Eeprom && isEepromAddress(address)) {
         writeEeprom(value);
         return;
@@ -594,14 +718,15 @@ void GbaSystem::write16(uint32_t address, uint16_t value) {
         oam_[offset + 1] = static_cast<uint8_t>(value >> 8);
         return;
     }
-    write8(address, static_cast<uint8_t>(value));
-    write8(address + 1, static_cast<uint8_t>(value >> 8));
+    write8Impl(address, static_cast<uint8_t>(value));
+    write8Impl(address + 1, static_cast<uint8_t>(value >> 8));
 }
 
 void GbaSystem::write32(uint32_t address, uint32_t value) {
     address &= ~uint32_t{3};
-    write16(address, static_cast<uint16_t>(value));
-    write16(address + 2, static_cast<uint16_t>(value >> 16));
+    recordCpuBusAccess(address, 4);
+    write16Impl(address, static_cast<uint16_t>(value));
+    write16Impl(address + 2, static_cast<uint16_t>(value >> 16));
 }
 
 void GbaSystem::registerRamReset(uint8_t flags) {

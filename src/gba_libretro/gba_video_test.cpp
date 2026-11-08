@@ -31,6 +31,53 @@ std::vector<uint8_t> loopingRom() {
     return rom;
 }
 
+std::vector<uint8_t> waitcntRomLoopCounter() {
+    std::vector<uint8_t> rom(0xDC, 0);
+    const uint32_t entryBranch = 0xEA00002E;
+    const uint32_t code[] = {
+        0xE59F0010, // LDR r0, [pc, #16] ; EWRAM counter address at 0xD8.
+        0xE5901000, // LDR r1, [r0]
+        0xE2811001, // ADD r1, r1, #1
+        0xE5801000, // STR r1, [r0]
+        0xEAFFFFFB, // B back to the loop's LDR.
+        0xE1A00000, // NOP
+        0x02000000, // EWRAM counter address.
+    };
+    for (unsigned byte = 0; byte < 4; ++byte)
+        rom[byte] = static_cast<uint8_t>(entryBranch >> (byte * 8));
+    for (size_t instruction = 0;
+         instruction < sizeof(code) / sizeof(code[0]); ++instruction) {
+        for (unsigned byte = 0; byte < 4; ++byte)
+            rom[0xC0 + instruction * 4 + byte] = static_cast<uint8_t>(
+                code[instruction] >> (byte * 8));
+    }
+    return rom;
+}
+
+std::vector<uint8_t> waitcntRomSramReadLoop() {
+    std::vector<uint8_t> rom(0xE0, 0);
+    const uint32_t entryBranch = 0xEA00002E;
+    const uint32_t code[] = {
+        0xE59F0014, // LDR r0, [pc, #20] ; Game Pak RAM address at 0xDC.
+        0xE3A01000, // MOV r1, #0
+        0xE5D02000, // LDRB r2, [r0]
+        0xE2811001, // ADD r1, r1, #1
+        0xEAFFFFFC, // B back to the loop's LDRB.
+        0xE1A00000, // NOP
+        0xE1A00000, // NOP
+        0x0E000000, // Game Pak RAM address.
+    };
+    for (unsigned byte = 0; byte < 4; ++byte)
+        rom[byte] = static_cast<uint8_t>(entryBranch >> (byte * 8));
+    for (size_t instruction = 0;
+         instruction < sizeof(code) / sizeof(code[0]); ++instruction) {
+        for (unsigned byte = 0; byte < 4; ++byte)
+            rom[0xC0 + instruction * 4 + byte] = static_cast<uint8_t>(
+                code[instruction] >> (byte * 8));
+    }
+    return rom;
+}
+
 std::vector<uint8_t> postBiosStackProbeRom() {
     std::vector<uint8_t> rom = loopingRom();
     rom.resize(0xF0, 0);
@@ -188,7 +235,7 @@ std::vector<uint8_t> midScanlineDisplayDisableRom() {
     const uint32_t instructions[] = {
         0xE59F1018, // ldr r1, [pc, #0x18] (DISPCNT)
         0xE3A00000, // mov r0, #0
-        0xE3A02062, // mov r2, #98
+        0xE3A02012, // mov r2, #18; account for default Game Pak wait states.
         0xE2522001, // subs r2, r2, #1
         0x1AFFFFFD, // bne back to subs
         0xE5810000, // str r0, [r1] (disable BG0 mid-scanline)
@@ -983,6 +1030,116 @@ void testGbaTimersPrescalersCascadeAndIrq() {
     }
 }
 
+void testWaitcntRegisterMasksAndReset() {
+    GbaSystem system(loopingRom());
+    constexpr uint32_t WAITCNT = 0x04000204;
+    assert(system.read16(WAITCNT) == 0);
+
+    system.write16(WAITCNT, 0xFFFF);
+    assert(system.read16(WAITCNT) == 0x5FFF);
+    assert(system.read8(WAITCNT + 1) == 0x5F);
+
+    system.write8(WAITCNT + 1, 0xFF);
+    assert(system.read16(WAITCNT) == 0x5FFF);
+    system.write8(WAITCNT + 1, 0x20); // Reserved bit 13 is read as zero.
+    assert(system.read16(WAITCNT) == 0x00FF);
+
+    system.reset();
+    assert(system.read16(WAITCNT) == 0);
+}
+
+uint32_t runRomLoopCounter(uint16_t waitcnt) {
+    GbaSystem system(waitcntRomLoopCounter());
+    system.write16(0x04000204, waitcnt);
+    system.write32(0x02000000, 0);
+    assert(system.runFrame().success);
+    return system.read32(0x02000000);
+}
+
+uint32_t runSramReadLoop(uint16_t waitcnt) {
+    GbaSystem system(waitcntRomSramReadLoop());
+    system.write16(0x04000204, waitcnt);
+    assert(system.runFrame().success);
+    return system.cpu().registerValue(1);
+}
+
+uint32_t measureGamePakAccessCycles(uint16_t waitcnt, uint32_t address,
+                                   unsigned width) {
+    GbaSystem system(loopingRom());
+    system.write16(0x04000204, waitcnt);
+    system.beginCpuStep();
+    if (width == 1)
+        (void)system.read8(address);
+    else if (width == 2)
+        (void)system.read16(address);
+    else {
+        assert(width == 4);
+        (void)system.read32(address);
+    }
+    return system.endCpuStep(1);
+}
+
+uint32_t measureSequentialRomAccess(uint16_t waitcnt, uint32_t firstAddress,
+                                    uint32_t secondAddress) {
+    GbaSystem system(loopingRom());
+    system.write16(0x04000204, waitcnt);
+    system.beginCpuStep();
+    (void)system.read16(firstAddress);
+    (void)system.endCpuStep(1);
+    system.beginCpuStep();
+    (void)system.read16(secondAddress);
+    return system.endCpuStep(1);
+}
+
+void testWaitcntBusCycleTotals() {
+    // The WAITCNT tables specify wait clocks. Each transfer also spends its
+    // ordinary Game Pak bus cycle, so the first default WS0 access is 5 clocks.
+    assert(measureGamePakAccessCycles(0x0000, 0x08000000, 2) == 5);
+    assert(measureSequentialRomAccess(0x0000, 0x08000000, 0x08000002) == 3);
+    assert(measureSequentialRomAccess(0x0010, 0x08000000, 0x08000002) == 2);
+    assert(measureGamePakAccessCycles(0x0008, 0x08000000, 2) == 3);
+    assert(measureGamePakAccessCycles(0x000C, 0x08000000, 2) == 9);
+
+    // A word transfer occupies the 16-bit Game Pak bus twice: N then S.
+    assert(measureGamePakAccessCycles(0x0000, 0x08000000, 4) == 8);
+    assert(measureGamePakAccessCycles(0x0000, 0x0A000000, 2) == 5);
+    assert(measureGamePakAccessCycles(0x0060, 0x0A000000, 2) == 9);
+    assert(measureSequentialRomAccess(0x0080, 0x0A000000,
+                                      0x0A000002) == 2);
+    assert(measureGamePakAccessCycles(0x0000, 0x0C000000, 2) == 5);
+    assert(measureGamePakAccessCycles(0x0200, 0x0C000000, 2) == 3);
+    assert(measureSequentialRomAccess(0x0400, 0x0C000000,
+                                      0x0C000002) == 2);
+
+    // Game Pak RAM is 8-bit wide; the default selector is 4 waits + 1 bus
+    // cycle, and the selector value 2 is 2 waits + 1 bus cycle.
+    assert(measureGamePakAccessCycles(0x0000, 0x0E000000, 1) == 5);
+    assert(measureGamePakAccessCycles(0x0002, 0x0E000000, 1) == 3);
+}
+
+void testWaitcntGamePakRomAndRamWaitCycles() {
+    // WAITCNT WS0 first-access encodings: 000=4, 010=2, 011=8 wait clocks.
+    const uint32_t defaultRomSpeed = runRomLoopCounter(0x0000);
+    const uint32_t fasterFirstAccess = runRomLoopCounter(0x0008);
+    const uint32_t slowerFirstAccess = runRomLoopCounter(0x000C);
+    assert(fasterFirstAccess > defaultRomSpeed);
+    assert(defaultRomSpeed > slowerFirstAccess);
+
+    // WS0 second-access bit 4 selects two or one wait clocks for sequential fetches.
+    const uint32_t fasterSequentialAccess = runRomLoopCounter(0x0010);
+    assert(fasterSequentialAccess > defaultRomSpeed);
+
+    // The low two bits control Game Pak RAM access speed independently.
+    const uint16_t fastRamWaitcnt = 0x0018 | 0x0002;
+    const uint16_t defaultRamWaitcnt = 0x0018;
+    const uint16_t slowRamWaitcnt = 0x0018 | 0x0003;
+    const uint32_t fastRamCount = runSramReadLoop(fastRamWaitcnt);
+    const uint32_t defaultRamCount = runSramReadLoop(defaultRamWaitcnt);
+    const uint32_t slowRamCount = runSramReadLoop(slowRamWaitcnt);
+    assert(fastRamCount > defaultRamCount);
+    assert(defaultRamCount > slowRamCount);
+}
+
 void testGbaPsgProducesStereoAudio() {
     GbaSystem system(loopingRom());
     system.write8(0x04000084, 0x80); // Master sound enable.
@@ -1624,9 +1781,15 @@ void testMidScanlineDisplayRegisterWrite() {
     system.write16(DISPCNT, 1u << 8);
 
     assert(system.runFrame().success);
-    assert(pixel(system, 49, 0) == 0x03E0);
-    assert(pixel(system, 50, 0) == 0x0000);
-    assert(pixel(system, 80, 0) == 0x0000);
+    unsigned splitPixel = 0;
+    while (splitPixel < GbaSystem::SCREEN_WIDTH &&
+           pixel(system, splitPixel, 0) == 0x03E0)
+        ++splitPixel;
+    assert(splitPixel >= 64 && splitPixel <= 80);
+    for (unsigned x = 0; x < splitPixel; ++x)
+        assert(pixel(system, x, 0) == 0x03E0);
+    for (unsigned x = splitPixel; x < GbaSystem::SCREEN_WIDTH; ++x)
+        assert(pixel(system, x, 0) == 0x0000);
     assert(pixel(system, 0, 1) == 0x0000);
 }
 
@@ -1958,6 +2121,9 @@ int main() {
     testIrqAndSystemShareR8ThroughR12();
     testDisplayInterruptEnableBits();
     testGbaTimersPrescalersCascadeAndIrq();
+    testWaitcntRegisterMasksAndReset();
+    testWaitcntBusCycleTotals();
+    testWaitcntGamePakRomAndRamWaitCycles();
     testGbaPsgProducesStereoAudio();
     testGbaDirectSoundFifoUsesTimerAndSpecialDma();
     testHBlankDmaUpdatesFollowingScanlines();

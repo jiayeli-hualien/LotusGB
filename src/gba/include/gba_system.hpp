@@ -57,6 +57,8 @@ public:
     void write32(uint32_t address, uint32_t value) override;
     void registerRamReset(uint8_t flags) override;
     bool hasBios() const override { return !bios_.empty(); }
+    void beginCpuStep() override;
+    uint32_t endCpuStep(uint32_t baseCycles) override;
 
 private:
     struct LayerPixel {
@@ -107,6 +109,12 @@ private:
     uint16_t readOamForRendering(uint32_t address) const;
     static SaveType detectSaveType(const std::vector<uint8_t> &rom);
     static bool isEepromAddress(uint32_t address);
+    uint8_t read8Impl(uint32_t address) const;
+    uint16_t read16Impl(uint32_t address) const;
+    void write8Impl(uint32_t address, uint8_t value);
+    void write16Impl(uint32_t address, uint16_t value);
+    void recordCpuBusAccess(uint32_t address, unsigned width) const;
+    uint32_t gamePakAccessCycles(unsigned region, bool sequential) const;
     uint8_t readFlash(uint32_t address) const;
     void writeFlash(uint32_t address, uint8_t value);
     uint16_t readEeprom() const;
@@ -175,6 +183,13 @@ private:
     std::array<uint16_t, 4> timerReload_{};
     std::array<uint16_t, 4> timerCounter_{};
     std::array<uint32_t, 4> timerPrescalerCycles_{};
+    mutable bool cpuStepActive_ = false;
+    mutable bool cpuStepFirstBusAccess_ = true;
+    mutable uint32_t cpuStepWaitCycles_ = 0;
+    mutable bool lastGamePakAccessValid_ = false;
+    mutable uint32_t lastGamePakAccessAddress_ = 0;
+    mutable unsigned lastGamePakAccessWidth_ = 0;
+    mutable unsigned lastGamePakAccessRegion_ = 0;
     mutable GbaAudio audio_;
     std::array<uint16_t, PIXEL_COUNT> frameBuffer_{};
     Arm7Tdmi cpu_;
