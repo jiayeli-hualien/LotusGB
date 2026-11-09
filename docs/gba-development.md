@@ -115,9 +115,42 @@ The normal `make test` route also runs this GBA core test.
 - Basic audio reuses the four-channel DMG/CGB PSG implementation for GBA square,
   wave and noise channels. Direct Sound A/B use signed 8-bit FIFOs, timer
   overflow sampling, stereo routing and DMA1/2 special-timing refills. The core
-  mixes these into 48 kHz stereo PCM. Synthetic tests cover PSG output, FIFO
-  playback, special DMA and libretro sample delivery; game-level audio has not
-  been manually evaluated.
+  mixes these into 48 kHz stereo PCM. The mixed PSG/FIFO output is sampled at
+  the SOUNDBIAS-selected cadence (32.768–262.144 kHz), quantized to the
+  corresponding 9–6-bit PWM amplitude resolution, then resampled for libretro;
+  SOUNDBIAS does not change the PSG oscillator clocks. The core applies its
+  bias and 10-bit clipping. Source cadences above 48 kHz pass through an
+  18 kHz fourth-order low-pass before linear resampling to the fixed libretro
+  rate
+  ([register
+  behavior](https://mgba-emu.github.io/gbatek/#4000088h---soundbias---sound-pwm-control),
+  [mGBA reference](https://github.com/mgba-emu/mgba/blob/master/src/gba/audio.c)).
+  `make test` runs the MIT-licensed
+  [GBA Audio Check ROMs](../tests/roms/gba-audio-check/README.md): a
+  deterministic 440 Hz PSG tone and timer/DMA-driven Direct Sound A/B streams
+  with different alternating left/right samples. These cover clipping,
+  cadence and amplitude-resolution changes, PSG panning, a measured 420–460 Hz
+  tone range, a measured 1950–2150 Hz timer/DMA Direct Sound signal, Direct
+  Sound routing, the
+  50%/100% Direct Sound volume ratio, and libretro sample delivery. GBA Sound 3
+  also models the two 16-byte wave RAM banks, inactive-bank CPU access, 32/64
+  sample playback dimensions, and the forced 75% volume setting; the same
+  licensed homebrew test path covers both bank dimensions and volume behavior.
+  That baseline also checks that an 8.192 kHz PSG tone passes while a
+  32.768 kHz tone is attenuated before conversion to 48 kHz. A private Emerald
+  Route 102 capture had identical left and right PCM because the
+  game's Mono option wrote `SOUNDCNT_H=0x3302`, routing both Direct Sound
+  FIFOs to both speakers.
+  Upstream initializes new saves with Mono and uses `0x210E` for Stereo
+  ([new-game defaults](https://github.com/pret/pokeemerald/blob/master/src/new_game.c),
+  [M4A setup](https://github.com/pret/pokeemerald/blob/master/src/m4a.c)). A
+  private controller-driven probe loaded the Route 102 save, selected Stereo
+  in the game's settings, and resumed the same map. In the final five-second
+  PCM window, Stereo left/right channels differed (difference RMS 349,
+  correlation 0.941); the Mono capture's final five seconds matched exactly.
+  This confirms that the game's Mono/Stereo choice changes libretro channel
+  routing. It does not establish sound fidelity; listening against hardware
+  remains unverified.
 - DMA supports immediate, VBlank and HBlank transfers, including repeat and
   address-control modes, plus the four-word fixed-destination transfers used
   to refill Direct Sound FIFOs.
@@ -145,16 +178,19 @@ readable 16 KiB file but does not yet verify
 its recognized checksum. Without an external BIOS, implemented BIOS calls are
 HLE-substituted.
 With a BIOS, SWIs and IRQs enter their BIOS vectors, though unsupported CPU
-instructions can still stop execution. GBA-specific wave-bank/dimension
-behavior, SOUNDBIAS output shaping, analog mixing and more exact sound timing
-remain approximations; state serialization is unimplemented. Cartridge
+instructions can still stop execution. Sound resampling filter quality,
+analog mixing and exact sound timing remain approximations; state
+serialization is unimplemented. Cartridge
 battery saves are detected from the ROM's `SRAM_V`,
 `FLASH_V`/`FLASH512_V`, `FLASH1M_V`, or `EEPROM_V` marker. The core supports
 32 KiB SRAM, 64 KiB Flash, 128 KiB banked Flash, and 512-byte or
 8-KiB EEPROM; EEPROM transactions use DMA and expand to 8 KiB when the game
 uses the longer address form. GBA tests cover read/write and reset/reload
-retention for these save types, plus the libretro save-memory interface. RTC
-cartridge devices remain unimplemented. Flash operations complete immediately;
+retention for these save types, plus the libretro save-memory interface. The
+`SIIRTC_V001` GPIO RTC supports its serial register protocol and persists its
+wall-clock base through the libretro RTC memory block. Synthetic RTC tests are
+present; the private Emerald probe also confirmed that the clock advances
+across a save/reload. Flash operations complete immediately;
 busy status and write timing are not modeled, and EEPROM busy timing is not
 modeled. The
 mid-scanline raster split uses prototype CPU cycles and does not model video
@@ -177,13 +213,16 @@ overlapping OBJ pixels to one OBJ layer before compositing backgrounds and
 applying color effects, as described in
 [GBATEK's color-effects notes](https://mgba-emu.github.io/gbatek/#lcd-io-color-special-effects).
 A small original homebrew ROM scene generated by
-`gba_video_test.cpp` uses the guest CPU and BIOS
-`CpuSet` service to draw a 4bpp tile background and a 16×16 sprite; the test
-checks every output pixel. The separately licensed Pong ROM provides a
-gameplay and frontend callback baseline in Mode 3, but these checkpoints do
-not establish broad GBA compatibility or manual RetroArch acceptance. Private
-commercial-ROM probes are local diagnostics; keep their ROMs and image captures
-out of the repository and CI.
+`tests/include/gba_boot_rom.hpp` uses the guest CPU and BIOS `CpuSet` service
+to draw a 4bpp Mode 0 tile background and a 16×16 sprite. Both the direct
+system regression and the libretro callback check now compare every pixel in
+the 240×160 frame; the callback check runs in XRGB8888 and 0RGB1555. The
+separately licensed Pong ROM provides a gameplay and frontend callback
+baseline in Mode 3, but these checkpoints do not establish broad GBA
+compatibility or manual RetroArch acceptance. The callback also verifies
+internal BGR555 channel ordering and 5-bit-to-8-bit expansion for an asymmetric
+mid-range color. Private commercial-ROM probes are local diagnostics; keep
+their ROMs and image captures out of the repository and CI.
 
 In a private Japanese Pokémon Emerald probe, the local BIOS was 16 KiB and its
 MD5 matched the commonly used official BIOS image. The BIOS logo appeared and
@@ -217,6 +256,33 @@ directional response and the exterior tile/sprite scene, while leaving longer
 overworld exploration and in-game save/reload unverified. The ROM, BIOS,
 screenshots and probe executable remained outside the repository.
 
+On 2026-11-09, a private probe continued Emerald through the opening and rival
+battle into Route 102, saved in-game, closed the runner, and reloaded the game
+save. Continue showed the saved Route 102 location and 0:30 playtime, and the
+overworld resumed there; the save bytes were unchanged by the reload. The RTC
+sidecar advanced by 2 hours, 47 minutes, 38 seconds during the first closed
+interval and by 16 minutes after a later reload. This meets the selected RTC
+acceptance condition: the clock advances across save/reload. Berry growth or
+other timed gameplay events are not required for this checkpoint. ROM, BIOS,
+saves, captures and probe executables remained outside the repository.
+
+A fresh-source interactive libretro check loaded the 128-KiB game-save and RTC
+blocks into a new core session. It reached the title, showed the saved 0:30
+playtime on Continue, restored an outdoor map scene, and moved the player in
+response to right input. The Flash image remained byte-identical after the
+check. The RTC block initialized, and its persisted time base advanced by
+31,446 seconds from an input sidecar whose host timestamp was about 31,516
+seconds old, leaving the effective clock continuous. No CPU fault was logged.
+This is a headless current-source resume/input check, not a RetroArch frontend
+acceptance. The harness, ROM, BIOS, saves, sidecars and captures remained
+outside the repository.
+
+After adding the SOUNDBIAS PWM resolution and stronger downsampling filter, a
+separate 300-frame startup audio smoke delivered 241,100 stereo PCM frames
+with left/right RMS levels of 2502.5/2519.4 and a peak of 19,908. Its final
+capture was still at the copyright screen, so this confirms PCM output without
+digital clipping but does not validate gameplay audio or sound fidelity.
+
 This result confirms the first startup blocker: Pokémon Emerald calls
 `CheckForFlashMemory()` before entering its main loop and clears the main
 callback when Flash detection fails. Its Flash library identifies a 1-megabit
@@ -235,29 +301,41 @@ The cartridge library defines its 1-megabit Flash size as 131,072 bytes in
    storage pass synthetic command and persistence checks. The private Emerald
    probe gets past the former white screen, shows the opening scenes and enters
    the new-game introduction; the user accepts this as a successful game boot.
-   In-game save/reload remains a separate playability check and is not required
-   to claim that Emerald boots.
-2. **Stable game loop:** the first timing stage now models WAITCNT register
-   readback and basic CPU-side ROM/RAM wait cycles. Add prefetch-buffer behavior
-   as a separate stage, then improve CPU internal-cycle and DMA timing. Keep the
-   existing VBlank, HBlank, VCount, timer and DMA behavior under focused tests,
-   then add a private probe that records progress through startup without
-   saving game-derived captures. Emerald sets `WAITCNT` during startup and
-   enables a VCount interrupt.
-3. **Broaden actual-scene graphics coverage:** the core already implements Mode 0/1
+   This is boot acceptance only, not acceptance as a playable game.
+2. **Emerald single-player playability — bounded checkpoint passed:** private
+   gameplay reached Route 102 after the opening and rival battle, then the
+   game's own save survived closing and reopening the runner; Continue restored
+   the saved location and playtime. This is a playable early-game checkpoint,
+   not a claim that the full story or every game feature has been verified.
+   Treat unintended emulator regressions as blockers for the recommended game.
+   When behavior looks like a bug, compare it with reliable hardware
+   documentation, targeted tests, or real hardware; reproduce an odd behavior
+   only when the GBA itself exhibits it.
+3. **Graphics and audio fidelity:** the core already implements Mode 0/1
    tiled backgrounds, affine backgrounds, 4bpp/8bpp tiles, palettes, regular
    and affine objects, windows and color effects. Keep the original
    homebrew tile/sprite pixel test and Pong gameplay regression. The private
    Emerald opening, title menu, truck interior and exterior scenes exercise
    real tiled backgrounds and objects; directional input exits the truck.
-   Free overworld movement and additional game scenes remain follow-up
+   Route 102 movement is now confirmed; additional game scenes remain follow-up
    coverage. Add rendering behavior when a scene demonstrates a gap, including
-   more accurate mid-scanline writes and PPU timing.
-4. **Complete single-player experience:** the core now has a tested baseline
-   for PSG audio, Direct Sound FIFO playback and timer-driven sound DMA.
-   Validate it with a licensed homebrew soundtrack, then add RTC/GPIO behavior for
-   clock-based events if a target game requires it. Link/RFU support and
-   save-state serialization can remain outside this single-player gate.
+   more accurate mid-scanline writes and PPU timing. The MIT GBA Audio Check
+   ROM now gives PSG output and SOUNDBIAS a repeatable core baseline. A private
+   Emerald probe also confirms that selecting Stereo separates the game's
+   left/right PCM output, while Mono produces matching channels. Sound quality
+   and comparison with actual hardware remain open; implementation changes
+   should follow a reproduced difference in the intended game.
+4. **Timing and game-specific hardware:** WAITCNT readback and basic CPU-side
+   ROM/RAM waits are implemented. Add prefetch-buffer behavior, then improve
+   CPU internal-cycle and DMA timing when needed to fix a demonstrated game or
+   visual/audio discrepancy. Keep the existing VBlank, HBlank, VCount, timer
+   and DMA behavior under focused tests. `SIIRTC_V001` GPIO RTC is implemented;
+   the selected Emerald check passes because the clock advances across
+   save/reload. Broader GPIO devices or higher precision are follow-up work
+   only if a target game needs them.
+5. **Connectivity — deferred:** Link Cable and RFU support are lower priority
+   because the target use is single-player. Save-state serialization also stays
+   outside the current playability gate.
 
 Public game-level ROM checks must use clearly licensed homebrew. Use private
 commercial ROMs only for local manual play checks; keep their ROMs, saves and
@@ -288,6 +366,7 @@ game-derived captures out of the repository and CI.
 - **Option timing:** the core reads the BIOS mode when content loads. Restart
   the content after changing the option.
 - **Game compatibility:** the BIOS logo and successful handoff validate the
-  boot path. Game play has separate checkpoints: the private Emerald probe
-  reaches the new-game introduction and still needs overworld and save/reload
-  checks.
+  boot path. The private Emerald probe also reached Route 102, saved in-game,
+  and resumed the saved location and playtime after closing and reopening the
+  runner. This passes the bounded early-game playability check; it does not
+  establish full-story or broad GBA compatibility.

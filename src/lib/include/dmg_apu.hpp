@@ -15,7 +15,10 @@ class DmgApu final : public IAddressRegion, public IClockedComponent {
     friend class StateCodec;
 public:
     static constexpr unsigned SAMPLE_RATE = 48000;
-    explicit DmgApu(bool cgbMode = false) : cgbMode(cgbMode) {}
+    explicit DmgApu(bool cgbMode = false,
+                    unsigned sampleRate = SAMPLE_RATE,
+                    bool gbaWaveMode = false);
+    void setSampleRate(unsigned sampleRate);
 
     uint8_t read(uint16_t address) override;
     void write(uint16_t address, uint8_t value) override;
@@ -31,6 +34,7 @@ private:
     bool firstDutySuppressed = true;
     bool firstDutySuppressed2 = true;
     const bool cgbMode; // Immutable model configuration, identified by the snapshot model.
+    const bool gbaWaveMode;
     void setPower(bool enabled);
     void triggerChannel1();
     void triggerChannel2();
@@ -117,6 +121,11 @@ private:
     uint16_t channel4Lfsr = 0;
     uint32_t frequencyTimer4 = 0;
 
+    // GBA Sound 3 has two independently addressable 16-byte banks. This
+    // storage is only active in the GBA core; GB/CGB snapshots retain the
+    // existing single-bank waveRam field and wire format.
+    std::array<uint8_t, 32> gbaWaveRam{};
+
     uint16_t sweepShadowFrequency = 0;
     uint8_t sweepTimer = 0;
     bool sweepEnabled = false;
@@ -124,6 +133,8 @@ private:
 
     uint8_t frameSequencerStep = 0;
     uint32_t sampleAccumulator = 0;
+    unsigned sampleRate_ = SAMPLE_RATE;
+    int64_t highPassCoefficient_ = 0;
     int32_t previousLeftInput = 0;
     int32_t previousRightInput = 0;
     int64_t previousLeftOutputQ16 = 0;

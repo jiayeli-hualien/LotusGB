@@ -10,6 +10,7 @@
 
 #include "arm7tdmi.hpp"
 #include "gba_audio.hpp"
+#include "gba_cartridge_rtc.hpp"
 
 namespace LOTUSGBA {
 
@@ -33,7 +34,8 @@ public:
 
     explicit GbaSystem(std::vector<uint8_t> rom,
                        std::vector<uint8_t> bios = {},
-                       std::shared_ptr<std::vector<uint8_t>> saveData = nullptr);
+                       std::shared_ptr<std::vector<uint8_t>> saveData = nullptr,
+                       std::shared_ptr<std::vector<uint8_t>> rtcData = nullptr);
 
     void reset();
     FrameResult runFrame();
@@ -47,6 +49,9 @@ public:
     uint8_t *getSaveRamData();
     size_t getSaveRamSize() const;
     std::shared_ptr<std::vector<uint8_t>> getSaveRamStorage() const;
+    uint8_t *getRtcData();
+    size_t getRtcSize() const;
+    std::shared_ptr<std::vector<uint8_t>> getRtcStorage() const;
     std::vector<int16_t> takeAudioSamples();
 
     uint8_t read8(uint32_t address) const override;
@@ -108,6 +113,7 @@ private:
     static uint32_t videoRamOffset(uint32_t address);
     uint16_t readOamForRendering(uint32_t address) const;
     static SaveType detectSaveType(const std::vector<uint8_t> &rom);
+    static bool hasRtcMarker(const std::vector<uint8_t> &rom);
     static bool isEepromAddress(uint32_t address);
     uint8_t read8Impl(uint32_t address) const;
     uint16_t read16Impl(uint32_t address) const;
@@ -161,6 +167,7 @@ private:
     std::vector<uint8_t> bios_;
     SaveType saveType_ = SaveType::None;
     std::shared_ptr<std::vector<uint8_t>> saveData_;
+    GbaCartridgeRtc rtc_;
     FlashCommandState flashCommandState_ = FlashCommandState::Ready;
     uint8_t flashBank_ = 0;
     bool flashIdMode_ = false;

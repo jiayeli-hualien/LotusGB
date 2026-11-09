@@ -52,6 +52,17 @@ void testChannelOneProducesStereoSamplesAtConfiguredRate() {
     expect(hasNonzeroSample, "triggered pulse channel produces audible PCM");
 }
 
+void testConfiguredSampleRatesEmitTheExpectedFrameCount() {
+    constexpr uint64_t masterClock = 4194304;
+    for (unsigned sampleRate : {32768u, 48000u, 65536u, 131072u, 262144u}) {
+        DmgApu apu(true, sampleRate);
+        apu.advanceTCycles(masterClock);
+        const auto samples = apu.takeAudioSamples();
+        expect(samples.size() == static_cast<size_t>(sampleRate) * 2,
+               "configured APU sample rate emits the requested one-second frame count");
+    }
+}
+
 void testChannelTwoProducesAudioOnItsIndependentStereoRoute() {
     DmgApu apu;
     apu.write(0xFF26, 0x80);
@@ -1101,6 +1112,7 @@ int main() {
     testModelSpecificPoweredOffLengthRegisters();
     testPulseFrequencyLowRegistersAreWriteOnly();
     testChannelOneProducesStereoSamplesAtConfiguredRate();
+    testConfiguredSampleRatesEmitTheExpectedFrameCount();
     testChannelTwoProducesAudioOnItsIndependentStereoRoute();
     testWaveChannelReadsWaveRamAndRoutesStereoOutput();
     testWaveRamRetriggerCorruptsFirstByteTwoTCyclesBeforeFetchInFirstRow();

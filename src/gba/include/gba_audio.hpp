@@ -31,6 +31,21 @@ public:
     std::vector<int16_t> takeSamples();
 
 private:
+    struct BiquadCoefficients {
+        double b0 = 0;
+        double b1 = 0;
+        double b2 = 0;
+        double a1 = 0;
+        double a2 = 0;
+    };
+
+    struct BiquadState {
+        double input1 = 0;
+        double input2 = 0;
+        double output1 = 0;
+        double output2 = 0;
+    };
+
     struct DirectSoundChannel {
         std::array<int8_t, 32> fifo{};
         unsigned readPosition = 0;
@@ -42,15 +57,26 @@ private:
     static uint16_t psgAddress(uint32_t address);
     static uint8_t fifoId(uint32_t address);
     void resetFifo(unsigned fifo);
+    void setOutputRate(unsigned outputRate);
+    void configureDownsampleFilter(unsigned sourceRate);
+    int16_t filterDownsampleSample(int16_t sample, unsigned channel);
+    void appendResampledSample(int16_t left, int16_t right);
 
     std::unique_ptr<LOTUSGB::DmgApu> psg_;
     std::array<DirectSoundChannel, 2> directSound_{};
+    std::array<BiquadCoefficients, 2> downsampleFilter_{};
+    std::array<std::array<BiquadState, 2>, 2> downsampleState_{};
     std::vector<int16_t> mixedSamples_;
     uint16_t soundControlHigh_ = 0;
     uint16_t soundBias_ = 0x0200;
-    uint8_t sound3ControlHigh_ = 0;
     uint32_t baseClockRemainder_ = 0;
     uint32_t frameSequencerRemainder_ = 0;
+    uint32_t outputSamplePhase_ = 0;
+    unsigned outputRate_ = 32768;
+    bool downsampleFilterEnabled_ = false;
+    bool hasPreviousSourceSample_ = false;
+    int16_t previousSourceLeft_ = 0;
+    int16_t previousSourceRight_ = 0;
 };
 
 } // namespace LOTUSGBA

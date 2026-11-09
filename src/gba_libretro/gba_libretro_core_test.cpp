@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "gba_boot_rom.hpp"
+#include "gba_system.hpp"
 
 namespace {
 
@@ -204,6 +205,70 @@ void runSaveMemoryTypeCheck(const char *marker, size_t expectedSize) {
     biosStartupMode = "Automatic";
 }
 
+void runRtcMemoryCheck() {
+    biosStartupMode = "Skip BIOS";
+    auto rom = makeSaveMarkerMode3Rom("FLASH1M_V103");
+    constexpr char rtcMarker[] = "SIIRTC_V001";
+    rom.insert(rom.end(), rtcMarker, rtcMarker + sizeof(rtcMarker) - 1);
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    assert(retro_load_game(&game));
+
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    auto *rtc = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_RTC));
+    assert(saveRam && rtc);
+    assert(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) ==
+           LOTUSGBA::GbaSystem::FLASH1M_SIZE);
+    assert(retro_get_memory_size(RETRO_MEMORY_RTC) == 24);
+    assert(saveRam != rtc);
+    saveRam[0x1234] = 0x5A;
+    rtc[0] = 'G';
+    rtc[1] = 'R';
+    rtc[2] = 'T';
+    rtc[3] = 'C';
+
+    retro_reset();
+    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == saveRam);
+    assert(retro_get_memory_data(RETRO_MEMORY_RTC) == rtc);
+    assert(saveRam[0x1234] == 0x5A);
+    assert(rtc[0] == 'G' && rtc[3] == 'C');
+
+    assert(retro_load_game(&game)); // Reloading the same loaded content retains both blocks.
+    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == saveRam);
+    assert(retro_get_memory_data(RETRO_MEMORY_RTC) == rtc);
+    assert(saveRam[0x1234] == 0x5A);
+    assert(rtc[0] == 'G' && rtc[3] == 'C');
+
+    const std::vector<uint8_t> savedFlash(saveRam,
+        saveRam + retro_get_memory_size(RETRO_MEMORY_SAVE_RAM));
+    const std::vector<uint8_t> savedRtc(rtc,
+        rtc + retro_get_memory_size(RETRO_MEMORY_RTC));
+    retro_unload_game();
+    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == nullptr);
+    assert(retro_get_memory_data(RETRO_MEMORY_RTC) == nullptr);
+
+    // A frontend persists these independent blocks and restores them after
+    // unloading and loading the same content in a fresh core instance.
+    assert(retro_load_game(&game));
+    auto *reloadedFlash = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    auto *reloadedRtc = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_RTC));
+    assert(reloadedFlash && reloadedRtc);
+    assert(retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == savedFlash.size());
+    assert(retro_get_memory_size(RETRO_MEMORY_RTC) == savedRtc.size());
+    std::copy(savedFlash.begin(), savedFlash.end(), reloadedFlash);
+    std::copy(savedRtc.begin(), savedRtc.end(), reloadedRtc);
+    assert(std::equal(savedFlash.begin(), savedFlash.end(), reloadedFlash));
+    assert(std::equal(savedRtc.begin(), savedRtc.end(), reloadedRtc));
+
+    retro_unload_game();
+    biosStartupMode = "Automatic";
+}
+
 void runRequiredBiosMissingCheck() {
     systemDirectoryPath.clear();
     biosStartupMode = "Use BIOS";
@@ -288,8 +353,54 @@ void videoRefresh(const void *data, unsigned width, unsigned height, size_t pitc
     }
 }
 
+uint32_t expectedPixelForBgr555(uint16_t color) {
+    const uint32_t red = color & 0x1F;
+    const uint32_t green = (color >> 5) & 0x1F;
+    const uint32_t blue = (color >> 10) & 0x1F;
+    if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
+        const auto expand = [](uint32_t value) {
+            return (value << 3) | (value >> 2);
+        };
+        return (expand(red) << 16) | (expand(green) << 8) | expand(blue);
+    }
+    return (red << 10) | (green << 5) | blue;
+}
+
+void runMode0TileSpriteHomebrewAndCheck() {
+    auto rom = makeGbaMode0TileSpriteHomebrewRom();
+    retro_game_info game{};
+    game.data = rom.data();
+    game.size = rom.size();
+    videoReceived = false;
+    receivedPixels.clear();
+    assert(retro_load_game(&game));
+
+    std::vector<uint32_t> expected(240 * 160);
+    for (unsigned y = 0; y < 160; ++y) {
+        for (unsigned x = 0; x < 240; ++x) {
+            const bool inSprite = x >= 40 && x < 56 && y >= 32 && y < 48;
+            const uint16_t color = inSprite ? 0x03E0 : 0x001F;
+            expected[y * 240 + x] = expectedPixelForBgr555(color);
+        }
+    }
+
+    bool expectedFrameReceived = false;
+    for (unsigned frame = 0; frame < 16; ++frame) {
+        videoReceived = false;
+        retro_run();
+        assert(videoReceived);
+        assert(receivedWidth == 240 && receivedHeight == 160);
+        if (receivedPixels == expected) {
+            expectedFrameReceived = true;
+            break;
+        }
+    }
+    assert(expectedFrameReceived);
+    retro_unload_game();
+}
+
 uint32_t expectedSolidRedPixel() {
-    return selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888 ? 0x00FF0000 : 0x7C00;
+    return expectedPixelForBgr555(0x001F);
 }
 
 void runUntilSolidRed(unsigned additionalFrames) {
@@ -457,7 +568,7 @@ int main() {
     assert(std::fabs(avInfo.timing.fps - 59.7275) < 0.01);
     assert(std::fabs(avInfo.timing.sample_rate - 48000.0) < 0.01);
 
-    const auto runAndCheck = [](std::vector<uint8_t> rom) {
+    const auto runAndCheck = [](std::vector<uint8_t> rom, uint16_t color) {
         retro_game_info game{};
         game.data = rom.data();
         game.size = rom.size();
@@ -470,10 +581,7 @@ int main() {
         assert(receivedAudio.size() >= 1604 * 2);
         assert(receivedAudio.size() <= 1608 * 2);
 
-        const uint32_t expectedPixel =
-            selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888
-                ? 0x00FF0000
-                : 0x7C00;
+        const uint32_t expectedPixel = expectedPixelForBgr555(color);
         for (unsigned frame = 0; frame < 16; ++frame) {
             if (std::all_of(receivedPixels.begin(), receivedPixels.end(),
                     [expectedPixel](uint32_t pixel) {
@@ -488,17 +596,13 @@ int main() {
         assert(receivedPixels.size() == 240 * 160);
         assert(std::all_of(receivedPixels.begin(), receivedPixels.end(),
             [expectedPixel](uint32_t pixel) { return pixel == expectedPixel; }));
-        if (selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
-            for (uint32_t pixel : receivedPixels)
-                assert(pixel == 0x00FF0000);
-        } else {
-            for (uint32_t pixel : receivedPixels)
-                assert(pixel == 0x7C00);
-        }
     };
-    runAndCheck(makeGbaMode3BootRom());
+    constexpr uint16_t testColor = 0x7607; // R=7, G=16, B=29.
+    runAndCheck(makeGbaMode3BootRom(), 0x001F);
     retro_unload_game();
-    runAndCheck(makeGbaThumbMode3BootRom());
+    runAndCheck(makeGbaThumbMode3BootRom(), 0x001F);
+    retro_unload_game();
+    runAndCheck(makeGbaMode3BootRom(testColor), testColor);
 
     constexpr const char *letterA[] = {
         "..####..",
@@ -536,6 +640,7 @@ int main() {
         retro_unload_game();
     };
     retro_unload_game();
+    runMode0TileSpriteHomebrewAndCheck();
     runInstructionSuiteAndCheck(
         readFile("../../tests/roms/gba-arm-tests/arm.gba"));
     runInstructionSuiteAndCheck(
@@ -545,6 +650,7 @@ int main() {
     runSaveMemoryTypeCheck("SRAM_V", 32 * 1024);
     runSaveMemoryTypeCheck("FLASH512_V", 64 * 1024);
     runSaveMemoryTypeCheck("EEPROM_V", 512);
+    runRtcMemoryCheck();
     runOptionalBiosCheck();
     runSkipBiosOptionCheck();
     runRequiredBiosMissingCheck();
@@ -554,7 +660,8 @@ int main() {
     acceptXrgb8888 = false;
     retro_init();
     assert(selectedFormat == RETRO_PIXEL_FORMAT_0RGB1555);
-    runAndCheck(makeGbaThumbMode3BootRom());
+    runAndCheck(makeGbaThumbMode3BootRom(testColor), testColor);
     retro_unload_game();
+    runMode0TileSpriteHomebrewAndCheck();
     retro_deinit();
 }

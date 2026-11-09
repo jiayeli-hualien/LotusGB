@@ -1,5 +1,24 @@
 # Development roadmap
 
+## Current route — GBA single-player playability and fidelity (2026-11-09)
+
+The bounded Emerald checkpoint is passed: the game reached Route 102, accepted
+directional play, and resumed its in-game save after closing and reopening the
+runner. The GPIO RTC also advanced across reload, meeting the selected
+acceptance condition; berry growth and watering are not required.
+
+Licensed audio fixtures cover PSG, Direct Sound, SOUNDBIAS and libretro sample
+delivery. An original Mode 0 tile/sprite fixture checks every frame pixel
+through the system and libretro callback in both pixel formats. `make test`
+passes these with the repository suite. Emerald Mono/Stereo routing was
+observed, but sound quality has not been compared with hardware; no
+target-specific rendering or PCM defect is currently recorded. Continue
+implementation when a concrete Emerald or licensed homebrew discrepancy is
+reproduced, rather than adding speculative timing changes.
+
+Link Cable, RFU and GBA save states remain deferred. See the [GBA status and
+evidence](gba-development.md) for implementation limits and test details.
+
 The bounded gameplay and Steam Deck checkpoints are complete. The intermittent
 Deck tearing report is closed for now: it did not recur in the latest Deck
 check, and the user reports no tearing during Mac testing. No core defect was
@@ -27,10 +46,11 @@ normal audio on Steam Deck as well. The user also confirmed normal audio while
 holding Rewind and after releasing it. The Deck core hash and session duration
 were not recorded. See the [rewind evidence](rewind.md).
 
-## Current route (2026-11-03)
+## Earlier DMG/CGB route and milestones (2026-11-03)
 
-Work in the order below. These are acceptance milestones, not calendar
-commitments. M1–M3 are complete. M4 is closed for now without a confirmed fix
+This section records the prior DMG/CGB route and acceptance results. These
+are acceptance milestones, not calendar commitments.
+M1–M3 are complete. M4 is closed for now without a confirmed fix
 or core defect. The current personal-use DMG/libretro baseline is complete;
 M5 is complete for the bounded macOS and Steam Deck frontend scope.
 M6 is also complete. M7's headless input/audio/state checkpoint is complete:
@@ -62,17 +82,20 @@ has been tested.
 | M8 — playable checkpoint passed (2026-11-01) | Native CGB-E through RetroArch | Banked RAM, color PPU, KEY1 speed switching, VRAM DMA and model-tagged snapshots. Exact cgb-acid2 pixels and Deluxe directional/flap/dash response with state replay pass; installed macOS RetroArch loads/restores gameplay. Broader game compatibility and hardware accuracy remain work. See the [canonical evidence and limits](cgb-development.md). |
 | M9 — bounded checkpoint complete (2026-11-01) | CGB gameplay and battery SRAM | CI fixtures cover CGB-compatible MBC1 and MBC5, color/input gameplay, battery-backed progress and fresh-content SRAM restore. Optional local `make test-cgb-homebrew` adds Big2Small MBC5 save/resume and Deluxe MBC1 gameplay/state replay. See [CGB evidence](cgb-development.md#reproducible-checks). |
 | M10 — bounded user acceptance passed (2026-11-04) | CGB-E Pokémon Crystal single-player playability | Original CGB fixtures cover MBC1/MBC5 gameplay and battery RAM, MBC5 ROM banks $100/$1FF and 128-KiB SRAM gameplay/state/battery replay, plus MBC3 guest RTC latch/read/write, running-clock offline progression/day rollover and fresh-content battery import in both libretro presentation builds. The user reports Crystal single-player playability and accepted the updated macOS Steam RetroArch core after confirming gameplay, in-game saving and save persistence after reopening. ROM region and route/coverage were not recorded; this closes the bounded personal-use target, not all CGB game compatibility, full-story verification or real-title RTC progression. See the [CGB playability record](cgb-development.md#pokemon-crystal-post-update-check-2026-11-04). Keep ROMs and derived artifacts private; use licensed homebrew and original fixtures for reproducible public checks. |
-| GBA — Pong and battery-save checkpoint passed (automated, 2026-11-08) | Independent LotusGBA libretro core | The callback test passes the MIT ARM and Thumb instruction suites, then runs the MIT-licensed Pong-Homebrew-GBA ROM through its tested gameplay path. Original fixtures verify SRAM, 64-KiB Flash, banked 128-KiB Flash, and DMA-driven 512-byte/8-KiB EEPROM read/write and retention; libretro save-memory exposure is checked for each family. This is implementation and synthetic-test evidence, not manual RetroArch acceptance or commercial-game save validation. Accurate timing, RTC, sound FIFO DMA and other video modes remain incomplete. See [GBA status and evidence](gba-development.md). |
-| GBA — basic audio path passed (automated, 2026-11-08) | PSG, Direct Sound FIFO and RetroArch audio output | Synthetic system tests exercise PSG stereo output and timer-driven FIFO playback through DMA1 special timing. A libretro callback check receives about 803 stereo frames per video frame at 48 kHz. This confirms the implemented path and test fixtures only; it is not game-level listening or hardware-accuracy evidence. See [GBA status and evidence](gba-development.md). |
+| GBA — Pong and battery-save checkpoint passed (automated, 2026-11-08) | Independent LotusGBA libretro core | The callback test passes the MIT ARM and Thumb instruction suites, then runs the MIT-licensed Pong-Homebrew-GBA ROM through its tested gameplay path. Original fixtures verify SRAM, 64-KiB Flash, banked 128-KiB Flash, and DMA-driven 512-byte/8-KiB EEPROM read/write and retention; libretro save-memory exposure is checked for each family. This is implementation and synthetic-test evidence, not manual RetroArch acceptance or commercial-game save validation. At this checkpoint, RTC was not yet implemented; accurate timing, game-level audio evaluation and other video modes remain follow-up work. See [GBA status and evidence](gba-development.md). |
+| GBA — Mode 0 libretro graphics baseline passed (automated, 2026-11-09) | Original tile-and-sprite homebrew fixture | The original 4bpp Mode 0 test cartridge draws a red tile background and a 16×16 green sprite through BIOS `CpuSet`. The libretro callback now compares all 240×160 pixels against the reference in both XRGB8888 and 0RGB1555; the existing direct-system test checks the same frame. This covers the frontend integration path, not additional hardware behavior. See [GBA graphics test coverage](gba-development.md). |
+| GBA — basic audio path passed (automated, 2026-11-09) | PSG, Direct Sound FIFO and audio output | Synthetic checks cover PSG panning, Direct Sound A/B separation and 50%/100% volume, timer-driven FIFO playback, SOUNDBIAS clipping/cadence and libretro sample delivery. A private Route 102 probe confirms the game's Mono option produces matching channels and Stereo produces separated left/right PCM. This verifies game-driven routing, not sound quality; comparison with hardware remains open. See [GBA status and evidence](gba-development.md). |
+| GBA — Sound 3 wave banks and output modes (automated, 2026-11-09) | GBA wave RAM and channel 3 playback | The licensed audio test path verifies CPU access to the inactive 16-byte bank, 32-step versus 64-step playback across both banks, the force-75%-volume bit, and ignored high-byte register bits. This fills the documented bank/dimension gap but does not assess analog output or game-level sound fidelity. See [GBA implementation status](gba-development.md). |
 | GBA — WAITCNT first timing stage passed (automated, 2026-11-08) | Register masks and basic CPU-side Game Pak waits | Original CPU loops verify WAITCNT reset/readback/reserved-bit handling and show that ROM first/sequential waits and Game Pak RAM waits change work completed in one emulated frame in the expected direction. The prefetch buffer and complete CPU/DMA timing remain out of scope for this stage. See [GBA status and evidence](gba-development.md). |
+| GBA — Emerald early-game save/reload and RTC checkpoint passed (2026-11-09) | Private Pokémon Emerald single-player probe | Earlier private play reached Route 102, saved in-game and resumed there after reload. A fresh-source headless libretro check later loaded a saved game with 0:30 playtime, restored the outdoor map, and moved the player right; the Flash image remained byte-identical. Its RTC sidecar had been offline about 8 hours 45 minutes; reload advanced the persisted time base while keeping the effective clock continuous. The user accepts time advancement after reload as sufficient RTC verification. This is an early-game checkpoint, not full-story or hardware-accuracy coverage, and the headless check is not RetroArch frontend acceptance. ROMs, saves and captures remain private. See [GBA evidence](gba-development.md). |
+| GBA — SOUNDBIAS output stage and licensed audio baseline passed (automated, 2026-11-09) | MIT GBA Audio Check ROMs | One ROM produces a deterministic PSG tone measured in the 420–460 Hz range and routed equally to both channels; a second alternates signed samples through timer/DMA-driven Direct Sound A/B and measures a 1950–2150 Hz output, routed right and left. Tests verify separate Direct Sound sides, the 50%/100% volume ratio, 10-bit bias/clipping, 9–6-bit PWM amplitude quantization, 32.768–262.144 kHz SOUNDBIAS cadences, high-rate attenuation before 48 kHz conversion, and unused register-bit masks. The current four-pole 18 kHz filter passes the licensed alias-rejection check. A private Emerald capture confirms non-silent, unclipped PCM after this update, but no hardware sound comparison has been made. See [ROM source and terms](../tests/roms/gba-audio-check/README.md) and [GBA implementation status](gba-development.md). |
 | Future scope — deferred | Optional expansion | More homebrew titles, a standalone GUI, Windows delivery and systems beyond GBA need a concrete user or distribution target before becoming milestones. |
 
-### Active automatic route — GB/CGB specification coverage
+### Paused diagnostic route — GB/CGB specification coverage
 
-Continue GB/CGB specification work without waiting for commercial-game or
-device acceptance. The original MBC5 high-bank fixture extends M10's automated
-mapper/gameplay gate; running-RTC offline progression is also covered. These
-checks remain separate from the deferred private manual observations above.
+This route is paused while the current target is GBA. The remaining GB/CGB
+technical notes below are a diagnostic reference if a concrete regression
+requires reopening that work; they are not the current next steps.
 
 CGB VBlank/STAT timing now passes Mooneye's CGB-targeted
 `misc/ppu/vblank_stat_intr-C`: line-144 Mode 2 STAT asserts one M-cycle before
@@ -266,9 +289,27 @@ memory. Synthetic tests cover the save protocols and persistence, but
 commercial-game save behavior and manual RetroArch persistence have not been
 verified. The core now has automated baselines for PSG audio, Direct Sound FIFO
 playback, timer-driven sound DMA, libretro audio callbacks, and the first
-WAITCNT-controlled Game Pak wait cycles. Prefetch-buffer behavior, complete CPU
-and DMA timing, game-level audio evaluation, RTC/GPIO and other video modes
-remain incomplete. Other systems remain deferred.
+WAITCNT-controlled Game Pak wait cycles. The current worktree also implements
+the `SIIRTC_V001` GPIO RTC; a private Emerald reload check confirmed that time
+advances. Prefetch-buffer behavior, complete CPU and DMA timing, game-level
+listening and other video modes remain follow-up work. The MIT-licensed GBA
+Audio Check ROMs provide repeatable PSG/SOUNDBIAS and timer/DMA-driven Direct
+Sound baselines, including separate left/right routing. Sound 3 now models
+both wave RAM banks, 32/64-step playback, inactive-bank access and forced 75%
+output. The mixed PSG/FIFO output is sampled at the SOUNDBIAS-selected cadence
+before resampling to libretro's fixed 48 kHz output. Rates above 48 kHz pass
+through an 18 kHz fourth-order low-pass before resampling. SOUNDBIAS changes
+output cadence and quantizes PWM amplitude from 9 to 6 bits; it does not change
+PSG oscillator clocks. Other systems remain deferred.
+
+GBA priorities are: first, make recommended single-player games playable
+without emulator-introduced bugs (Emerald has now passed an early-game
+Route 102 movement and in-game save/reload checkpoint); second, improve
+graphics and sound fidelity against hardware behavior; third, defer Link Cable
+and RFU. Refine timing when it blocks gameplay or explains a visual/audio
+mismatch. For a suspected bug, check documentation, targeted tests or real
+hardware before deciding whether it is an emulator defect or behavior to
+reproduce.
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
 
@@ -555,7 +596,7 @@ These are previously recorded results, not checks rerun for this replan.
 | Run-ahead and replay | A user selects one after the save-state checkpoint. | Validate determinism, frontend behavior and performance for that feature; serialization support alone does not establish these results. The bounded M6 rewind checkpoint is complete above. |
 | Recalbox | That device becomes an active frontend target. | Verify actual controls, video/audio and saves; the ARM64 headless result already exists. See [Recalbox](recalbox.md). |
 | Windows | Windows becomes an active delivery target. | Native build/CI, then RetroArch gameplay and persistence. |
-| NES, GBA and other systems | A separate scope decision follows the DMG/CGB work. | Define one target and acceptance game before adding cross-system abstractions. |
+| NES and other systems | A separate scope decision after the active GBA target. | Define one target and acceptance game before adding cross-system abstractions. |
 
 macOS is the current development environment; Ubuntu remains the CI platform.
 The bounded Steam Deck checkpoint passed for one identified build; the

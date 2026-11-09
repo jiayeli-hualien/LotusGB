@@ -334,10 +334,14 @@ bool retro_load_game(const retro_game_info *game) {
         std::vector<uint8_t> candidate(begin, begin + game->size);
         auto candidateBios = loadBios(readBiosStartupMode());
         std::shared_ptr<std::vector<uint8_t>> candidateSaveFlash;
-        if (gbaSystem && loadedRom == candidate)
+        std::shared_ptr<std::vector<uint8_t>> candidateRtc;
+        if (gbaSystem && loadedRom == candidate) {
             candidateSaveFlash = gbaSystem->getSaveRamStorage();
+            candidateRtc = gbaSystem->getRtcStorage();
+        }
         auto candidateSystem = std::make_unique<GbaSystem>(
-            candidate, std::move(candidateBios), std::move(candidateSaveFlash));
+            candidate, std::move(candidateBios), std::move(candidateSaveFlash),
+            std::move(candidateRtc));
         loadedRom = std::move(candidate);
         gbaSystem = std::move(candidateSystem);
         coreFaulted = false;
@@ -355,15 +359,23 @@ bool retro_load_game_special(unsigned, const retro_game_info *, size_t) { return
 void retro_unload_game(void) { gbaSystem.reset(); loadedRom.clear(); coreFaulted = false; }
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
 void *retro_get_memory_data(unsigned id) {
-    if (!gbaSystem || id != RETRO_MEMORY_SAVE_RAM)
+    if (!gbaSystem)
         return nullptr;
-    return gbaSystem->getSaveRamData();
+    if (id == RETRO_MEMORY_SAVE_RAM)
+        return gbaSystem->getSaveRamData();
+    if (id == RETRO_MEMORY_RTC)
+        return gbaSystem->getRtcData();
+    return nullptr;
 }
 
 size_t retro_get_memory_size(unsigned id) {
-    if (!gbaSystem || id != RETRO_MEMORY_SAVE_RAM)
+    if (!gbaSystem)
         return 0;
-    return gbaSystem->getSaveRamSize();
+    if (id == RETRO_MEMORY_SAVE_RAM)
+        return gbaSystem->getSaveRamSize();
+    if (id == RETRO_MEMORY_RTC)
+        return gbaSystem->getRtcSize();
+    return 0;
 }
 
 } // extern "C"

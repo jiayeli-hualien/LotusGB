@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "gba_system.hpp"
+#include "gba_boot_rom.hpp"
 
 namespace {
 
@@ -491,71 +492,6 @@ std::vector<uint8_t> affineSetRom(unsigned service) {
             rom[0xE8 + index * 4 + byte] = static_cast<uint8_t>(
                 literals[index] >> (byte * 8));
     }
-    return rom;
-}
-
-std::vector<uint8_t> tileSpriteHomebrewRom() {
-    struct CopyBlock {
-        uint32_t destination;
-        uint32_t count;
-        std::vector<uint8_t> data;
-    };
-
-    const auto halfwords = [](std::initializer_list<uint16_t> values) {
-        std::vector<uint8_t> data;
-        data.reserve(values.size() * 2);
-        for (uint16_t value : values) {
-            data.push_back(static_cast<uint8_t>(value));
-            data.push_back(static_cast<uint8_t>(value >> 8));
-        }
-        return data;
-    };
-    const std::vector<CopyBlock> blocks = {
-        {DISPCNT, 1, halfwords({0x1140})}, // Mode 0, BG0, OBJ, 1D OBJ mapping.
-        {BG0CNT, 1, halfwords({0x0004})}, // BG0 character block 1.
-        {PALETTE, 2, halfwords({0x0000, 0x001F})}, // Black and blue.
-        {VRAM + 0x4000, 16, std::vector<uint8_t>(32, 0x11)},
-        {OBJ_PALETTE, 2, halfwords({0x0000, 0x03E0})}, // Black and green.
-        {VRAM + 0x10000, 64, std::vector<uint8_t>(128, 0x11)},
-        {OAM, 4, halfwords({32, static_cast<uint16_t>(40 | (1u << 14)), 0, 0})},
-    };
-
-    constexpr size_t codeOffset = 0xC0;
-    const size_t codeSize = blocks.size() * 4 * sizeof(uint32_t) + sizeof(uint32_t);
-    const size_t literalOffset = codeOffset + codeSize;
-    const size_t assetOffset = literalOffset + blocks.size() * 3 * sizeof(uint32_t);
-    std::vector<uint8_t> rom = loopingRom();
-    rom.resize(assetOffset, 0);
-
-    const auto write32 = [&rom](size_t offset, uint32_t value) {
-        for (unsigned byte = 0; byte < 4; ++byte)
-            rom[offset + byte] = static_cast<uint8_t>(value >> (byte * 8));
-    };
-
-    size_t assetCursor = assetOffset;
-    for (size_t index = 0; index < blocks.size(); ++index) {
-        const size_t instructionOffset = codeOffset + index * 4 * sizeof(uint32_t);
-        const size_t blockLiteralOffset = literalOffset + index * 3 * sizeof(uint32_t);
-        for (unsigned reg = 0; reg < 3; ++reg) {
-            const size_t literalAddress = blockLiteralOffset + reg * sizeof(uint32_t);
-            const size_t pcAddress = instructionOffset + reg * sizeof(uint32_t) + 8;
-            const uint32_t immediate = static_cast<uint32_t>(literalAddress - pcAddress);
-            write32(instructionOffset + reg * sizeof(uint32_t),
-                0xE59F0000 | (reg << 12) | immediate); // LDR rN, [pc, #literal]
-        }
-        write32(instructionOffset + 12, 0xEF00000B); // CpuSet
-
-        write32(blockLiteralOffset, 0x08000000 + static_cast<uint32_t>(assetCursor));
-        write32(blockLiteralOffset + 4, blocks[index].destination);
-        write32(blockLiteralOffset + 8, blocks[index].count);
-        rom.resize(assetCursor + blocks[index].data.size(), 0);
-        std::copy(blocks[index].data.begin(), blocks[index].data.end(),
-                  rom.begin() + static_cast<std::ptrdiff_t>(assetCursor));
-        assetCursor = (assetCursor + blocks[index].data.size() + 3) & ~size_t{3};
-        rom.resize(assetCursor, 0);
-    }
-
-    write32(codeOffset + blocks.size() * 4 * sizeof(uint32_t), 0xEAFFFFFE);
     return rom;
 }
 
@@ -2071,7 +2007,7 @@ void testBitmapAffineTransformAndMode5() {
 }
 
 void testTileAndSpriteHomebrewScreen() {
-    GbaSystem system(tileSpriteHomebrewRom());
+    GbaSystem system(makeGbaMode0TileSpriteHomebrewRom());
     assert(system.runFrame().success);
     assert(system.runFrame().success);
 

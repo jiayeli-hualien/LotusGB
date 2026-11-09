@@ -1,6 +1,8 @@
 #include "include/dmg_apu.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <stdexcept>
 
 namespace LOTUSGB {
 
@@ -44,8 +46,31 @@ void applyZeroPaceEnvelopeWrite(uint8_t previous, uint8_t value,
 }
 }
 
+DmgApu::DmgApu(bool cgbMode, unsigned sampleRate, bool gbaWaveMode)
+    : cgbMode(cgbMode), gbaWaveMode(gbaWaveMode) {
+    setSampleRate(sampleRate);
+}
+
+void DmgApu::setSampleRate(unsigned sampleRate) {
+    if (sampleRate == 0 || sampleRate > DMG_MASTER_CLOCK)
+        throw std::invalid_argument("APU sample rate is out of range");
+
+    sampleRate_ = sampleRate;
+    const double chargePerMasterClock = cgbMode ? 0.998943 : 0.999958;
+    const double chargePerSample = std::pow(
+        chargePerMasterClock,
+        static_cast<double>(DMG_MASTER_CLOCK) / sampleRate_);
+    highPassCoefficient_ = static_cast<int64_t>(
+        std::llround(chargePerSample * (1LL << 16)));
+}
+
 uint8_t DmgApu::read(uint16_t address) {
     if (address >= WAVE_RAM_START && address <= WAVE_RAM_END) {
+        if (gbaWaveMode) {
+            const unsigned selectedBank = (nr30 >> 6) & 1;
+            const unsigned accessibleBank = selectedBank ^ 1;
+            return gbaWaveRam[accessibleBank * 16 + address - WAVE_RAM_START];
+        }
         if (channel3Enabled) {
             const bool fetchCycle = hasWaveRamFetch &&
                                     elapsedTCycles == lastWaveRamFetchTCycle;
@@ -73,9 +98,15 @@ uint8_t DmgApu::read(uint16_t address) {
         case NR22: return nr22;
         case NR23: return 0xFF;
         case NR24: return static_cast<uint8_t>(0xBF | (nr24 & 0x40));
-        case NR30: return static_cast<uint8_t>(0x7F | (nr30 & 0x80));
+        case NR30:
+            return gbaWaveMode
+                ? static_cast<uint8_t>(0x1F | (nr30 & 0xE0))
+                : static_cast<uint8_t>(0x7F | (nr30 & 0x80));
         case NR31: return 0xFF;
-        case NR32: return static_cast<uint8_t>(0x9F | (nr32 & 0x60));
+        case NR32:
+            return gbaWaveMode
+                ? static_cast<uint8_t>(0x1F | (nr32 & 0xE0))
+                : static_cast<uint8_t>(0x9F | (nr32 & 0x60));
         case NR33: return 0xFF;
         case NR34: return static_cast<uint8_t>(0xBF | (nr34 & 0x40));
         case NR41: return 0xFF;
@@ -101,6 +132,12 @@ void DmgApu::write(uint16_t address, uint8_t value) {
     }
 
     if (address >= WAVE_RAM_START && address <= WAVE_RAM_END) {
+        if (gbaWaveMode) {
+            const unsigned selectedBank = (nr30 >> 6) & 1;
+            const unsigned accessibleBank = selectedBank ^ 1;
+            gbaWaveRam[accessibleBank * 16 + address - WAVE_RAM_START] = value;
+            return;
+        }
         if (!channel3Enabled) {
             waveRam[address - WAVE_RAM_START] = value;
         } else if (cgbMode || (hasWaveRamFetch &&
@@ -183,7 +220,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
                 triggerChannel2();
             break;
         case NR30:
-            nr30 = value & 0x80;
+            nr30 = gbaWaveMode ? value & 0xE0 : value & 0x80;
             channel3DacEnabled = (value & 0x80) != 0;
             if (!channel3DacEnabled)
                 channel3Enabled = false;
@@ -192,7 +229,7 @@ void DmgApu::write(uint16_t address, uint8_t value) {
             lengthCounter3 = static_cast<uint16_t>(256 - value);
             break;
         case NR32:
-            nr32 = value & 0x60;
+            nr32 = gbaWaveMode ? value & 0xE0 : value & 0x60;
             break;
         case NR33:
             nr33 = value;
@@ -244,7 +281,7 @@ void DmgApu::advanceTCycles(uint64_t tCycles) {
             advanceChannel4();
         }
 
-        sampleAccumulator += SAMPLE_RATE;
+        sampleAccumulator += sampleRate_;
         if (sampleAccumulator >= DMG_MASTER_CLOCK) {
             sampleAccumulator -= DMG_MASTER_CLOCK;
             generateSample();
@@ -507,8 +544,19 @@ void DmgApu::advanceChannel3() {
     if (frequencyTimer3 == 0) {
         frequencyTimer3 = static_cast<uint16_t>(T_CYCLES_PER_APU_TICK *
                                                 (2048 - channel3Frequency()));
-        waveSampleIndex = static_cast<uint8_t>((waveSampleIndex + 1) & 0x1F);
-        const uint8_t waveByte = waveRam[waveSampleIndex / 2];
+        const uint8_t sampleMask = gbaWaveMode && (nr30 & 0x20) ? 0x3F : 0x1F;
+        waveSampleIndex = static_cast<uint8_t>((waveSampleIndex + 1) & sampleMask);
+        uint8_t waveByte = 0;
+        if (gbaWaveMode) {
+            const unsigned sample = waveSampleIndex & 0x3F;
+            const unsigned selectedBank = (nr30 >> 6) & 1;
+            const unsigned sampleBank = selectedBank ^
+                (((nr30 & 0x20) != 0 && sample >= 32) ? 1 : 0);
+            const unsigned byteInBank = (sample & 0x1F) / 2;
+            waveByte = gbaWaveRam[sampleBank * 16 + byteInBank];
+        } else {
+            waveByte = waveRam[waveSampleIndex / 2];
+        }
         lastWaveRamFetchTCycle = elapsedTCycles;
         hasWaveRamFetch = true;
         waveSampleBuffer = (waveSampleIndex & 1) == 0
@@ -697,7 +745,9 @@ void DmgApu::generateSample() {
     };
     const int channel1 = dac(channel1DacEnabled, channel1DigitalOutput());
     const int channel2 = dac(channel2DacEnabled, channel2DigitalOutput());
-    const int channel3 = dac(channel3DacEnabled, channel3DigitalOutput());
+    int channel3 = dac(channel3DacEnabled, channel3DigitalOutput());
+    if (gbaWaveMode && (nr32 & 0x80) != 0)
+        channel3 = channel3 * 3 / 4;
     const int channel4 = dac(channel4DacEnabled, channel4DigitalOutput());
     int left = 0;
     int right = 0;
@@ -726,15 +776,12 @@ void DmgApu::generateSample() {
     // Keep fractional filter state so negative feedback can decay to zero
     // instead of sticking at a DC offset due to signed integer rounding.
     constexpr int64_t Q16_ONE = 1LL << 16;
-    // round(65536 * charge^(4194304 / 48000)); charge per master clock:
-    // DMG=0.999958, CGB=0.998943 (Pan Docs Audio Details).
-    const int64_t highPassCoefficient = cgbMode ? 59751 : 65296;
     const int64_t filteredLeftQ16 =
         (static_cast<int64_t>(left - previousLeftInput) * Q16_ONE) +
-        (previousLeftOutputQ16 * highPassCoefficient) / Q16_ONE;
+        (previousLeftOutputQ16 * highPassCoefficient_) / Q16_ONE;
     const int64_t filteredRightQ16 =
         (static_cast<int64_t>(right - previousRightInput) * Q16_ONE) +
-        (previousRightOutputQ16 * highPassCoefficient) / Q16_ONE;
+        (previousRightOutputQ16 * highPassCoefficient_) / Q16_ONE;
     const int32_t filteredLeft = static_cast<int32_t>(filteredLeftQ16 / Q16_ONE);
     const int32_t filteredRight = static_cast<int32_t>(filteredRightQ16 / Q16_ONE);
     previousLeftInput = left;

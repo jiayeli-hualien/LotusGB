@@ -67,9 +67,11 @@ constexpr unsigned OBJ_DIMENSIONS[3][4][2] = {
 
 GbaSystem::GbaSystem(
     std::vector<uint8_t> rom, std::vector<uint8_t> bios,
-    std::shared_ptr<std::vector<uint8_t>> saveData)
+    std::shared_ptr<std::vector<uint8_t>> saveData,
+    std::shared_ptr<std::vector<uint8_t>> rtcData)
     : rom_(std::move(rom)), bios_(std::move(bios)),
-      saveType_(detectSaveType(rom_)), saveData_(std::move(saveData)) {
+      saveType_(detectSaveType(rom_)), saveData_(std::move(saveData)),
+      rtc_(hasRtcMarker(rom_), std::move(rtcData)) {
     if (rom_.size() < 0xC4)
         throw std::invalid_argument("GBA ROM must contain a cartridge entry point");
     if (!bios_.empty() && bios_.size() != 0x4000)
@@ -116,6 +118,12 @@ GbaSystem::SaveType GbaSystem::detectSaveType(const std::vector<uint8_t> &rom) {
     return SaveType::None;
 }
 
+bool GbaSystem::hasRtcMarker(const std::vector<uint8_t> &rom) {
+    constexpr char marker[] = "SIIRTC_V";
+    return std::search(rom.begin(), rom.end(), marker,
+                       marker + sizeof(marker) - 1) != rom.end();
+}
+
 bool GbaSystem::isEepromAddress(uint32_t address) {
     return address >= EEPROM_BASE && address < EEPROM_BASE + EEPROM_WINDOW_SIZE;
 }
@@ -130,6 +138,18 @@ size_t GbaSystem::getSaveRamSize() const {
 
 std::shared_ptr<std::vector<uint8_t>> GbaSystem::getSaveRamStorage() const {
     return saveData_;
+}
+
+uint8_t *GbaSystem::getRtcData() {
+    return rtc_.storageData();
+}
+
+size_t GbaSystem::getRtcSize() const {
+    return rtc_.storageSize();
+}
+
+std::shared_ptr<std::vector<uint8_t>> GbaSystem::getRtcStorage() const {
+    return rtc_.storage();
 }
 
 std::vector<int16_t> GbaSystem::takeAudioSamples() {
@@ -252,6 +272,7 @@ void GbaSystem::reset() {
     eepromReadCursor_ = 0;
     eepromReadActive_ = false;
     eepromDmaWriteActive_ = false;
+    rtc_.resetPort();
     for (unsigned object = 0; object < 128; ++object)
         oam_[object * 8 + 1] = 0x02; // HLE BIOS leaves regular objects disabled.
     frameBuffer_.fill(0x7FFF);
@@ -525,7 +546,7 @@ uint8_t GbaSystem::read8Impl(uint32_t address) const {
     }
     if (address >= 0x08000000 && address < 0x0E000000 && !rom_.empty()) {
         const size_t offset = (address & 0x01FFFFFF) % rom_.size();
-        return rom_[offset];
+        return rtc_.readByte(address, rom_[offset]);
     }
     return 0;
 }
@@ -694,6 +715,10 @@ void GbaSystem::write16(uint32_t address, uint16_t value) {
 }
 
 void GbaSystem::write16Impl(uint32_t address, uint16_t value) {
+    if (rtc_.handlesAddress(address)) {
+        rtc_.writeRegister(address, value);
+        return;
+    }
     if (saveType_ == SaveType::Eeprom && isEepromAddress(address)) {
         writeEeprom(value);
         return;
