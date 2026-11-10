@@ -2046,7 +2046,11 @@ void testTileAndSpriteHomebrewScreen() {
     // Check the stable frame after the Mode 0 scene is fully initialized.
     for (unsigned y = 0; y < GbaSystem::SCREEN_HEIGHT; ++y) {
         for (unsigned x = 0; x < GbaSystem::SCREEN_WIDTH; ++x) {
-            const bool inSprite = x >= 40 && x < 56 && y >= 32 && y < 48;
+            const bool inSprite =
+                (x >= 40 && x < 56 && y >= 32 && y < 48) ||
+                (x >= 64 && x < 80 && y >= 128 && y < 144) ||
+                (x >= 88 && x < 104 && y == 159) ||
+                (x >= 136 && x < 152 && y < 15);
             const uint16_t expected = inSprite ? 0x03E0 : 0x001F;
             const uint16_t actual = pixel(system, x, y);
             if (actual != expected) {

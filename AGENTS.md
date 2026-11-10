@@ -2,14 +2,14 @@
 
 ## Project scope
 
-LotusGB is a C++ Game Boy emulator project. The current implementation focuses on the CPU; it is not yet a complete system emulator. Keep CPU behavior testable through its public interfaces so memory, timing, and future system components can be integrated later.
+LotusGB is a C++ DMG/CGB emulator with a RetroArch libretro core. The repository also contains LotusGBA, a separate experimental Game Boy Advance core with its own CPU, system and libretro adapter. Keep hardware behavior testable through public component, system and frontend interfaces. Do not conflate passing focused tests or bounded game checkpoints with complete hardware accuracy or broad game compatibility; use the roadmap and per-system evidence documents for current scope.
 
 ## Build and checks
 
 From the repository root:
 
 - `make build` builds the project.
-- `make test` runs the CPU interface and instruction unit tests. These tests do not require GBIT.
+- `make test` runs the CPU, hardware-component, system, libretro, framebuffer, homebrew and GBA tests. It does not require downloaded ROM suites; the pinned GBIT comparison is a separate integration check.
 - `make test-roms` optionally runs available Blargg CH3 ROMs from
   `../test-roms/dmg_sound` through the built libretro core. It writes adapted
   copies, screenshots, logs, and a report under `build/test-roms/`; check the

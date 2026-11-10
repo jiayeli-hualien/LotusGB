@@ -115,7 +115,13 @@ inline std::vector<uint8_t> makeGbaMode0TileSpriteHomebrewRom() {
         {VRAM + 0x4000, 16, std::vector<uint8_t>(32, 0x11)},
         {OBJ_PALETTE, 2, halfwords({0x0000, 0x03E0})}, // Black and green.
         {VRAM + 0x10000, 64, std::vector<uint8_t>(128, 0x11)},
-        {OAM, 4, halfwords({32, static_cast<uint16_t>(40 | (1u << 14)), 0, 0})},
+        {OAM, 20, halfwords({
+            32, static_cast<uint16_t>(40 | (1u << 14)), 0, 0,
+            128, static_cast<uint16_t>(64 | (1u << 14)), 0, 0,
+            159, static_cast<uint16_t>(88 | (1u << 14)), 0, 0,
+            160, static_cast<uint16_t>(112 | (1u << 14)), 0, 0,
+            255, static_cast<uint16_t>(136 | (1u << 14)), 0, 0,
+        })},
     };
 
     constexpr size_t codeOffset = 0xC0;

@@ -1,5 +1,60 @@
 # Development roadmap
 
+## Next project goals — recommended working order (2026-11-10)
+
+The working order is:
+
+1. **Prepare the repository for public release.** Complete a reviewable
+   preflight first; repository visibility stays unchanged until the owner
+   approves the prepared result. Resolve tracked test-ROM rights questions,
+   refresh the README and contributor notes, record the name decision, and
+   check reachable history. Existing Git author email addresses are accepted;
+   rewriting history is not needed just to change them.
+2. **Add targeted end-to-end homebrew tests.** Select clearly licensed GBA
+   homebrew only where it closes a specific gap in the existing suite. Avoid
+   an open-ended ROM hunt. The 2026-11-10 OBJ Y-boundary regression is the
+   current example of a focused, pixel-exact test.
+3. **Write emulator-development articles and personal notes.** Keep them
+   useful as future reference and as a public presentation of the work.
+   Simplify code when a concrete explanation benefits from it; a broad
+   architecture rewrite is not a prerequisite.
+4. **Support local Pokémon link trading and battles.** This stays lower because
+   the primary use is single-player and the link feature is occasional, while
+   it needs a dual-system session and frontend integration. If an immediate
+   trading/battle need appears, move it ahead of goals 2–3. The bounded target
+   is two local GB systems and Pokémon exchange/battle flows; remote network
+   play is outside scope. RetroArch cores demonstrate dual-system sessions
+   through libretro subsystems: see the
+   [SameBoy](https://docs.libretro.com/library/sameboy/) and
+   [Gearboy](https://docs.libretro.com/library/gearboy/) guides. Focused link
+   tests are part of that milestone.
+
+The order favors the repository's current single-player use, a low-friction
+public release, and bounded improvements with clear evidence. It is a working
+priority, not a commitment to implement every item before revisiting scope.
+
+### Milestone 1 — public-release readiness
+
+**Exit condition:** a reviewable repository snapshot has current project and
+contributor documentation, each bundled test asset has checked provenance and
+terms, reachable history has been reviewed for private data and unapproved
+assets, and the local build/test gate passes. The owner reviews that result;
+changing repository visibility is a separate final action.
+
+Work breakdown:
+
+1. Update the README and contributor guidance so they describe the current
+   DMG/CGB core and the separate experimental GBA core accurately.
+2. Audit ROMs, firmware, references, screenshots and other bundled artifacts;
+   check binary terms separately from source and tools.
+3. Review reachable history for secrets, private data and assets that should
+   not be published. Record accepted account details without copying them into
+   project documentation.
+4. Run the CI-aligned build and test commands, then review the complete diff
+   and the rendered GitHub repository page.
+5. Present the prepared snapshot for owner review. Make the repository public
+   only after explicit approval.
+
 ## Current route — GBA single-player playability and fidelity (2026-11-09)
 
 The bounded Emerald checkpoint is passed: the game reached Route 102, accepted
@@ -83,7 +138,7 @@ has been tested.
 | M9 — bounded checkpoint complete (2026-11-01) | CGB gameplay and battery SRAM | CI fixtures cover CGB-compatible MBC1 and MBC5, color/input gameplay, battery-backed progress and fresh-content SRAM restore. Optional local `make test-cgb-homebrew` adds Big2Small MBC5 save/resume and Deluxe MBC1 gameplay/state replay. See [CGB evidence](cgb-development.md#reproducible-checks). |
 | M10 — bounded user acceptance passed (2026-11-04) | CGB-E Pokémon Crystal single-player playability | Original CGB fixtures cover MBC1/MBC5 gameplay and battery RAM, MBC5 ROM banks $100/$1FF and 128-KiB SRAM gameplay/state/battery replay, plus MBC3 guest RTC latch/read/write, running-clock offline progression/day rollover and fresh-content battery import in both libretro presentation builds. The user reports Crystal single-player playability and accepted the updated macOS Steam RetroArch core after confirming gameplay, in-game saving and save persistence after reopening. ROM region and route/coverage were not recorded; this closes the bounded personal-use target, not all CGB game compatibility, full-story verification or real-title RTC progression. See the [CGB playability record](cgb-development.md#pokemon-crystal-post-update-check-2026-11-04). Keep ROMs and derived artifacts private; use licensed homebrew and original fixtures for reproducible public checks. |
 | GBA — Pong and battery-save checkpoint passed (automated, 2026-11-08) | Independent LotusGBA libretro core | The callback test passes the MIT ARM and Thumb instruction suites, then runs the MIT-licensed Pong-Homebrew-GBA ROM through its tested gameplay path. Original fixtures verify SRAM, 64-KiB Flash, banked 128-KiB Flash, and DMA-driven 512-byte/8-KiB EEPROM read/write and retention; libretro save-memory exposure is checked for each family. This is implementation and synthetic-test evidence, not manual RetroArch acceptance or commercial-game save validation. At this checkpoint, RTC was not yet implemented; accurate timing, game-level audio evaluation and other video modes remain follow-up work. See [GBA status and evidence](gba-development.md). |
-| GBA — Mode 0 libretro graphics baseline passed (automated, 2026-11-09) | Original tile-and-sprite homebrew fixture | The original 4bpp Mode 0 test cartridge draws a red tile background and a 16×16 green sprite through BIOS `CpuSet`. The libretro callback now compares all 240×160 pixels against the reference in both XRGB8888 and 0RGB1555; the existing direct-system test checks the same frame. This covers the frontend integration path, not additional hardware behavior. See [GBA graphics test coverage](gba-development.md). |
+| GBA — Mode 0 libretro graphics baseline passed (automated, 2026-11-09; OBJ Y-boundary regression added 2026-11-10) | Original tile-and-sprite homebrew fixture | The original 4bpp Mode 0 test cartridge draws a red tile background and green sprites through BIOS `CpuSet`. Exact full-frame checks cover visible Y=128/159, offscreen Y=160, and top-wrapping Y=255 in the direct system test and libretro callback, with XRGB8888 and 0RGB1555 callback formats. This covers the frontend integration path, not additional hardware behavior. See [GBA graphics test coverage](gba-development.md). |
 | GBA — basic audio path passed (automated, 2026-11-09) | PSG, Direct Sound FIFO and audio output | Synthetic checks cover PSG panning, Direct Sound A/B separation and 50%/100% volume, timer-driven FIFO playback, SOUNDBIAS clipping/cadence and libretro sample delivery. A private Route 102 probe confirms the game's Mono option produces matching channels and Stereo produces separated left/right PCM. This verifies game-driven routing, not sound quality; comparison with hardware remains open. See [GBA status and evidence](gba-development.md). |
 | GBA — Sound 3 wave banks and output modes (automated, 2026-11-09) | GBA wave RAM and channel 3 playback | The licensed audio test path verifies CPU access to the inactive 16-byte bank, 32-step versus 64-step playback across both banks, the force-75%-volume bit, and ignored high-byte register bits. This fills the documented bank/dimension gap but does not assess analog output or game-level sound fidelity. See [GBA implementation status](gba-development.md). |
 | GBA — WAITCNT first timing stage passed (automated, 2026-11-08) | Register masks and basic CPU-side Game Pak waits | Original CPU loops verify WAITCNT reset/readback/reserved-bit handling and show that ROM first/sequential waits and Game Pak RAM waits change work completed in one emulated frame in the expected direction. The prefetch buffer and complete CPU/DMA timing remain out of scope for this stage. See [GBA status and evidence](gba-development.md). |
