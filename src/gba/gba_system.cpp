@@ -1320,7 +1320,7 @@ GbaSystem::ObjectVisibility GbaSystem::selectObjectsForScanline(
         int y = attribute0 & 0x00FF;
         if (x >= 256)
             x -= 512;
-        if (y >= 128)
+        if (y >= static_cast<int>(SCREEN_HEIGHT))
             y -= 256;
         const bool intersectsScanline = static_cast<int>(scanline) >= y &&
             static_cast<int>(scanline) < y + static_cast<int>(boundsHeight);
@@ -1382,7 +1382,7 @@ void GbaSystem::renderObjectWindow(unsigned scanline, bool oneDimensional,
         int y = attribute0 & 0x00FF;
         if (x >= 256)
             x -= 512;
-        if (y >= 128)
+        if (y >= static_cast<int>(SCREEN_HEIGHT))
             y -= 256;
 
         const int left = std::max({0, x, static_cast<int>(firstPixel)});
@@ -1507,7 +1507,7 @@ void GbaSystem::renderObjects(unsigned scanline, bool oneDimensional,
         int y = attribute0 & 0x00FF;
         if (x >= 256)
             x -= 512;
-        if (y >= 128)
+        if (y >= static_cast<int>(SCREEN_HEIGHT))
             y -= 256;
 
         const int left = std::max({0, x, static_cast<int>(firstPixel)});

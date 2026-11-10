@@ -1307,6 +1307,37 @@ void testObjectsPrioritiesShapesAndMapping() {
     assert(pixel(system, 5, 5) == 0x2529);
 }
 
+void testObjectVerticalCoordinateWrapsAtScreenHeight() {
+    GbaSystem system(loopingRom());
+    setPalette(system, PALETTE, 0, 0x001F);
+    setPalette(system, OBJ_PALETTE, 1, 0x03E0);
+    writeSolid4bppTile(system, VRAM + 0x10000, 0, 1);
+
+    // Y values 128..159 are visible; wrapping starts at the 160-pixel
+    // screen boundary, not at the midpoint of the 8-bit OAM coordinate.
+    system.write16(OAM, 128);
+    system.write16(OAM + 2, 0);
+    system.write16(OAM + 4, 0);
+    system.write16(OAM + 8, 159);
+    system.write16(OAM + 10, 16);
+    system.write16(OAM + 12, 0);
+    system.write16(OAM + 16, 160);
+    system.write16(OAM + 18, 32);
+    system.write16(OAM + 20, 0);
+    system.write16(OAM + 24, 255);
+    system.write16(OAM + 26, 48);
+    system.write16(OAM + 28, 0);
+    system.write16(DISPCNT, (1u << 6) | (1u << 12));
+
+    assert(system.runFrame().success);
+    assert(pixel(system, 0, 127) == 0x001F);
+    assert(pixel(system, 0, 128) == 0x03E0);
+    assert(pixel(system, 16, 158) == 0x001F);
+    assert(pixel(system, 16, 159) == 0x03E0);
+    assert(pixel(system, 32, 0) == 0x001F); // Y=160 wraps above the screen.
+    assert(pixel(system, 48, 0) == 0x03E0); // Y=255 wraps to -1.
+}
+
 void testRegularObjectFlipAndShapeSizeCombinations() {
     constexpr unsigned dimensions[3][4][2] = {
         {{8, 8}, {16, 16}, {32, 32}, {64, 64}},
@@ -2069,6 +2100,7 @@ int main() {
     testBackgroundMosaic();
     testTextBackgroundSizesAndEightBitTiles();
     testObjectsPrioritiesShapesAndMapping();
+    testObjectVerticalCoordinateWrapsAtScreenHeight();
     testRegularObjectFlipAndShapeSizeCombinations();
     testEightBitObjectsInOneDimensionalAndTwoDimensionalMapping();
     testEightBitObjectsUseBitmapModeTileBase();
