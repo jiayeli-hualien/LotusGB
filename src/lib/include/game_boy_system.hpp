@@ -27,6 +27,10 @@
 
 namespace LOTUSGB {
 
+namespace Test {
+struct GameBoySystemTestAccess;
+}
+
 struct RetStepFrame {
     bool success = false;
     bool frameCompleted = false;
@@ -116,6 +120,8 @@ public:
     std::shared_ptr<std::vector<uint8_t>> getRtcStorage() const;
 
 private:
+    friend struct Test::GameBoySystemTestAccess;
+
     enum class StartupProfile {
         TestReset,
         DmgPostBoot,

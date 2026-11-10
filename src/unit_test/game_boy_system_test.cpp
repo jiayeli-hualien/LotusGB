@@ -9,6 +9,14 @@
 #include "../../tests/include/lcd_cadence_rom.hpp"
 #include "../../tests/include/mbc1_multicart_rom.hpp"
 
+namespace LOTUSGB::Test {
+struct GameBoySystemTestAccess {
+    static void setMbc1Multicart(GameBoySystem &system, bool value) {
+        CartridgeTestAccess::setMbc1Multicart(system.cartridge, value);
+    }
+};
+}
+
 namespace {
 
 using namespace LOTUSGB;
@@ -948,6 +956,9 @@ void testMbc1MulticartCpuAndSnapshots() {
         std::copy(program.begin(), program.end(), rom.begin() + game * 0x40000 + 0x150);
     for (auto model : {HardwareModel::Dmg, HardwareModel::CgbE}) {
         GameBoySystem original(rom, model), restored(rom, model);
+        const bool multicart = Test::isSyntheticMbc1Multicart(rom);
+        Test::GameBoySystemTestAccess::setMbc1Multicart(original, multicart);
+        Test::GameBoySystemTestAccess::setMbc1Multicart(restored, multicart);
         auto *stable = restored.getSaveRamData();
         for (unsigned checkpoint = 0; checkpoint < 24; ++checkpoint) {
             for (unsigned cycle = 0; cycle < 17; ++cycle)
@@ -967,6 +978,7 @@ void testMbc1MulticartCpuAndSnapshots() {
         const auto progress = ram[0x10];
         auto battery = std::make_shared<std::vector<uint8_t>>(*original.getSaveRamStorage());
         GameBoySystem fresh(rom, model, battery);
+        Test::GameBoySystemTestAccess::setMbc1Multicart(fresh, multicart);
         for (unsigned cycle = 0; cycle < 200; ++cycle)
             expect(fresh.stepOneCycle().success, "fresh multicart content resumes imported SRAM");
         expect(fresh.getSaveRamData()[0x10] > progress && fresh.getSaveRamData()[0x31] == 0x31,

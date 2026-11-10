@@ -900,7 +900,10 @@ void testMbc1MulticartWiringAndDetection() {
         if (variant == 2) std::fill(rom.begin() + 0x104, rom.begin() + 0x134, 0);
         if (variant == 3) rom.resize(0x80000);
         Cartridge cart(rom);
-        const bool multicart = variant == 0;
+        const bool multicart = Test::isSyntheticMbc1Multicart(rom);
+        expect(multicart == (variant == 0),
+               "MBC1M detector requires matching repeated header fingerprints and 1-MiB geometry");
+        Test::CartridgeTestAccess::setMbc1Multicart(cart, multicart);
         const unsigned banks = rom.size() / 0x4000;
         for (unsigned mode = 0; mode < 2; ++mode) {
             cart.write(0x6000, mode);

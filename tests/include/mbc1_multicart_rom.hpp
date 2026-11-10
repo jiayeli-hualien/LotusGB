@@ -4,20 +4,40 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include "../../src/lib/include/cartridge.hpp"
+#include "../../src/lib/include/cartridge_signature.hpp"
 namespace LOTUSGB::Test {
-// Synthetic repeated header bytes exercise multicart bank selection.
-inline constexpr std::array<uint8_t, 48> syntheticMulticartHeader = {
-        0x5A, 0x7F, 0x10, 0x35, 0xCE, 0xE3, 0x84, 0x59, 0x72, 0x17, 0x28, 0xCD,
-    0xE6, 0xBB, 0x5C, 0x71, 0x0A, 0x2F, 0xC0, 0xE5, 0xBE, 0x53, 0x74, 0x09,
-    0x22, 0xC7, 0x98, 0xBD, 0x56, 0x6B, 0x0C, 0x21, 0xFA, 0x9F, 0xB0, 0x55,
-    0x6E, 0x03, 0x24, 0xF9, 0x92, 0xB7, 0x48, 0x6D, 0x06, 0xDB, 0xFC, 0x91,
+
+struct CartridgeTestAccess {
+    static void setMbc1Multicart(Cartridge &cartridge, bool value) {
+        cartridge.mbc1Multicart = value;
+    }
 };
+
+inline std::array<uint8_t, 48> syntheticMbc1MHeader() {
+    std::array<uint8_t, 48> header{};
+    for (size_t index = 0; index < header.size(); ++index)
+        header[index] = static_cast<uint8_t>(0x5A ^ (index * 37));
+    return header;
+}
+
+inline CartridgeDetail::HeaderFingerprint syntheticMbc1MHeaderFingerprint() {
+    const auto header = syntheticMbc1MHeader();
+    return StateInternal::sha256(header.data(), header.size());
+}
+
+inline bool isSyntheticMbc1Multicart(const std::vector<uint8_t> &rom) {
+    return CartridgeDetail::hasRepeatedMbc1MHeaderFingerprint(
+        rom, syntheticMbc1MHeaderFingerprint());
+}
+
 inline std::vector<uint8_t> makeMbc1MulticartRom() {
     std::vector<uint8_t> rom(0x100000, 0);
     for (unsigned bank = 0; bank < 64; ++bank) rom[bank * 0x4000] = bank;
+    const auto header = syntheticMbc1MHeader();
     for (unsigned game = 0; game < 4; ++game) {
         const size_t base = game * 0x40000;
-        std::copy(syntheticMulticartHeader.begin(), syntheticMulticartHeader.end(), rom.begin() + base + 0x104);
+        std::copy(header.begin(), header.end(), rom.begin() + base + 0x104);
         rom[base + 0x100] = 0xC3; rom[base + 0x101] = 0x50; rom[base + 0x102] = 1;
         rom[base + 0x143] = 0x80; rom[base + 0x147] = 3;
         rom[base + 0x148] = 5; rom[base + 0x149] = 2;

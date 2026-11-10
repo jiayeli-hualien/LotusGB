@@ -13,6 +13,10 @@
 
 namespace LOTUSGB {
 
+namespace Test {
+struct CartridgeTestAccess;
+}
+
 // Cartridge support: ROM-only, MBC1 ($01-$03), MBC2 ($05-$06), MBC3
 // / MBC30 ($0F-$13), MBC5 ($19-$1E), and MBC7 ($22). MBC5/MBC7 rumble is
 // exposed as a host callback.
@@ -44,6 +48,7 @@ public:
 
 private:
     friend class GameBoySystem;
+    friend struct Test::CartridgeTestAccess;
 
     Cartridge(std::vector<uint8_t> rom,
               std::shared_ptr<std::vector<uint8_t>> saveRam,
