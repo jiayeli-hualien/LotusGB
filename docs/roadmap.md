@@ -31,10 +31,11 @@ to implement every item before revisiting scope.
 
 The reviewed history and source snapshot are published at
 [jiayeli-hualien/LotusGB](https://github.com/jiayeli-hualien/LotusGB). The
-`main` branch is at `117ffa5`; tag `v0.1.0` is published. GitHub Actions CI
-passed for the initial public `main` push. The release preflight reviewed
-documentation, test-asset provenance, reachable history, and repository
-metadata. The private-use game checks remain separate from public ROM assets.
+initial public snapshot is commit `117ffa5`, recorded by tag `v0.1.0`.
+GitHub Actions CI passed for the initial release push and the later roadmap
+update. The release preflight reviewed documentation, test-asset provenance,
+reachable history, and repository metadata. The private-use game checks remain
+separate from public ROM assets.
 
 ## Current route — GBA single-player playability and fidelity (2026-11-09)
 
