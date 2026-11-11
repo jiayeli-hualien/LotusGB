@@ -1,27 +1,21 @@
 # Development roadmap
 
-## Next project goals — recommended working order (2026-11-10)
+## Next project goals — recommended working order (2026-11-12)
 
-The working order is:
+The public-release milestone is complete. The next goals are:
 
-1. **Prepare the repository for public release.** Complete a reviewable
-   preflight first; repository visibility stays unchanged until the owner
-   approves the prepared result. Resolve tracked test-ROM rights questions,
-   refresh the README and contributor notes, record the name decision, and
-   check reachable history. Existing Git author email addresses are accepted;
-   rewriting history is not needed just to change them.
-2. **Add targeted end-to-end homebrew tests.** Select clearly licensed GBA
+1. **Add targeted end-to-end homebrew tests.** Select clearly licensed GBA
    homebrew only where it closes a specific gap in the existing suite. Avoid
    an open-ended ROM hunt. The 2026-11-10 OBJ Y-boundary regression is the
    current example of a focused, pixel-exact test.
-3. **Write emulator-development articles and personal notes.** Keep them
+2. **Write emulator-development articles and personal notes.** Keep them
    useful as future reference and as a public presentation of the work.
    Simplify code when a concrete explanation benefits from it; a broad
    architecture rewrite is not a prerequisite.
-4. **Support local Pokémon link trading and battles.** This stays lower because
+3. **Support local Pokémon link trading and battles.** This stays lower because
    the primary use is single-player and the link feature is occasional, while
    it needs a dual-system session and frontend integration. If an immediate
-   trading/battle need appears, move it ahead of goals 2–3. The bounded target
+   trading/battle need appears, move it ahead of goals 1–2. The bounded target
    is two local GB systems and Pokémon exchange/battle flows; remote network
    play is outside scope. RetroArch cores demonstrate dual-system sessions
    through libretro subsystems: see the
@@ -29,31 +23,18 @@ The working order is:
    [Gearboy](https://docs.libretro.com/library/gearboy/) guides. Focused link
    tests are part of that milestone.
 
-The order favors the repository's current single-player use, a low-friction
-public release, and bounded improvements with clear evidence. It is a working
-priority, not a commitment to implement every item before revisiting scope.
+The order favors the repository's current single-player use and bounded
+improvements with clear evidence. It is a working priority, not a commitment
+to implement every item before revisiting scope.
 
-### Milestone 1 — public-release readiness
+### Milestone 1 — public repository (complete 2026-11-11)
 
-**Exit condition:** a reviewable repository snapshot has current project and
-contributor documentation, each bundled test asset has checked provenance and
-terms, reachable history has been reviewed for private data and unapproved
-assets, and the local build/test gate passes. The owner reviews that result;
-changing repository visibility is a separate final action.
-
-Work breakdown:
-
-1. Update the README and contributor guidance so they describe the current
-   DMG/CGB core and the separate experimental GBA core accurately.
-2. Audit ROMs, firmware, references, screenshots and other bundled artifacts;
-   check binary terms separately from source and tools.
-3. Review reachable history for secrets, private data and assets that should
-   not be published. Record accepted account details without copying them into
-   project documentation.
-4. Run the CI-aligned build and test commands, then review the complete diff
-   and the rendered GitHub repository page.
-5. Present the prepared snapshot for owner review. Make the repository public
-   only after explicit approval.
+The reviewed history and source snapshot are published at
+[jiayeli-hualien/LotusGB](https://github.com/jiayeli-hualien/LotusGB). The
+`main` branch is at `117ffa5`; tag `v0.1.0` is published. GitHub Actions CI
+passed for the initial public `main` push. The release preflight reviewed
+documentation, test-asset provenance, reachable history, and repository
+metadata. The private-use game checks remain separate from public ROM assets.
 
 ## Current route — GBA single-player playability and fidelity (2026-11-09)
 
@@ -235,9 +216,12 @@ The next audited gap is the DMG STAT-write interrupt quirk, absent on CGB:
 it now has a four-clock transient, model/mode/LYC coverage and pending-write
 snapshot replay (see [STAT evidence](dmg-validation.md#stat-write-interrupt-quirk-2026-11-02)).
 Snapshot v4 carries that transient while loading legacy v1/v2/v3.
-The audit also selected standard MBC1M multicart wiring: header-based detection,
-full-register bank tests and DMG/CGB CPU/state/battery checks now cover this
-previously unsupported variant (see [MBC1M evidence](cgb-development.md#mbc1m-multicart-wiring-2026-11-02)).
+The MBC1M detector uses a SHA-256 fingerprint of the standard header logo at
+the main and bank-$10 header offsets. Synthetic fixtures exercise the
+fingerprint helper and mapper wiring, including DMG/CGB CPU, state and battery
+behavior. No real MBC1M multi-game ROM or cartridge has been tested, so real
+cartridge detection remains unverified (see
+[MBC1M evidence](cgb-development.md#mbc1m-multicart-wiring-2026-11-02)).
 CGB high-pass output now uses its documented model-specific charge factor,
 with constant-input PCM decay and disconnect tests (see
 [filter evidence](cgb-development.md#model-specific-high-pass-decay-2026-11-02)).
