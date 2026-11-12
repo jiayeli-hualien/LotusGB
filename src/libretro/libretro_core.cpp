@@ -6,6 +6,9 @@
 #include <cstring>
 #include <cstdio>
 #include <cmath>
+#include <chrono>
+#include <thread>
+#include <optional>
 #include <exception>
 #include <cstdint>
 #include <filesystem>
@@ -175,9 +178,231 @@ retro_input_state_t inputStateCallback = nullptr;
 std::vector<uint8_t> loadedRom;
 std::vector<uint8_t> loadedBootRom;
 std::unique_ptr<GameBoySystem> emulatorSystem;
+std::unique_ptr<GameBoySystem> linkPeer;
+std::vector<uint8_t> peerRom;
+std::vector<uint8_t> peerBootRom;
+std::array<uint64_t, 2> linkTime{};
+uint64_t linkFrameEnd = 0;
+
+retro_netpacket_send_t netpacketSend = nullptr;
+retro_netpacket_poll_receive_t netpacketPollReceive = nullptr;
+uint16_t netpacketLocalId = 0;
+uint16_t netpacketPeerId = 0;
+bool netpacketStarted = false;
+bool netpacketConnected = false;
+bool netpacketHost = false;
+bool netpacketFailed = false;
+uint32_t netpacketSequence = 0;
+std::optional<std::pair<uint32_t, bool>> netpacketReply;
+const char NETPACKET_PROTOCOL_VERSION[] = "LotusGB-serial-bit-v1";
+
+enum class LinkPacketType : uint8_t { BitRequest = 1, BitReply = 2 };
+
+struct LinkPacket {
+    LinkPacketType type;
+    uint32_t sequence;
+    bool bit;
+};
+
+std::array<uint8_t, 10> encodeLinkPacket(const LinkPacket &packet) {
+    return {'L', 'G', 'B', 'L', static_cast<uint8_t>(packet.type),
+            static_cast<uint8_t>(packet.bit),
+            static_cast<uint8_t>(packet.sequence >> 24),
+            static_cast<uint8_t>(packet.sequence >> 16),
+            static_cast<uint8_t>(packet.sequence >> 8),
+            static_cast<uint8_t>(packet.sequence)};
+}
+
+std::optional<LinkPacket> decodeLinkPacket(const void *data, size_t size) {
+    if (!data || size != 10)
+        return std::nullopt;
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    if (bytes[0] != 'L' || bytes[1] != 'G' || bytes[2] != 'B' ||
+        bytes[3] != 'L' || (bytes[4] != 1 && bytes[4] != 2) || bytes[5] > 1)
+        return std::nullopt;
+    return LinkPacket{static_cast<LinkPacketType>(bytes[4]),
+                      (static_cast<uint32_t>(bytes[6]) << 24) |
+                          (static_cast<uint32_t>(bytes[7]) << 16) |
+                          (static_cast<uint32_t>(bytes[8]) << 8) | bytes[9],
+                      bytes[5] != 0};
+}
+
+void sendLinkPacket(const LinkPacket &packet) {
+    if (!netpacketSend)
+        throw std::runtime_error("RetroArch Netpacket is not active");
+    const auto bytes = encodeLinkPacket(packet);
+    netpacketSend(RETRO_NETPACKET_RELIABLE | RETRO_NETPACKET_FLUSH_HINT,
+                  bytes.data(), bytes.size(), RETRO_NETPACKET_BROADCAST);
+}
+
+bool exchangeNetworkBit(bool outgoing) {
+    if (!netpacketStarted || !netpacketConnected)
+        return true;
+    if (netpacketFailed || !netpacketPollReceive)
+        throw std::runtime_error("Link peer disconnected during serial transfer");
+
+    const uint32_t sequence = ++netpacketSequence;
+    if (sequence == 1)
+        logMessage(RETRO_LOG_INFO, "Waiting for the first remote serial edge");
+    netpacketReply.reset();
+    sendLinkPacket({LinkPacketType::BitRequest, sequence, outgoing});
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!netpacketReply && !netpacketFailed &&
+           std::chrono::steady_clock::now() < deadline) {
+        netpacketPollReceive();
+        if (!netpacketReply && !netpacketFailed)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (netpacketFailed)
+        throw std::runtime_error("Link peer disconnected during serial transfer");
+    if (!netpacketReply)
+        throw std::runtime_error("Timed out waiting for a serial link bit");
+    const auto [replySequence, incoming] = *netpacketReply;
+    if (replySequence != sequence)
+        throw std::runtime_error("Serial link reply sequence mismatch");
+    return incoming;
+}
+
+void netpacketStart(uint16_t clientId, retro_netpacket_send_t send,
+                    retro_netpacket_poll_receive_t pollReceive) {
+    const bool existingSession = netpacketStarted && netpacketLocalId == clientId;
+    netpacketLocalId = clientId;
+    netpacketSend = send;
+    netpacketPollReceive = pollReceive;
+    if (existingSession)
+        return;
+
+    netpacketHost = clientId == 0;
+    netpacketPeerId = 0;
+    netpacketStarted = true;
+    netpacketConnected = !netpacketHost;
+    netpacketFailed = false;
+    netpacketSequence = 0;
+    netpacketReply.reset();
+    logMessage(RETRO_LOG_INFO, clientId == 0
+        ? "RetroArch serial Netpacket started as host"
+        : "RetroArch serial Netpacket started as client");
+}
+
+void netpacketStop() {
+    netpacketSend = nullptr;
+    netpacketPollReceive = nullptr;
+    netpacketStarted = false;
+    netpacketConnected = false;
+    netpacketFailed = true;
+    netpacketReply.reset();
+}
+
+void netpacketPoll() {
+    if (!netpacketStarted || !netpacketSend || !netpacketPollReceive)
+        return;
+    netpacketPollReceive();
+}
+
+void netpacketReceive(const void *data, size_t size, uint16_t clientId) {
+    const auto packet = decodeLinkPacket(data, size);
+    if (!packet || !netpacketStarted ||
+        (netpacketHost ? clientId != netpacketPeerId : clientId != 0))
+        return;
+
+    try {
+        if (packet->type == LinkPacketType::BitRequest) {
+            const bool outgoing = emulatorSystem
+                                      ? emulatorSystem->getSerialOutgoingBit()
+                                      : true;
+            if (emulatorSystem)
+                emulatorSystem->clockSerialExternalBit(packet->bit);
+            if (packet->sequence == 1)
+                logMessage(RETRO_LOG_INFO, "Received the first remote serial edge");
+            sendLinkPacket({LinkPacketType::BitReply, packet->sequence, outgoing});
+        } else {
+            netpacketReply = std::make_pair(packet->sequence, packet->bit);
+        }
+    } catch (...) {
+        netpacketFailed = true;
+        logMessage(RETRO_LOG_ERROR, "Failed to process a serial link network packet");
+    }
+}
+
+bool netpacketConnectedClient(uint16_t clientId) {
+    if (netpacketConnected)
+        return false;
+    netpacketPeerId = clientId;
+    netpacketConnected = true;
+    logMessage(RETRO_LOG_INFO, "RetroArch serial link peer connected");
+    return true;
+}
+
+void netpacketDisconnectedClient(uint16_t clientId) {
+    if (clientId == netpacketPeerId) {
+        netpacketConnected = false;
+        netpacketFailed = true;
+    }
+}
+
+const retro_netpacket_callback NETPACKET_CALLBACKS = {
+    netpacketStart, netpacketReceive, netpacketStop, netpacketPoll,
+    netpacketConnectedClient, netpacketDisconnectedClient,
+    NETPACKET_PROTOCOL_VERSION};
+
+constexpr unsigned LINK_SUBSYSTEM = 0x100;
+constexpr unsigned LINK_SRAM[] = {0x100, 0x102};
+constexpr unsigned LINK_RTC[] = {0x101, 0x103};
+const retro_subsystem_memory_info LINK_MEMORY[][2] = {
+    {{"srm", LINK_SRAM[0]}, {"rtc", LINK_RTC[0]}},
+    {{"srm.2", LINK_SRAM[1]}, {"rtc.2", LINK_RTC[1]}},
+};
+const retro_subsystem_rom_info LINK_ROMS[] = {
+    {"Player 1 Game Boy ROM", "gb|gbc", false, false, true, LINK_MEMORY[0], 2},
+    {"Player 2 Game Boy ROM", "gb|gbc", false, false, true, LINK_MEMORY[1], 2},
+};
+const retro_subsystem_info SUBSYSTEMS[] = {
+    {"Game Boy Link (2 Players)", "gb_link_2p", LINK_ROMS, 2, LINK_SUBSYSTEM},
+    {},
+};
+
+void wireLink(GameBoySystem &first, GameBoySystem &second) {
+    auto connect = [](GameBoySystem &source, GameBoySystem &target) {
+        source.setSerialClockCallback([&target](bool outgoing) {
+            const bool incoming = target.getSerialOutgoingBit();
+            target.clockSerialExternalBit(outgoing);
+            return incoming;
+        });
+    };
+    connect(first, second);
+    connect(second, first);
+}
+
+void stepLinkFrame() {
+    linkFrameEnd += GameBoySystem::DMG_FRAME_T_CYCLES;
+    const std::array<GameBoySystem *, 2> systems{emulatorSystem.get(), linkPeer.get()};
+    while (true) {
+        const uint64_t firstEnd = linkTime[0] + systems[0]->baseClocksPerMCycle();
+        const uint64_t secondEnd = linkTime[1] + systems[1]->baseClocksPerMCycle();
+        // Order by the end of each M-cycle, where the serial edge is sampled.
+        const size_t slot = firstEnd <= secondEnd ? 0 : 1;
+        const uint64_t end = std::min(firstEnd, secondEnd);
+        if (end > linkFrameEnd)
+            return;
+        const auto step = systems[slot]->stepOneCycle();
+        if (!step.success)
+            throw std::runtime_error(slot == 0 ? "Link player 1 CPU failed" : "Link player 2 CPU failed");
+        // A stopped CPU consumes no guest clocks. Keep its place on the
+        // cable timeline so the other machine can continue.
+        linkTime[slot] = end;
+    }
+}
+
+void clearLink() {
+    linkPeer.reset();
+    peerRom.clear();
+    peerBootRom.clear();
+    linkTime = {};
+    linkFrameEnd = 0;
+}
 bool useXrgb8888 = false;
-std::array<uint32_t, VIDEO_PIXEL_COUNT> xrgb8888Frame{};
-std::array<uint16_t, VIDEO_PIXEL_COUNT> rgb1555Frame{};
+std::array<uint32_t, 2 * VIDEO_PIXEL_COUNT> xrgb8888Frame{};
+std::array<uint16_t, 2 * VIDEO_PIXEL_COUNT> rgb1555Frame{};
 
 class AudioDiagnostics {
 public:
@@ -269,6 +494,14 @@ retro_input_descriptor INPUT_DESCRIPTORS[] = {
     {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Game Boy B"},
     {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select"},
     {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START, "Start"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP, "D-Pad Up"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN, "D-Pad Down"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT, "D-Pad Left"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "D-Pad Right"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A, "Game Boy A"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Game Boy B"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select"},
+    {1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START, "Start"},
     {0, 0, 0, 0, nullptr},
 };
 
@@ -367,6 +600,13 @@ void pollInput() {
             inputStateCallback(0, RETRO_DEVICE_JOYPAD, 0, binding.retroButton) != 0;
         emulatorSystem->setButtonState(binding.gbButton, pressed);
     }
+    if (linkPeer) {
+        for (const ButtonBinding &binding : BUTTON_BINDINGS) {
+            const bool pressed = inputStateCallback &&
+                inputStateCallback(1, RETRO_DEVICE_JOYPAD, 0, binding.retroButton) != 0;
+            linkPeer->setButtonState(binding.gbButton, pressed);
+        }
+    }
     if (loadedCartridgeHasMbc7) {
         uint16_t x = 0x81D0;
         uint16_t y = 0x81D0;
@@ -382,13 +622,10 @@ void pollInput() {
     }
 }
 
-void renderFrame() {
-    if (!emulatorSystem || !videoRefreshCallback)
-        return;
-
-    const auto &shades = emulatorSystem->getCompletedFrameBuffer();
-    const bool color = emulatorSystem->getHardwareModel() == LOTUSGB::HardwareModel::CgbE;
-    const auto &colors = emulatorSystem->getCompletedColorFrameBuffer();
+void renderScreen(const GameBoySystem &system, unsigned slot, unsigned width) {
+    const auto &shades = system.getCompletedFrameBuffer();
+    const bool color = system.getHardwareModel() == LOTUSGB::HardwareModel::CgbE;
+    const auto &colors = system.getCompletedColorFrameBuffer();
     for (size_t i = 0; i < shades.size(); ++i) {
         const uint8_t shade = std::min<uint8_t>(shades[i], 3);
         const uint8_t gray = static_cast<uint8_t>(255 - shade * 85);
@@ -397,21 +634,33 @@ void renderFrame() {
         const uint8_t red = color ? expand(rgb & 31) : gray;
         const uint8_t green = color ? expand((rgb >> 5) & 31) : gray;
         const uint8_t blue = color ? expand((rgb >> 10) & 31) : gray;
+        const size_t pixel = (i / VIDEO_WIDTH) * width + slot * VIDEO_WIDTH + i % VIDEO_WIDTH;
         if (useXrgb8888) {
-            xrgb8888Frame[i] = (static_cast<uint32_t>(red) << 16) |
+            xrgb8888Frame[pixel] = (static_cast<uint32_t>(red) << 16) |
                                (static_cast<uint32_t>(green) << 8) | blue;
         } else {
-            rgb1555Frame[i] = static_cast<uint16_t>(((red >> 3) << 10) |
+            rgb1555Frame[pixel] = static_cast<uint16_t>(((red >> 3) << 10) |
                                                     ((green >> 3) << 5) | (blue >> 3));
         }
     }
 
+}
+
+void renderFrame() {
+    if (!emulatorSystem || !videoRefreshCallback)
+        return;
+
+    const unsigned width = linkPeer ? 2 * VIDEO_WIDTH : VIDEO_WIDTH;
+    renderScreen(*emulatorSystem, 0, width);
+    if (linkPeer)
+        renderScreen(*linkPeer, 1, width);
+
     if (useXrgb8888) {
-        videoRefreshCallback(xrgb8888Frame.data(), VIDEO_WIDTH, VIDEO_HEIGHT,
-                             VIDEO_WIDTH * sizeof(uint32_t));
+        videoRefreshCallback(xrgb8888Frame.data(), width, VIDEO_HEIGHT,
+                             width * sizeof(uint32_t));
     } else {
-        videoRefreshCallback(rgb1555Frame.data(), VIDEO_WIDTH, VIDEO_HEIGHT,
-                             VIDEO_WIDTH * sizeof(uint16_t));
+        videoRefreshCallback(rgb1555Frame.data(), width, VIDEO_HEIGHT,
+                             width * sizeof(uint16_t));
     }
 }
 
@@ -441,6 +690,14 @@ extern "C" {
 
 void retro_set_environment(retro_environment_t callback) {
     environmentCallback = callback;
+    LOTUSGB::LibretroInternal::invokeCallbackSafely(initializationFaulted, [] {
+        if (environmentCallback)
+            environmentCallback(RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO,
+                                const_cast<retro_subsystem_info *>(SUBSYSTEMS));
+        if (environmentCallback)
+            environmentCallback(RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE,
+                                const_cast<retro_netpacket_callback *>(&NETPACKET_CALLBACKS));
+    }, [](const char *error) { logMessage(RETRO_LOG_ERROR, error); });
 }
 
 void retro_set_video_refresh(retro_video_refresh_t callback) {
@@ -509,6 +766,7 @@ void retro_deinit(void) {
     logCallback = nullptr;
     audioDiagnostics.flush();
     emulatorSystem.reset();
+    clearLink();
     loadedRom.clear();
     loadedBootRom.clear();
     loadedCartridgeHasMbc7 = false;
@@ -535,11 +793,12 @@ void retro_get_system_info(retro_system_info *info) {
 void retro_get_system_av_info(retro_system_av_info *info) {
     if (!info)
         return;
-    info->geometry.base_width = VIDEO_WIDTH;
+    const unsigned width = linkPeer ? 2 * VIDEO_WIDTH : VIDEO_WIDTH;
+    info->geometry.base_width = width;
     info->geometry.base_height = VIDEO_HEIGHT;
-    info->geometry.max_width = VIDEO_WIDTH;
+    info->geometry.max_width = width;
     info->geometry.max_height = VIDEO_HEIGHT;
-    info->geometry.aspect_ratio = 10.0f / 9.0f;
+    info->geometry.aspect_ratio = static_cast<float>(width) / VIDEO_HEIGHT;
     info->timing.fps = DMG_FRAME_RATE;
     info->timing.sample_rate = 48000.0;
 }
@@ -559,7 +818,17 @@ void retro_reset(void) {
         auto newSystem =
             std::make_unique<GameBoySystem>(loadedRom, loadedHardwareModel,
                 saveRam, saveRtc, loadedBootRom);
+        if (!linkPeer)
+            newSystem->setSerialClockCallback(exchangeNetworkBit);
         bindCartridgeRumble(*newSystem);
+        if (linkPeer) {
+            auto newPeer = std::make_unique<GameBoySystem>(peerRom, linkPeer->getHardwareModel(),
+                linkPeer->getSaveRamStorage(), linkPeer->getRtcStorage(), peerBootRom);
+            wireLink(*newSystem, *newPeer);
+            linkPeer = std::move(newPeer);
+            linkTime = {};
+            linkFrameEnd = 0;
+        }
         emulatorSystem = std::move(newSystem);
         frameProblemReported = false;
         emulationFaulted = false;
@@ -580,6 +849,14 @@ void retro_run(void) {
         emulationFaulted,
         [] {
             pollInput();
+            if (linkPeer) {
+                stepLinkFrame();
+                renderFrame();
+                // Present player 1 audio and drain player 2's PCM each frame.
+                linkPeer->takeAudioSamples();
+                submitAudio();
+                return;
+            }
 #ifdef LOTUSGB_TEST_FIXED_FRAME_STEP
             // Fixed-duration diagnostic baseline; not the distributed default.
             const auto step = emulatorSystem->stepFrame();
@@ -624,11 +901,11 @@ void retro_run(void) {
 }
 
 size_t retro_serialize_size(void) {
-    return emulatorSystem ? GameBoySystem::MAX_STATE_SIZE : 0;
+    return emulatorSystem && !linkPeer ? GameBoySystem::MAX_STATE_SIZE : 0;
 }
 
 bool retro_serialize(void *data, size_t size) {
-    if (!emulatorSystem || emulationFaulted || !data || size < GameBoySystem::MAX_STATE_SIZE)
+    if (!emulatorSystem || linkPeer || emulationFaulted || !data || size < GameBoySystem::MAX_STATE_SIZE)
         return false;
     // Snapshot failures are recoverable: the running system is not mutated.
     bool snapshotFailed = false;
@@ -641,7 +918,7 @@ bool retro_serialize(void *data, size_t size) {
 }
 
 bool retro_unserialize(const void *data, size_t size) {
-    if (!emulatorSystem || !data)
+    if (!emulatorSystem || linkPeer || !data)
         return false;
     bool snapshotFailed = false;
     return LOTUSGB::LibretroInternal::invokeCallbackSafely(
@@ -658,7 +935,7 @@ void retro_cheat_reset(void) {}
 
 void retro_cheat_set(unsigned, bool, const char *) {}
 
-bool retro_load_game(const retro_game_info *game) {
+static bool loadContent(const retro_game_info *game, const retro_game_info *secondGame) {
     if (initializationFaulted) {
         logMessage(RETRO_LOG_ERROR, "Core initialization failed; reinitialize before loading content");
         return false;
@@ -688,6 +965,23 @@ bool retro_load_game(const retro_game_info *game) {
             logMessage(RETRO_LOG_INFO, (rom[0x143] & 0x80) ? "CGB hardware: native cartridge" : "CGB hardware: monochrome compatibility cartridge");
         std::unique_ptr<GameBoySystem> newSystem =
             std::make_unique<GameBoySystem>(rom, model, nullptr, nullptr, bootRom);
+        std::vector<uint8_t> secondRom;
+        std::vector<uint8_t> secondBootRom;
+        std::unique_ptr<GameBoySystem> secondSystem;
+        if (secondGame) {
+            if (!secondGame->data || secondGame->size < MINIMUM_ROM_SIZE ||
+                secondGame->size > MAXIMUM_ROM_SIZE)
+                throw std::invalid_argument("Missing or invalid player 2 ROM size");
+            const auto *secondData = static_cast<const uint8_t *>(secondGame->data);
+            secondRom.assign(secondData, secondData + secondGame->size);
+            if (!isSupportedRom(secondRom))
+                throw std::invalid_argument("Unsupported player 2 cartridge");
+            const auto secondModel = selectHardwareModel(secondRom);
+            secondBootRom = loadOptionalBootRom(secondModel);
+            secondSystem = std::make_unique<GameBoySystem>(secondRom, secondModel, nullptr, nullptr, secondBootRom);
+            wireLink(*newSystem, *secondSystem);
+        } else
+            newSystem->setSerialClockCallback(exchangeNetworkBit);
         bindCartridgeRumble(*newSystem);
         const bool hasMbc7Sensor = rom[0x0147] == 0x22;
         disableCartridgeSensor();
@@ -699,6 +993,10 @@ bool retro_load_game(const retro_game_info *game) {
         loadedRom = std::move(rom);
         loadedBootRom = std::move(bootRom);
         emulatorSystem = std::move(newSystem);
+        clearLink();
+        peerRom = std::move(secondRom);
+        peerBootRom = std::move(secondBootRom);
+        linkPeer = std::move(secondSystem);
         loadedCartridgeHasMbc7 = hasMbc7Sensor;
         cartridgeSensorEnabled = sensorEnabled;
         invalidSensorValueReported = false;
@@ -714,8 +1012,14 @@ bool retro_load_game(const retro_game_info *game) {
     return true;
 }
 
-bool retro_load_game_special(unsigned, const retro_game_info *, size_t) {
-    return false;
+bool retro_load_game(const retro_game_info *game) {
+    return loadContent(game, nullptr);
+}
+
+bool retro_load_game_special(unsigned type, const retro_game_info *games, size_t count) {
+    if (type != LINK_SUBSYSTEM || !games || count != 2)
+        return false;
+    return loadContent(&games[0], &games[1]);
 }
 
 void retro_unload_game(void) {
@@ -723,6 +1027,7 @@ void retro_unload_game(void) {
     disableCartridgeSensor();
     audioDiagnostics.flush();
     emulatorSystem.reset();
+    clearLink();
     loadedRom.clear();
     loadedBootRom.clear();
     loadedCartridgeHasMbc7 = false;
@@ -737,6 +1042,12 @@ unsigned retro_get_region(void) {
 void *retro_get_memory_data(unsigned id) {
     if (!emulatorSystem)
         return nullptr;
+    if (linkPeer) {
+        if (id == LINK_SRAM[0]) return emulatorSystem->getSaveRamData();
+        if (id == LINK_RTC[0]) return emulatorSystem->getRtcData();
+        if (id == LINK_SRAM[1]) return linkPeer->getSaveRamData();
+        if (id == LINK_RTC[1]) return linkPeer->getRtcData();
+    }
     if (id == RETRO_MEMORY_SAVE_RAM)
         return emulatorSystem->getSaveRamData();
     if (id == RETRO_MEMORY_RTC)
@@ -747,6 +1058,12 @@ void *retro_get_memory_data(unsigned id) {
 size_t retro_get_memory_size(unsigned id) {
     if (!emulatorSystem)
         return 0;
+    if (linkPeer) {
+        if (id == LINK_SRAM[0]) return emulatorSystem->getSaveRamSize();
+        if (id == LINK_RTC[0]) return emulatorSystem->getRtcSize();
+        if (id == LINK_SRAM[1]) return linkPeer->getSaveRamSize();
+        if (id == LINK_RTC[1]) return linkPeer->getRtcSize();
+    }
     if (id == RETRO_MEMORY_SAVE_RAM)
         return emulatorSystem->getSaveRamSize();
     if (id == RETRO_MEMORY_RTC)

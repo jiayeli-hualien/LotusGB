@@ -3,8 +3,7 @@
 The core supports logical serial bit exchange between DMG/CGB ports through
 host callbacks and externally scheduled sampling edges. Original component and
 two-system CPU tests cover byte exchange, serial IRQ/HALT wake and paired
-partial-transfer snapshot replay. RetroArch link transport, multiplayer game
-acceptance, physical cables and accessories remain unsupported. CGB infrared
+partial-transfer snapshot replay. The libretro core provides a local two-ROM subsystem. Commercial-game acceptance, physical cables and accessories are pending. CGB infrared
 peer behavior has a separate [level-based interface and evidence](cgb-infrared.md).
 
 ## Host interface
@@ -42,6 +41,11 @@ serial IF. Abort retains partial SB data. DMG internal clock edges occur every
 512 CPU T-cycles; CGB fast mode uses 16. CPU double speed halves those intervals
 in base-clock time. See [Pan Docs serial transfer](https://github.com/gbdev/pandocs/blob/master/src/Serial_Data_Transfer_(Link_Cable).md).
 
+The Game Boy serial port has no connector-present flag. A program can detect a
+cooperating peer with a challenge byte and a known response byte; an
+unconnected internal-clock transfer reads back `0xFF`. This only proves that a
+peer speaks the probe protocol, not that an arbitrary game is ready to trade.
+
 ## Snapshots and evidence
 
 Callbacks and peer references are host wiring and are not serialized. Guest
@@ -55,6 +59,8 @@ matching boundary; one endpoint's snapshot does not capture the other system.
 - Component byte exchange in both directions across DMG/CGB combinations,
   intermediate SB values and eighth-edge IRQs; irregular external edges,
   abort/restart, inactive/internal-mode gating and post-completion behavior.
+- A challenge/response probe that distinguishes the disconnected `0xFF`
+  result from a peer returning the expected acknowledgement byte.
 - Callback failure propagation and explicitly removing the callback to restore
   disconnected incoming-high transfers.
 - Original CPU programs on two systems, exchanging `A5`/`3C`, waiting in HALT
@@ -67,3 +73,106 @@ matching boundary; one endpoint's snapshot does not capture the other system.
 The test host advances the slave before the master at M-cycle boundaries.
 This validates the portable logical contract, not arbitrary asynchronous clock
 phases, wire-level transitions, peer-device timing races or a frontend session.
+
+
+## RetroArch local link
+
+Load the LotusGB core, choose **Game Boy Link (2 Players)** in **Subsystems**,
+and select each player's ROM. The command-line equivalent is:
+
+```sh
+retroarch -L /path/to/lotusgb_libretro.so --subsystem=gb_link_2p first.gb second.gb
+```
+
+RetroPad ports 1 and 2 control the left and right screens. Audio comes from
+player 1. The first slot uses `.srm` and `.rtc`. The second slot uses `.srm.2`
+and `.rtc.2`, including when both ROMs have the same basename. Use the game's
+own save command during a linked session. Link mode does not expose save
+states, so there is no single-endpoint rewind or run-ahead.
+
+The local scheduler advances both machines in order of M-cycle end time
+on a shared base-clock timeline. Player 1 goes first when two M-cycles end
+together. The libretro test runs original serial programs through the
+subsystem, checks the exchanged bytes in separate SRAM regions, and verifies
+that reset preserves the save pointers and reconnects the two ports.
+
+Standalone macOS RetroArch 1.22.2 (69a4f0ea) loaded two original test ROMs
+with the same basename, reported 320×144 geometry, and saved each received
+byte in its own 8 KiB file. On relaunch, test programs read the existing
+bytes from both files and wrote copies back to SRAM. On 2026-11-13, the user
+reported that a Pokémon trade completed in the standalone RetroArch
+two-player subsystem. The exact ROM pair, region, and localization were not
+recorded. The user later confirmed that after saving both games in-game and
+reopening them, the traded Pokémon remained on the respective teams. The
+second choice in the in-game Cable Club menu led to a white screen; that mode
+remains unverified. An unmodified, same-language ROM pair is still needed as a
+control to distinguish a localization issue from a core issue.
+
+For a separate-window session, turn off **Settings → User Interface →
+Pause Content When Not Active** (`pause_nonactive = "false"`). On the same
+standalone macOS build, a test ROM incremented a battery RAM byte each
+VBlank. With Finder verified as the foreground app, the autosaved byte
+advanced over three seconds when the setting was false and stayed unchanged
+when it was true. Background controller input and dual-process link remain
+separate checks.
+
+
+## Standalone RetroArch two-process setup
+
+Use two independent configuration files so each process has its own save and
+state directories. Set `pause_nonactive = "false"` in both. Open two Terminal
+windows and start the host first:
+
+```sh
+retroarch --config /path/to/host.cfg -L /path/to/lotusgb_libretro.dylib \
+  --host /path/to/red.gb
+```
+
+Then start the client in the other window:
+
+```sh
+retroarch --config /path/to/client.cfg -L /path/to/lotusgb_libretro.dylib \
+  --connect=127.0.0.1 /path/to/blue.gb
+```
+
+For a second computer on the same LAN, replace `127.0.0.1` with the host's LAN
+address and set the same Netplay port in both configs. These commands describe
+the standalone build; the Steam build must be started through Steam and has not
+been tested here. Internet hosting also depends on RetroArch network setup:
+the host must be reachable on its Netplay TCP port, or both peers can use the
+RetroArch relay option. Neither path has been tested with LotusGB yet
+([RetroArch Netplay setup](https://docs.libretro.com/guides/netplay-getting-started/)).
+
+
+## Netpacket transport status
+
+RetroArch's standard Netplay synchronizes input for the same core and content;
+it does not itself emulate a Game Boy link cable. LotusGB instead uses its
+Netpacket API as a custom cable-data channel, with one ROM running in each
+process. RetroArch's documentation identifies DoubleCherryGB as an example of
+Netpacket-based Pokémon trading ([Netplay FAQ](https://docs.libretro.com/guides/netplay-faq/),
+[DoubleCherryGB](https://github.com/madcock/libretro-doublecherryGB#link-cable-over-network)).
+DoubleCherryGB documents this mode as trade-focused and warns that it can be
+too slow for general multiplayer; LotusGB's actual trade latency still needs
+measurement.
+
+The single-ROM core registers RetroArch's Netpacket interface. The current
+protocol exchanges each internal-clock sampling edge as a reliable packet.
+The receiving core supplies that edge to its external-clock serial port, then
+returns its outgoing bit. If there is no active Netplay connection, the
+internal-clock callback preserves disconnected incoming-high behavior.
+Packets include a protocol version, edge sequence, type and bit value. The
+host accepts one peer, and the sender waits up to two seconds for each reply.
+A timeout or peer disconnect faults the running core instead of silently
+substituting data.
+
+Automated libretro tests run host and client cores in separate processes and
+relay reliable packets between them. Both CPU programs receive the peer's full
+byte and write it to their own SRAM. A simulated peer-disconnect callback
+faults the active transfer instead of substituting data. Standalone RetroArch
+1.22.2 on macOS accepted a local Host/Client connection with different ROMs,
+but a real ROM exchange in two RetroArch frontends remains unverified.
+Network
+latency, LAN transfer, Internet transfer, reconnect behavior and Pokémon
+trading remain unverified. Per-edge request and reply traffic may be too slow
+over higher-latency connections.

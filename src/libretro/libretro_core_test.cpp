@@ -18,6 +18,12 @@
 #include <string>
 #include <stdexcept>
 #include <vector>
+#include <cerrno>
+#include <poll.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "../../tests/include/cgb_test_rom.hpp"
 #include "../../tests/include/cgb_compat_rom.hpp"
 
@@ -123,7 +129,90 @@ void frontendLog(retro_log_level level, const char *format, ...) {
     logLevels.push_back(level);
 }
 
+const retro_subsystem_info *linkSubsystem = nullptr;
+const retro_netpacket_callback *netpacketInterface = nullptr;
+unsigned mockSerialRequests = 0;
+unsigned mockDisconnectPolls = 0;
+int processNetpacketSocket = -1;
+uint16_t processNetpacketPeerId = 0;
+
+int processNetpacketSendFlags() {
+#ifdef MSG_NOSIGNAL
+    return MSG_NOSIGNAL;
+#else
+    return 0;
+#endif
+}
+
+void mockNetpacketSend(int flags, const void *data, size_t size, uint16_t clientId) {
+    expect((flags & RETRO_NETPACKET_RELIABLE) != 0 &&
+           (flags & RETRO_NETPACKET_FLUSH_HINT) != 0 &&
+           clientId == RETRO_NETPACKET_BROADCAST,
+           "serial link sends reliable broadcast packets immediately");
+    const auto *request = static_cast<const uint8_t *>(data);
+    expect(size == 10 && request[4] == 1, "core sends a serial edge request");
+    ++mockSerialRequests;
+    std::array<uint8_t, 10> response{};
+    std::copy(request, request + size, response.begin());
+    response[4] = 2;
+    response[5] = 0;
+    netpacketInterface->receive(response.data(), response.size(), 0);
+}
+
+void mockNetpacketPollReceive() {}
+
+void mockNetpacketSendWithoutReply(int flags, const void *data, size_t size,
+                                   uint16_t clientId) {
+    expect((flags & RETRO_NETPACKET_RELIABLE) != 0 &&
+               (flags & RETRO_NETPACKET_FLUSH_HINT) != 0 &&
+               clientId == RETRO_NETPACKET_BROADCAST && data && size == 10 &&
+               static_cast<const uint8_t *>(data)[4] == 1,
+           "host starts the expected reliable serial request before disconnect");
+    ++mockSerialRequests;
+}
+
+void mockNetpacketDisconnectDuringPoll() {
+    ++mockDisconnectPolls;
+    netpacketInterface->disconnected(1);
+}
+
+void processNetpacketSend(int flags, const void *data, size_t size,
+                          uint16_t clientId) {
+    expect((flags & RETRO_NETPACKET_RELIABLE) != 0 &&
+               (flags & RETRO_NETPACKET_FLUSH_HINT) != 0 &&
+               clientId == RETRO_NETPACKET_BROADCAST && data && size == 10 &&
+               processNetpacketSocket >= 0,
+           "two-process serial traffic uses reliable broadcast packets");
+    const ssize_t written = ::send(processNetpacketSocket, data, size,
+                                   processNetpacketSendFlags());
+    expect(written == static_cast<ssize_t>(size),
+           "two-process serial packet reaches the relay");
+}
+
+void processNetpacketPollReceive() {
+    std::array<uint8_t, 64 * 1024> packet{};
+    while (true) {
+        const ssize_t size = ::recv(processNetpacketSocket, packet.data(),
+                                    packet.size(), MSG_DONTWAIT);
+        if (size < 0 && errno == EINTR)
+            continue;
+        if (size < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return;
+        expect(size > 0, "two-process serial receive remains connected");
+        netpacketInterface->receive(packet.data(), static_cast<size_t>(size),
+                                    processNetpacketPeerId);
+    }
+}
+
 bool environmentCallback(unsigned command, void *data) {
+    if (command == RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO) {
+        linkSubsystem = static_cast<const retro_subsystem_info *>(data);
+        return true;
+    }
+    if (command == RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE) {
+        netpacketInterface = static_cast<const retro_netpacket_callback *>(data);
+        return true;
+    }
     if (command == RETRO_ENVIRONMENT_SET_VARIABLES) {
         if (throwDuringModelRegistration) throw std::runtime_error("model option registration failure");
         const auto *variables = static_cast<const retro_variable *>(data);
@@ -2174,6 +2263,299 @@ void measureTobuInput(const std::string &romPath, const std::filesystem::path &o
                  "held input and one-poll response checks passed\n";
 }
 
+void testLibretroLinkSubsystem() {
+    expect(linkSubsystem && std::string(linkSubsystem->ident) == "gb_link_2p" &&
+           linkSubsystem->num_roms == 2, "core advertises a two-ROM link subsystem");
+    auto serialRom = [](uint8_t value, uint8_t control) {
+        std::vector<uint8_t> rom(0x8000);
+        rom[0x147] = 0x03;
+        rom[0x149] = 0x02;
+        const uint8_t code[] = {
+            0x3E, 0x0A, 0xEA, 0, 0,   // Enable SRAM.
+            0x3E, value, 0xE0, 0x01,   // Set SB.
+            0x3E, control, 0xE0, 0x02, // Start the transfer.
+            0xF0, 0x02, 0xCB, 0x7F,   // Wait until SC bit 7 clears.
+            0x20, 0xFA,
+            0xF0, 0x01, 0xEA, 0, 0xA0, // Record received SB in SRAM.
+            0x18, 0xFE,
+        };
+        std::copy(std::begin(code), std::end(code), rom.begin() + 0x100);
+        return rom;
+    };
+    const auto first = serialRom(0xA5, 0x81);
+    const auto second = serialRom(0x3C, 0x80);
+    const retro_game_info games[] = {
+        {"same.gb", first.data(), first.size(), nullptr},
+        {"same.gb", second.data(), second.size(), nullptr},
+    };
+    const auto &firstSave = linkSubsystem->roms[0].memory[0];
+    const auto &secondSave = linkSubsystem->roms[1].memory[0];
+    expect(std::string(firstSave.extension) != secondSave.extension,
+           "identical content basenames have separate save paths");
+    expect(!retro_load_game_special(linkSubsystem->id, games, 1),
+           "link requires both ROMs");
+    expect(retro_load_game_special(linkSubsystem->id, games, 2), "both link ROMs load");
+    auto *firstRam = static_cast<uint8_t *>(retro_get_memory_data(firstSave.type));
+    auto *secondRam = static_cast<uint8_t *>(retro_get_memory_data(secondSave.type));
+    expect(firstRam && secondRam && firstRam != secondRam &&
+           retro_get_memory_size(firstSave.type) == 8192 &&
+           retro_get_memory_size(secondSave.type) == 8192,
+           "both battery regions are independently exposed");
+    expect(retro_serialize_size() == 0, "single-system snapshots are disabled during local link");
+    retro_set_video_refresh([](const void *data, unsigned width, unsigned height, size_t pitch) {
+        expect(data && width == 2 * WIDTH && height == HEIGHT &&
+               pitch == width * sizeof(uint32_t), "link outputs two screens side by side");
+    });
+    retro_run();
+    expect(firstRam[0] == 0x3C && secondRam[0] == 0xA5, "both CPUs store the peer's byte");
+    retro_reset();
+    expect(firstRam == retro_get_memory_data(firstSave.type) &&
+           secondRam == retro_get_memory_data(secondSave.type),
+           "link reset preserves both frontend save pointers");
+    firstRam[0] = secondRam[0] = 0;
+    retro_run();
+    expect(firstRam[0] == 0x3C && secondRam[0] == 0xA5, "link is rewired after reset");
+    retro_unload_game();
+    expect(retro_get_memory_data(secondSave.type) == nullptr, "link unload releases peer memory");
+    retro_set_video_refresh(videoRefreshCallback);
+}
+
+void testLibretroNetpacketSerialExchange() {
+    expect(netpacketInterface && netpacketInterface->start &&
+           netpacketInterface->receive && netpacketInterface->stop &&
+           netpacketInterface->poll && netpacketInterface->protocol_version &&
+           std::string(netpacketInterface->protocol_version) == "LotusGB-serial-bit-v1",
+           "core registers a versioned RetroArch Netpacket interface");
+    std::vector<uint8_t> rom(0x8000);
+    rom[0x147] = 0x03;
+    rom[0x149] = 0x02;
+    const uint8_t program[] = {
+        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
+        0x3E, 0, 0xEA, 0, 0xA0,      // Clear the received-byte location.
+        0x3E, 0xA5, 0xE0, 1,          // Load SB.
+        0x3E, 0x81, 0xE0, 2,          // Start internal-clock transfer.
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 0, 0xA0,       // Store received byte.
+        0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    const retro_game_info game{"netpacket.gb", rom.data(), rom.size(), nullptr};
+    expect(retro_load_game(&game), "single-ROM link game loads for Netpacket");
+    mockSerialRequests = 0;
+    netpacketInterface->start(1, mockNetpacketSend, mockNetpacketPollReceive);
+    retro_run();
+    auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(mockSerialRequests == 8 && saveRam && saveRam[0] == 0,
+           "eight reliable Netpacket edges deliver the peer's byte to the game");
+    netpacketInterface->stop();
+    retro_unload_game();
+}
+
+void testLibretroNetpacketDisconnectFaultsCore() {
+    std::vector<uint8_t> rom(0x8000);
+    rom[0x147] = 0x03;
+    rom[0x149] = 0x02;
+    const uint8_t program[] = {
+        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
+        0x3E, 0xA5, 0xE0, 1,          // Load SB.
+        0x3E, 0x81, 0xE0, 2,          // Start internal-clock transfer.
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 0, 0xA0,
+        0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    const retro_game_info game{"netpacket-disconnect.gb", rom.data(),
+                               rom.size(), nullptr};
+    expect(retro_load_game(&game), "disconnect test serial ROM loads");
+    logMessages.clear();
+    logLevels.clear();
+    mockSerialRequests = 0;
+    mockDisconnectPolls = 0;
+    netpacketInterface->start(0, mockNetpacketSendWithoutReply,
+                              mockNetpacketDisconnectDuringPoll);
+    expect(netpacketInterface->connected(1),
+           "disconnect test host accepts its peer");
+
+    retro_run();
+    const bool loggedFault = std::any_of(
+        logMessages.begin(), logMessages.end(), [](const std::string &message) {
+            return message.find("Link peer disconnected during serial transfer") !=
+                   std::string::npos;
+        });
+    expect(mockSerialRequests == 1 && mockDisconnectPolls == 1 && loggedFault,
+           "peer disconnect faults the active transfer instead of inventing incoming bits");
+    std::vector<uint8_t> state(retro_serialize_size());
+    expect(!state.empty() && !retro_serialize(state.data(), state.size()),
+           "a disconnected link core refuses further snapshots after its execution fault");
+
+    netpacketInterface->stop();
+    retro_unload_game();
+}
+
+[[noreturn]] void runNetpacketPairEndpoint(unsigned player, int socket) {
+    processNetpacketSocket = socket;
+    processNetpacketPeerId = player == 0 ? 1 : 0;
+    retro_deinit();
+    retro_init();
+
+    std::vector<uint8_t> rom(0x8000);
+    rom[0x147] = 0x03;
+    rom[0x149] = 0x02;
+    const uint8_t outgoing = player == 0 ? 0xA5 : 0x3C;
+    const uint8_t control = player == 0 ? 0x81 : 0x80;
+    const uint8_t program[] = {
+        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
+        0x3E, 0, 0xEA, 0, 0xA0,      // Clear the received-byte location.
+        0x3E, outgoing, 0xE0, 1,      // Load SB.
+        0x3E, control, 0xE0, 2,       // Host clocks internally; client is external.
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 0, 0xA0,       // Store received byte.
+        0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    const retro_game_info game{player == 0 ? "host.gb" : "client.gb",
+                               rom.data(), rom.size(), nullptr};
+    expect(retro_load_game(&game), "process-pair serial ROM loads");
+
+    netpacketInterface->start(static_cast<uint16_t>(player),
+                              processNetpacketSend,
+                              processNetpacketPollReceive);
+    if (player == 0)
+        expect(netpacketInterface->connected(1),
+               "process-pair host accepts its client");
+
+    auto *saveRam = static_cast<uint8_t *>(
+        retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam != nullptr, "process-pair save RAM is available");
+    const uint8_t expected = player == 0 ? 0x3C : 0xA5;
+    for (unsigned frame = 0; frame < 24 && saveRam[0] != expected; ++frame) {
+        retro_run();
+        netpacketInterface->poll();
+    }
+    expect(saveRam && saveRam[0] == expected,
+           "separate core processes exchange a complete serial byte");
+
+    netpacketInterface->stop();
+    retro_unload_game();
+    retro_deinit();
+    ::close(socket);
+    _exit(EXIT_SUCCESS);
+}
+
+void testLibretroNetpacketTwoProcessExchange() {
+    int sockets[2][2]{};
+    expect(::socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets[0]) == 0,
+           "host-to-relay Netpacket socket opens");
+    if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets[1]) != 0) {
+        ::close(sockets[0][0]);
+        ::close(sockets[0][1]);
+        expect(false, "relay-to-client Netpacket socket opens");
+    }
+#ifdef SO_NOSIGPIPE
+    const int noSigPipe = 1;
+    for (const auto &pair : sockets)
+        for (const int socket : pair)
+            expect(::setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
+                                sizeof(noSigPipe)) == 0,
+                   "relay sockets suppress SIGPIPE on peer exit");
+#endif
+
+    const pid_t host = ::fork();
+    expect(host >= 0, "fork host libretro process");
+    if (host == 0) {
+        ::close(sockets[0][0]);
+        ::close(sockets[1][0]);
+        ::close(sockets[1][1]);
+        runNetpacketPairEndpoint(0, sockets[0][1]);
+    }
+
+    const pid_t client = ::fork();
+    if (client < 0) {
+        ::kill(host, SIGTERM);
+        ::waitpid(host, nullptr, 0);
+        expect(false, "fork client libretro process");
+    }
+    if (client == 0) {
+        ::close(sockets[0][0]);
+        ::close(sockets[0][1]);
+        ::close(sockets[1][0]);
+        runNetpacketPairEndpoint(1, sockets[1][1]);
+    }
+
+    ::close(sockets[0][1]);
+    ::close(sockets[1][1]);
+    const pid_t children[] = {host, client};
+    bool finished[] = {false, false};
+    int statuses[] = {-1, -1};
+    unsigned relayedPackets = 0;
+    bool relaySucceeded = true;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(10);
+
+    while ((!finished[0] || !finished[1]) &&
+           std::chrono::steady_clock::now() < deadline) {
+        struct pollfd descriptors[] = {
+            {sockets[0][0], POLLIN, 0},
+            {sockets[1][0], POLLIN, 0},
+        };
+        const int ready = ::poll(descriptors, 2, 10);
+        if (ready < 0 && errno != EINTR) {
+            relaySucceeded = false;
+            break;
+        }
+        for (unsigned source = 0; source < 2; ++source) {
+            if (!(descriptors[source].revents & POLLIN))
+                continue;
+            std::array<uint8_t, 64 * 1024> packet{};
+            const ssize_t size = ::recv(sockets[source][0], packet.data(),
+                                        packet.size(), 0);
+            if (size <= 0) {
+                relaySucceeded = false;
+                continue;
+            }
+            const unsigned target = 1 - source;
+            const ssize_t written = ::send(sockets[target][0], packet.data(),
+                                           static_cast<size_t>(size),
+                                           processNetpacketSendFlags());
+            if (written != size)
+                relaySucceeded = false;
+            else
+                ++relayedPackets;
+        }
+        for (unsigned i = 0; i < 2; ++i) {
+            if (finished[i])
+                continue;
+            const pid_t result = ::waitpid(children[i], &statuses[i], WNOHANG);
+            if (result == children[i])
+                finished[i] = true;
+            else if (result < 0 && errno != EINTR) {
+                relaySucceeded = false;
+                finished[i] = true;
+            }
+        }
+        const bool failedHost = finished[0] &&
+            (!WIFEXITED(statuses[0]) || WEXITSTATUS(statuses[0]) != 0);
+        const bool failedClient = finished[1] &&
+            (!WIFEXITED(statuses[1]) || WEXITSTATUS(statuses[1]) != 0);
+        if (!relaySucceeded || failedHost || failedClient)
+            break;
+    }
+
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!finished[i]) {
+            ::kill(children[i], SIGTERM);
+            ::waitpid(children[i], &statuses[i], 0);
+            finished[i] = true;
+        }
+        ::close(sockets[i][0]);
+    }
+    const bool bothSucceeded = finished[0] && finished[1] &&
+        WIFEXITED(statuses[0]) && WEXITSTATUS(statuses[0]) == 0 &&
+        WIFEXITED(statuses[1]) && WEXITSTATUS(statuses[1]) == 0;
+    expect(relaySucceeded && bothSucceeded && relayedPackets == 16,
+           "host and client processes relay eight requests and replies and store peer bytes");
+}
+
 int main(int argc, char **argv) {
     retro_set_environment(environmentCallback);
     retro_set_video_refresh(videoRefreshCallback);
@@ -2230,6 +2612,10 @@ int main(int argc, char **argv) {
     testLibretroCgbMbc5HighBankGameplay();
     testLibretroCgbCompatibilitySelection();
     testLibretroMbc5RumbleWithoutFrontendSupport();
+    testLibretroLinkSubsystem();
+    testLibretroNetpacketSerialExchange();
+    testLibretroNetpacketDisconnectFaultsCore();
+    testLibretroNetpacketTwoProcessExchange();
 
     retro_unload_game();
     retro_deinit();

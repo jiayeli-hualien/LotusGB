@@ -30,6 +30,7 @@ public:
     void advanceToCpuBusAccess();
     RetStepOneCycle step();
     uint64_t getElapsedTCycles() const;
+    unsigned baseClocksPerMCycle() const { return doubleSpeed ? 2 : 4; }
 
 private:
     ICPU &cpu;

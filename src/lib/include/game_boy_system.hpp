@@ -84,6 +84,7 @@ public:
     void loadState(const void *data, size_t size);
 
     RetStepOneCycle stepOneCycle();
+    unsigned baseClocksPerMCycle() const { return systemClock.baseClocksPerMCycle(); }
     RetStepFrame stepFrame();
     // Diagnostic stepping to the next actual PPU frame-completion event,
     // including when already in VBlank. Stops on CPU failure/STOP or budget

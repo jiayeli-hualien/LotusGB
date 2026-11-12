@@ -150,6 +150,44 @@ void testExternalEdgesAndTwoPortExchange() {
     }
 }
 
+void testChallengeResponseDistinguishesPeerFromDisconnectedLine() {
+    constexpr uint8_t CHALLENGE = 0xC3;
+    constexpr uint8_t ACKNOWLEDGEMENT = 0x5A;
+
+    {
+        InterruptRegisters interrupts;
+        DmgSerial probe(interrupts);
+        probe.write(0xFF01, CHALLENGE);
+        probe.write(0xFF02, 0x81);
+        probe.advanceTCycles(8 * 512);
+        expect(probe.read(0xFF01) != ACKNOWLEDGEMENT &&
+                   probe.read(0xFF01) == 0xFF,
+               "a disconnected serial line cannot produce the probe acknowledgement");
+    }
+
+    {
+        InterruptRegisters probeInterrupts, peerInterrupts;
+        DmgSerial probe(probeInterrupts), peer(peerInterrupts);
+        probe.write(0xFF01, CHALLENGE);
+        probe.write(0xFF02, 0x81);
+        peer.write(0xFF01, ACKNOWLEDGEMENT);
+        peer.write(0xFF02, 0x80);
+        probe.setInternalClockCallback([&](bool outgoing) {
+            const bool incoming = peer.getOutgoingBit();
+            peer.clockExternalBit(outgoing);
+            return incoming;
+        });
+        probe.advanceTCycles(8 * 512);
+
+        expect(probe.read(0xFF01) == ACKNOWLEDGEMENT &&
+                   peer.read(0xFF01) == CHALLENGE,
+               "a peer returning the expected acknowledgement completes the probe");
+        expect((probeInterrupts.read(0xFF0F) & 8) != 0 &&
+                   (peerInterrupts.read(0xFF0F) & 8) != 0,
+               "both probe endpoints signal completion after the full response byte");
+    }
+}
+
 void testIrregularExternalEdgesAbortAndModeGate() {
     InterruptRegisters irq;
     DmgSerial serial(irq, true);
@@ -195,6 +233,7 @@ void testSerialCallbackFailureAndDisconnect() {
 int main() {
     testSerialCallbackFailureAndDisconnect();
     testExternalEdgesAndTwoPortExchange();
+    testChallengeResponseDistinguishesPeerFromDisconnectedLine();
     testIrregularExternalEdgesAbortAndModeGate();
     testRegistersAndDisconnectedTransfer();
     testExternalClockWaitsAndAbortRetainsPartialData();
