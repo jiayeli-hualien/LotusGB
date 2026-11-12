@@ -3,7 +3,11 @@
 The core supports logical serial bit exchange between DMG/CGB ports through
 host callbacks and externally scheduled sampling edges. Original component and
 two-system CPU tests cover byte exchange, serial IRQ/HALT wake and paired
-partial-transfer snapshot replay. The libretro core provides a local two-ROM subsystem. Commercial-game acceptance, physical cables and accessories are pending. CGB infrared
+partial-transfer snapshot replay. The libretro core provides a local two-ROM
+subsystem. The user reports completing an in-game Pokémon trade and confirming
+the exchanged result remained after saving and reopening both games; the exact
+edition and ROM build were not recorded, so Red/Blue-specific acceptance is
+still pending. Physical cables and accessories are also pending. CGB infrared
 peer behavior has a separate [level-based interface and evidence](cgb-infrared.md).
 
 ## Host interface
