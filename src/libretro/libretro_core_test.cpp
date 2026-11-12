@@ -2586,8 +2586,10 @@ void testLibretroNetpacketTwoProcessExchange() {
                 relaySucceeded = false;
                 continue;
             }
-            const auto packetDelay = std::chrono::milliseconds(
-                25 + 25 * (relayedPackets % 3));
+            const unsigned delayMs = relayedPackets < 16
+                ? 25 + 25 * (relayedPackets % 3)
+                : 50 + 100 * (relayedPackets % 3);
+            const auto packetDelay = std::chrono::milliseconds(delayMs);
             std::this_thread::sleep_for(packetDelay);
             const unsigned target = 1 - source;
             const ssize_t written = ::send(sockets[target][0], packet.data(),
@@ -2630,7 +2632,7 @@ void testLibretroNetpacketTwoProcessExchange() {
         WIFEXITED(statuses[1]) && WEXITSTATUS(statuses[1]) == 0;
     const auto relayElapsed = std::chrono::steady_clock::now() - relayStart;
     if (!relaySucceeded || !bothSucceeded || relayedPackets != 32 ||
-        relayElapsed < std::chrono::seconds(1)) {
+        relayElapsed < std::chrono::milliseconds(2200)) {
         std::cerr << "Netpacket relay diagnostic: relay=" << relaySucceeded
                   << " host_finished=" << finished[0]
                   << " host_status=" << statuses[0]
@@ -2643,8 +2645,8 @@ void testLibretroNetpacketTwoProcessExchange() {
                   << '\n';
     }
     expect(relaySucceeded && bothSucceeded && relayedPackets == 32 &&
-               relayElapsed >= std::chrono::seconds(1),
-           "separate core processes exchange two bytes through a jittered 75-125 ms RTT relay");
+               relayElapsed >= std::chrono::milliseconds(2200),
+           "separate core processes exchange two bytes at 75-125 ms and 200-400 ms simulated RTT");
 }
 
 int main(int argc, char **argv) {
