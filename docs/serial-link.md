@@ -181,10 +181,11 @@ substituting data.
 Automated libretro tests run host and client cores in separate processes and
 relay reliable packets between them. A deterministic local relay adds
 25/50/75 ms one-way delays, producing 75–125 ms round-trip times for each
-serial edge. Both CPU programs receive the peer's full byte and write it to
-their own SRAM. Separate tests verify the configured two-second no-reply
-timeout and that a peer disconnect faults the active transfer instead of
-substituting data. These cover the core transport with synthetic timing;
+serial edge. Both CPU programs complete two consecutive byte exchanges and
+write each received byte to their own SRAM. Separate tests verify the
+configured two-second no-reply timeout and that a peer disconnect faults the
+active transfer instead of substituting data. These cover the core transport
+with synthetic timing;
 actual network behavior remains unverified. Standalone RetroArch 1.22.2 on
 macOS accepted a local Host/Client connection with different ROMs, but a real
 ROM exchange in two RetroArch frontends remains unverified. LAN transfer,

@@ -2440,15 +2440,21 @@ void testLibretroNetpacketTimeoutFaultsCore() {
     std::vector<uint8_t> rom(0x8000);
     rom[0x147] = 0x03;
     rom[0x149] = 0x02;
-    const uint8_t outgoing = player == 0 ? 0xA5 : 0x3C;
     const uint8_t control = player == 0 ? 0x81 : 0x80;
     const uint8_t program[] = {
         0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
-        0x3E, 0, 0xEA, 0, 0xA0,      // Clear the received-byte location.
-        0x3E, outgoing, 0xE0, 1,      // Load SB.
+        0x3E, 0, 0xEA, 0, 0xA0,      // Clear received-byte locations.
+        0xEA, 1, 0xA0,
+        0x3E, static_cast<uint8_t>(player == 0 ? 0xA5 : 0x3C),
+        0xE0, 1, // First outgoing byte.
         0x3E, control, 0xE0, 2,       // Host clocks internally; client is external.
         0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
         0xF0, 1, 0xEA, 0, 0xA0,       // Store received byte.
+        0x3E, static_cast<uint8_t>(player == 0 ? 0x96 : 0x69),
+        0xE0, 1, // Second outgoing byte.
+        0x3E, control, 0xE0, 2,
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 1, 0xA0,       // Store the second received byte.
         0x18, 0xFE,
     };
     std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
@@ -2466,16 +2472,18 @@ void testLibretroNetpacketTimeoutFaultsCore() {
     auto *saveRam = static_cast<uint8_t *>(
         retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
     expect(saveRam != nullptr, "process-pair save RAM is available");
-    const uint8_t expected = player == 0 ? 0x3C : 0xA5;
+    const uint8_t expectedFirst = player == 0 ? 0x3C : 0xA5;
+    const uint8_t expectedSecond = player == 0 ? 0x69 : 0x96;
     const auto transferDeadline = std::chrono::steady_clock::now() +
                                   std::chrono::seconds(8);
     while (std::chrono::steady_clock::now() < transferDeadline &&
-           saveRam[0] != expected) {
+           (saveRam[0] != expectedFirst || saveRam[1] != expectedSecond)) {
         retro_run();
         netpacketInterface->poll();
     }
-    expect(saveRam && saveRam[0] == expected,
-           "separate core processes exchange a complete serial byte");
+    expect(saveRam && saveRam[0] == expectedFirst &&
+               saveRam[1] == expectedSecond,
+           "separate core processes exchange consecutive serial bytes in both directions");
 
     netpacketInterface->stop();
     retro_unload_game();
@@ -2556,7 +2564,7 @@ void testLibretroNetpacketTwoProcessExchange() {
                                         packet.size(), 0);
             if (size == 0) {
                 relayEndpointClosed[source] = true;
-                if (relayedPackets != 16)
+                if (relayedPackets != 32)
                     relaySucceeded = false;
                 continue;
             }
@@ -2565,7 +2573,7 @@ void testLibretroNetpacketTwoProcessExchange() {
             if (size < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
                 continue;
             if (size <= 0) {
-                if (relayedPackets == 16) {
+                if (relayedPackets == 32) {
                     // The completed client may close its datagram endpoint
                     // before the host process has returned from the final
                     // serial callback.
@@ -2621,8 +2629,8 @@ void testLibretroNetpacketTwoProcessExchange() {
         WIFEXITED(statuses[0]) && WEXITSTATUS(statuses[0]) == 0 &&
         WIFEXITED(statuses[1]) && WEXITSTATUS(statuses[1]) == 0;
     const auto relayElapsed = std::chrono::steady_clock::now() - relayStart;
-    if (!relaySucceeded || !bothSucceeded || relayedPackets != 16 ||
-        relayElapsed < std::chrono::milliseconds(500)) {
+    if (!relaySucceeded || !bothSucceeded || relayedPackets != 32 ||
+        relayElapsed < std::chrono::seconds(1)) {
         std::cerr << "Netpacket relay diagnostic: relay=" << relaySucceeded
                   << " host_finished=" << finished[0]
                   << " host_status=" << statuses[0]
@@ -2634,9 +2642,9 @@ void testLibretroNetpacketTwoProcessExchange() {
                          relayElapsed).count()
                   << '\n';
     }
-    expect(relaySucceeded && bothSucceeded && relayedPackets == 16 &&
-               relayElapsed >= std::chrono::milliseconds(500),
-           "separate core processes exchange a byte through a jittered 75-125 ms RTT relay");
+    expect(relaySucceeded && bothSucceeded && relayedPackets == 32 &&
+               relayElapsed >= std::chrono::seconds(1),
+           "separate core processes exchange two bytes through a jittered 75-125 ms RTT relay");
 }
 
 int main(int argc, char **argv) {
