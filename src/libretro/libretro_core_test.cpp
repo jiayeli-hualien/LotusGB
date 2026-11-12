@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #include "../../tests/include/cgb_test_rom.hpp"
 #include "../../tests/include/cgb_compat_rom.hpp"
@@ -2392,6 +2393,44 @@ void testLibretroNetpacketDisconnectFaultsCore() {
     retro_unload_game();
 }
 
+void testLibretroNetpacketTimeoutFaultsCore() {
+    std::vector<uint8_t> rom(0x8000);
+    rom[0x147] = 0x03;
+    rom[0x149] = 0x02;
+    const uint8_t program[] = {
+        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
+        0x3E, 0xA5, 0xE0, 1,          // Load SB.
+        0x3E, 0x81, 0xE0, 2,          // Start internal-clock transfer.
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 0, 0xA0,
+        0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    const retro_game_info game{"netpacket-timeout.gb", rom.data(),
+                               rom.size(), nullptr};
+    expect(retro_load_game(&game), "timeout test serial ROM loads");
+    logMessages.clear();
+    logLevels.clear();
+    mockSerialRequests = 0;
+    netpacketInterface->start(1, mockNetpacketSendWithoutReply,
+                              mockNetpacketPollReceive);
+
+    retro_run();
+    const bool loggedTimeout = std::any_of(
+        logMessages.begin(), logMessages.end(), [](const std::string &message) {
+            return message.find("Timed out waiting for a serial link bit") !=
+                   std::string::npos;
+        });
+    expect(mockSerialRequests == 1 && loggedTimeout,
+           "a missing link reply times out and faults instead of inventing incoming bits");
+    std::vector<uint8_t> state(retro_serialize_size());
+    expect(!state.empty() && !retro_serialize(state.data(), state.size()),
+           "a timed-out link core refuses further snapshots after its execution fault");
+
+    netpacketInterface->stop();
+    retro_unload_game();
+}
+
 [[noreturn]] void runNetpacketPairEndpoint(unsigned player, int socket) {
     processNetpacketSocket = socket;
     processNetpacketPeerId = player == 0 ? 1 : 0;
@@ -2428,7 +2467,10 @@ void testLibretroNetpacketDisconnectFaultsCore() {
         retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
     expect(saveRam != nullptr, "process-pair save RAM is available");
     const uint8_t expected = player == 0 ? 0x3C : 0xA5;
-    for (unsigned frame = 0; frame < 24 && saveRam[0] != expected; ++frame) {
+    const auto transferDeadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(8);
+    while (std::chrono::steady_clock::now() < transferDeadline &&
+           saveRam[0] != expected) {
         retro_run();
         netpacketInterface->poll();
     }
@@ -2487,16 +2529,18 @@ void testLibretroNetpacketTwoProcessExchange() {
     const pid_t children[] = {host, client};
     bool finished[] = {false, false};
     int statuses[] = {-1, -1};
+    bool relayEndpointClosed[] = {false, false};
     unsigned relayedPackets = 0;
     bool relaySucceeded = true;
+    const auto relayStart = std::chrono::steady_clock::now();
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds(10);
 
     while ((!finished[0] || !finished[1]) &&
            std::chrono::steady_clock::now() < deadline) {
         struct pollfd descriptors[] = {
-            {sockets[0][0], POLLIN, 0},
-            {sockets[1][0], POLLIN, 0},
+            {relayEndpointClosed[0] ? -1 : sockets[0][0], POLLIN, 0},
+            {relayEndpointClosed[1] ? -1 : sockets[1][0], POLLIN, 0},
         };
         const int ready = ::poll(descriptors, 2, 10);
         if (ready < 0 && errno != EINTR) {
@@ -2504,15 +2548,39 @@ void testLibretroNetpacketTwoProcessExchange() {
             break;
         }
         for (unsigned source = 0; source < 2; ++source) {
-            if (!(descriptors[source].revents & POLLIN))
+            if (!(descriptors[source].revents &
+                  (POLLIN | POLLHUP | POLLERR)))
                 continue;
             std::array<uint8_t, 64 * 1024> packet{};
             const ssize_t size = ::recv(sockets[source][0], packet.data(),
                                         packet.size(), 0);
+            if (size == 0) {
+                relayEndpointClosed[source] = true;
+                if (relayedPackets != 16)
+                    relaySucceeded = false;
+                continue;
+            }
+            if (size < 0 && errno == EINTR)
+                continue;
+            if (size < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                continue;
             if (size <= 0) {
+                if (relayedPackets == 16) {
+                    // The completed client may close its datagram endpoint
+                    // before the host process has returned from the final
+                    // serial callback.
+                    relayEndpointClosed[source] = true;
+                    continue;
+                }
+                std::cerr << "Netpacket relay endpoint " << source
+                          << " closed before all packets were forwarded; recv="
+                          << size << " errno=" << errno << '\n';
                 relaySucceeded = false;
                 continue;
             }
+            const auto packetDelay = std::chrono::milliseconds(
+                25 + 25 * (relayedPackets % 3));
+            std::this_thread::sleep_for(packetDelay);
             const unsigned target = 1 - source;
             const ssize_t written = ::send(sockets[target][0], packet.data(),
                                            static_cast<size_t>(size),
@@ -2552,8 +2620,23 @@ void testLibretroNetpacketTwoProcessExchange() {
     const bool bothSucceeded = finished[0] && finished[1] &&
         WIFEXITED(statuses[0]) && WEXITSTATUS(statuses[0]) == 0 &&
         WIFEXITED(statuses[1]) && WEXITSTATUS(statuses[1]) == 0;
-    expect(relaySucceeded && bothSucceeded && relayedPackets == 16,
-           "host and client processes relay eight requests and replies and store peer bytes");
+    const auto relayElapsed = std::chrono::steady_clock::now() - relayStart;
+    if (!relaySucceeded || !bothSucceeded || relayedPackets != 16 ||
+        relayElapsed < std::chrono::milliseconds(500)) {
+        std::cerr << "Netpacket relay diagnostic: relay=" << relaySucceeded
+                  << " host_finished=" << finished[0]
+                  << " host_status=" << statuses[0]
+                  << " client_finished=" << finished[1]
+                  << " client_status=" << statuses[1]
+                  << " packets=" << relayedPackets
+                  << " elapsed_ms="
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         relayElapsed).count()
+                  << '\n';
+    }
+    expect(relaySucceeded && bothSucceeded && relayedPackets == 16 &&
+               relayElapsed >= std::chrono::milliseconds(500),
+           "separate core processes exchange a byte through a jittered 75-125 ms RTT relay");
 }
 
 int main(int argc, char **argv) {
@@ -2615,6 +2698,7 @@ int main(int argc, char **argv) {
     testLibretroLinkSubsystem();
     testLibretroNetpacketSerialExchange();
     testLibretroNetpacketDisconnectFaultsCore();
+    testLibretroNetpacketTimeoutFaultsCore();
     testLibretroNetpacketTwoProcessExchange();
 
     retro_unload_game();

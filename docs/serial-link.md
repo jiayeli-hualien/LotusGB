@@ -156,6 +156,14 @@ DoubleCherryGB documents this mode as trade-focused and warns that it can be
 too slow for general multiplayer; LotusGB's actual trade latency still needs
 measurement.
 
+In the tested RetroArch 1.22.2 source, differing ROM CRCs in core Netpacket
+mode produce a warning rather than rejecting the connection. The handshake
+also omits SRAM synchronization in this mode, and the host does not send its
+emulation state to the client. Each endpoint therefore keeps its own game and
+save while Netpacket carries the cable data ([CRC handling](https://github.com/libretro/RetroArch/blob/v1.22.2/network/netplay/netplay_frontend.c#L1552-L1563),
+[SRAM sync](https://github.com/libretro/RetroArch/blob/v1.22.2/network/netplay/netplay_frontend.c#L1212-L1214),
+[state sync](https://github.com/libretro/RetroArch/blob/v1.22.2/network/netplay/netplay_frontend.c#L8709-L8717)).
+
 The single-ROM core registers RetroArch's Netpacket interface. The current
 protocol exchanges each internal-clock sampling edge as a reliable packet.
 The receiving core supplies that edge to its external-clock serial port, then
@@ -167,12 +175,15 @@ A timeout or peer disconnect faults the running core instead of silently
 substituting data.
 
 Automated libretro tests run host and client cores in separate processes and
-relay reliable packets between them. Both CPU programs receive the peer's full
-byte and write it to their own SRAM. A simulated peer-disconnect callback
-faults the active transfer instead of substituting data. Standalone RetroArch
-1.22.2 on macOS accepted a local Host/Client connection with different ROMs,
-but a real ROM exchange in two RetroArch frontends remains unverified.
-Network
-latency, LAN transfer, Internet transfer, reconnect behavior and Pokémon
-trading remain unverified. Per-edge request and reply traffic may be too slow
-over higher-latency connections.
+relay reliable packets between them. A deterministic local relay adds
+25/50/75 ms one-way delays, producing 75–125 ms round-trip times for each
+serial edge. Both CPU programs receive the peer's full byte and write it to
+their own SRAM. Separate tests verify the configured two-second no-reply
+timeout and that a peer disconnect faults the active transfer instead of
+substituting data. These cover the core transport with synthetic timing;
+actual network behavior remains unverified. Standalone RetroArch 1.22.2 on
+macOS accepted a local Host/Client connection with different ROMs, but a real
+ROM exchange in two RetroArch frontends remains unverified. LAN transfer,
+Internet transfer, real-network jitter, reconnect behavior and Pokémon trading
+over Netpacket also remain unverified. Per-edge request and reply traffic may
+be too slow over higher-latency connections.
