@@ -187,9 +187,14 @@ each received byte to their own SRAM. Separate tests verify the configured
 two-second no-reply timeout and that a peer disconnect faults the active
 transfer instead of substituting data. These cover the core transport with
 synthetic timing;
-actual network behavior remains unverified. Standalone RetroArch 1.22.2 on
-macOS accepted a local Host/Client connection with different ROMs, but a real
-ROM exchange in two RetroArch frontends remains unverified. LAN transfer,
-Internet transfer, real-network jitter, reconnect behavior and Pokémon trading
-over Netpacket also remain unverified. Per-edge request and reply traffic may
-be too slow over higher-latency connections.
+actual network behavior remains unverified by those tests. On macOS, the user
+ran the standalone RetroArch 1.22.2 Host and Client in separate windows with
+the synthetic ROMs. Logs show the host accepted the client despite the
+different-ROM warning, both sides processed the first remote serial edge, and
+the isolated SRAM prefixes were `3C A5 A5` (host) and `A5 3C A5` (client).
+Both instances used `pause_nonactive = "false"`; the host completed the
+exchange after the client window was opened, validating this configured
+background-run scenario. LAN and Internet connections across computers,
+real-network jitter, reconnect behavior and Pokémon trading over Netpacket
+remain unverified. Per-edge request and reply traffic may be too slow over
+higher-latency connections.
