@@ -1,16 +1,42 @@
 # Steam Deck acceptance checks
 
-## Current Linux x86-64 core package (2026-11-01)
+## Current Linux x86-64 core package (2026-11-13)
 
 The current cross-compiled core is available as
 [`LotusGB-Steam-Deck-x86_64.zip`](../build/packages/LotusGB-Steam-Deck-x86_64.zip)
 for local installation, containing only the libretro core, matching `.info`,
 project license, package manifest and instructions. Core SHA-256:
-`9f30e847537148820c333f74a6615afcadb10c016e28ca5daf45b6b74bf813cb`.
-The artifact is ELF64 x86-64 for `.gb` and `.gbc` content; it contains no game
-ROMs or captures. Cross-compilation and file inspection passed. This updated
-candidate has not yet been checked on the Deck; earlier device results apply
-to the specific older hashes recorded below.
+`dd418d0efbcdcc34200fd02c24cadb0022b21e2d4d504e78c47450e643ef0f75`;
+package SHA-256:
+`5e316335028684c3bfeeb51ea7db4c50ecddd51f6eb68ed084846edfd83ba3a8`.
+The artifact is a stripped ELF64 x86-64 core for `.gb` and `.gbc` content; it
+contains no game ROMs or captures. Cross-compilation, package validation, and
+checks for local source paths passed. The candidate was loaded on the Deck in
+the synthetic LAN probe below; that confirms loading and this bounded serial
+test, not general gameplay compatibility. Earlier gameplay results apply to
+the specific older hashes recorded below.
+
+For a cross-device serial-link probe, the ignored build directory also contains
+`build/retroarch-netpacket-live-20261113-steamdeck/client-steamdeck-package.zip`.
+It includes the same Linux core, its `.info`, an original synthetic serial test
+ROM, and a launcher that starts Steam RetroArch through Steam App ID 1118310.
+The launcher and verifier passed local dry-runs. The package README contains
+the host/client procedure.
+
+## Netpacket LAN probe — Mac host + Steam Deck client (2026-11-14)
+
+The user reports that the Deck client verifier returned `Client: PASS (a53ca5)`.
+The Mac host verifier was run after the repeat session and returned
+`Host: PASS (3ca5a5)`. Together these confirm the synthetic serial exchange
+and SRAM persistence on both devices for this bounded LAN probe. The first
+session's host check failed (`ffa5a5`), so the result is from the later repeat,
+not the initial attempt. A host log records that a Deck peer connected and
+later disconnected normally.
+
+The exact Deck SteamOS/RetroArch versions and the Deck log were not captured.
+This verifies the test ROM and this Deck/host setup, not a real Pokémon trade,
+internet routing, or Deck background execution. The package keeps its test
+SRAM under `client/saves/LotusGB/client.srm` relative to its extracted folder.
 
 On SteamOS Desktop Mode, copy `core/lotusgb_libretro.so` into the configured
 RetroArch core directory and `core/lotusgb_libretro.info` into its info

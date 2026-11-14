@@ -174,16 +174,17 @@ package-retroarch-macos:
 		--info "$(MACOS_PACKAGE_BUILD_DIR)/lotusgb_libretro.info" --output-dir "$(MACOS_PACKAGE_DIR)"
 	python3 tools/test_macos_package.py --package "$(MACOS_PACKAGE_DIR)/LotusGB-RetroArch-macOS-universal.zip"
 
-STEAM_DECK_PACKAGE_BUILD_DIR ?= $(CURDIR)/build/steamdeck
+STEAM_DECK_PACKAGE_BUILD_DIR ?= $(CURDIR)/build/steamdeck-package
 STEAM_DECK_PACKAGE_DIR ?= $(CURDIR)/build/packages
 STEAM_DECK_ZIG ?= $(CURDIR)/build/toolchains/zig-0.17.0/zig
 STEAM_DECK_TARGET ?= x86_64-linux-gnu
+STEAM_DECK_PACKAGE_CXXFLAGS ?= -g0 -Wl,--strip-debug
 package-retroarch-steam-deck:
 	@test -x "$(STEAM_DECK_ZIG)" || { printf '%s\n' 'Zig 0.17.0 not found; set STEAM_DECK_ZIG.' >&2; exit 1; }
 	ZIG_GLOBAL_CACHE_DIR="$(CURDIR)/build/zig-cache/global" \
 	ZIG_LOCAL_CACHE_DIR="$(CURDIR)/build/zig-cache/local" \
 	$(MAKE) -C $(src_dir)/libretro build_dir="$(STEAM_DECK_PACKAGE_BUILD_DIR)" \
-		CXX="$(STEAM_DECK_ZIG) c++ -target $(STEAM_DECK_TARGET)" \
+		CXX="$(STEAM_DECK_ZIG) c++ -target $(STEAM_DECK_TARGET) $(STEAM_DECK_PACKAGE_CXXFLAGS)" \
 		"$(STEAM_DECK_PACKAGE_BUILD_DIR)/lotusgb_libretro.so" \
 		"$(STEAM_DECK_PACKAGE_BUILD_DIR)/lotusgb_libretro.info"
 	python3 tools/package_retroarch_linux.py --platform steam-deck \

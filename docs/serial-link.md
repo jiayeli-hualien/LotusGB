@@ -140,11 +140,14 @@ retroarch --config /path/to/client.cfg -L /path/to/lotusgb_libretro.dylib \
 ```
 
 For a second computer on the same LAN, replace `127.0.0.1` with the host's LAN
-address and set the same Netplay port in both configs. These commands describe
-the standalone build; the Steam build must be started through Steam and has not
-been tested here. Internet hosting also depends on RetroArch network setup:
+address and set the same Netplay port in both configs. A synthetic-ROM probe
+between the standalone macOS build and Steam RetroArch on a Steam Deck passed
+on 2026-11-14: the user reported client SRAM prefix `A5 3C A5`, and the host
+verifier returned `3C A5 A5`. The Deck launched through Steam App ID 1118310.
+This verifies a bounded cross-device LAN exchange; it does not verify gameplay
+or a Pokémon trade. Internet hosting also depends on RetroArch network setup:
 the host must be reachable on its Netplay TCP port, or both peers can use the
-RetroArch relay option. Neither path has been tested with LotusGB yet
+RetroArch relay option. Neither Internet path has been tested with LotusGB yet
 ([RetroArch Netplay setup](https://docs.libretro.com/guides/netplay-getting-started/)).
 
 
@@ -194,7 +197,9 @@ different-ROM warning, both sides processed the first remote serial edge, and
 the isolated SRAM prefixes were `3C A5 A5` (host) and `A5 3C A5` (client).
 Both instances used `pause_nonactive = "false"`; the host completed the
 exchange after the client window was opened, validating this configured
-background-run scenario. LAN and Internet connections across computers,
-real-network jitter, reconnect behavior and Pokémon trading over Netpacket
-remain unverified. Per-edge request and reply traffic may be too slow over
-higher-latency connections.
+background-run scenario. The subsequent Mac ↔ Steam Deck test also passed its
+synthetic SRAM checks on both ends. The Deck SteamOS/RetroArch versions and
+client log were not captured. Internet direct/relay, real-network jitter,
+reconnect behavior, and Pokémon trading over cross-device Netpacket remain
+unverified. Per-edge request and reply traffic may be too slow over higher-
+latency connections.
