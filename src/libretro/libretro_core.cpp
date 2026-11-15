@@ -38,6 +38,7 @@ retro_environment_t environmentCallback = nullptr;
 retro_log_printf_t logCallback = nullptr;
 retro_sensor_interface sensorInterface{};
 bool sensorInterfaceAvailable = false;
+void logMessage(retro_log_level level, const char *message);
 retro_rumble_interface rumbleInterface{};
 bool rumbleInterfaceAvailable = false;
 bool frontendRumbleState = false;
@@ -51,6 +52,7 @@ bool initializationFaulted = false;
 LOTUSGB::HardwareModel loadedHardwareModel = LOTUSGB::HardwareModel::Dmg;
 const retro_variable CORE_VARIABLES[] = {
     {"lotusgb_model", "Hardware model (reload content); auto|dmg|cgb"},
+    {"lotusgb_netpacket_trace", "Netpacket bit trace (reload content); off|on"},
     {nullptr, nullptr}
 };
 LOTUSGB::HardwareModel selectHardwareModel(const std::vector<uint8_t> &rom) {
@@ -62,6 +64,21 @@ LOTUSGB::HardwareModel selectHardwareModel(const std::vector<uint8_t> &rom) {
         if (std::strcmp(option.value, "auto") != 0) throw std::runtime_error("Invalid lotusgb_model core option");
     }
     return (rom[0x143] & 0x80) ? LOTUSGB::HardwareModel::CgbE : LOTUSGB::HardwareModel::Dmg;
+}
+
+bool selectNetpacketDebugTrace() {
+    retro_variable option{"lotusgb_netpacket_trace", nullptr};
+    if (!environmentCallback ||
+        !environmentCallback(RETRO_ENVIRONMENT_GET_VARIABLE, &option) ||
+        !option.value)
+        return false;
+    if (std::strcmp(option.value, "on") == 0)
+        return true;
+    if (std::strcmp(option.value, "off") == 0)
+        return false;
+    logMessage(RETRO_LOG_WARN,
+               "Invalid Netpacket bit trace option; using off");
+    return false;
 }
 
 void logMessage(retro_log_level level, const char *message) {
@@ -192,8 +209,35 @@ bool netpacketStarted = false;
 bool netpacketConnected = false;
 bool netpacketHost = false;
 bool netpacketFailed = false;
+bool netpacketDebugTraceEnabled = false;
 uint32_t netpacketSequence = 0;
 std::optional<std::pair<uint32_t, bool>> netpacketReply;
+struct NetpacketDiagnostics {
+    uint64_t requestsSent = 0;
+    uint64_t requestsReceived = 0;
+    uint64_t repliesReceived = 0;
+    uint64_t externalEdgesAccepted = 0;
+    uint64_t externalEdgesIgnored = 0;
+    uint64_t totalReplyTimeUs = 0;
+    uint64_t maxReplyTimeUs = 0;
+    uint32_t lastPeerRequestSequence = 0;
+    uint8_t lastPeerSerialControl = 0xFF;
+    bool hasPeerRequestSequence = false;
+    uint32_t pendingSequence = 0;
+    std::chrono::steady_clock::time_point sessionStarted{};
+    std::chrono::steady_clock::time_point lastSlowRunLog{};
+};
+NetpacketDiagnostics netpacketDiagnostics;
+
+uint64_t netpacketSessionElapsedUs() {
+    if (netpacketDiagnostics.sessionStarted.time_since_epoch().count() == 0)
+        return 0;
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() -
+            netpacketDiagnostics.sessionStarted).count());
+}
+
 const char NETPACKET_PROTOCOL_VERSION[] = "LotusGB-serial-bit-v1";
 
 enum class LinkPacketType : uint8_t { BitRequest = 1, BitReply = 2 };
@@ -235,6 +279,30 @@ void sendLinkPacket(const LinkPacket &packet) {
                   bytes.data(), bytes.size(), RETRO_NETPACKET_BROADCAST);
 }
 
+void logNetpacketDiagnostics(const char *event) {
+    char message[384];
+    const uint64_t averageReplyTimeUs = netpacketDiagnostics.repliesReceived
+        ? netpacketDiagnostics.totalReplyTimeUs /
+              netpacketDiagnostics.repliesReceived
+        : 0;
+    std::snprintf(
+        message, sizeof(message),
+        "Netpacket diagnostics (%s, %s): session_us=%llu sent=%llu received=%llu replies=%llu "
+        "accepted_external_edges=%llu ignored_external_edges=%llu "
+        "avg_reply_us=%llu max_reply_us=%llu pending=%u",
+        event, netpacketHost ? "host" : "client",
+        static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+        static_cast<unsigned long long>(netpacketDiagnostics.requestsSent),
+        static_cast<unsigned long long>(netpacketDiagnostics.requestsReceived),
+        static_cast<unsigned long long>(netpacketDiagnostics.repliesReceived),
+        static_cast<unsigned long long>(netpacketDiagnostics.externalEdgesAccepted),
+        static_cast<unsigned long long>(netpacketDiagnostics.externalEdgesIgnored),
+        static_cast<unsigned long long>(averageReplyTimeUs),
+        static_cast<unsigned long long>(netpacketDiagnostics.maxReplyTimeUs),
+        netpacketDiagnostics.pendingSequence);
+    logMessage(RETRO_LOG_INFO, message);
+}
+
 bool exchangeNetworkBit(bool outgoing) {
     if (!netpacketStarted || !netpacketConnected)
         return true;
@@ -242,11 +310,40 @@ bool exchangeNetworkBit(bool outgoing) {
         throw std::runtime_error("Link peer disconnected during serial transfer");
 
     const uint32_t sequence = ++netpacketSequence;
-    if (sequence == 1)
-        logMessage(RETRO_LOG_INFO, "Waiting for the first remote serial edge");
+    const uint8_t localSerialControl = emulatorSystem
+                                          ? emulatorSystem->getSerialControl()
+                                          : 0xFF;
+    const unsigned localBitPosition = emulatorSystem
+                                          ? emulatorSystem->getSerialBitsTransferred() + 1
+                                          : 0;
+    if (sequence == 1) {
+        char message[224];
+        std::snprintf(message, sizeof(message),
+                      "First outgoing serial edge: session_us=%llu sequence=%u bit=%u SC=0x%02X "
+                      "transfer_active=%s clock=%s",
+                      static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                      sequence, localBitPosition,
+                      static_cast<unsigned>(localSerialControl),
+                      (localSerialControl & 0x80) ? "yes" : "no",
+                      (localSerialControl & 1) ? "internal" : "external");
+        logMessage(RETRO_LOG_INFO, message);
+    }
+    if ((localSerialControl & 0x81) != 0x81) {
+        char message[224];
+        std::snprintf(message, sizeof(message),
+                      "Unexpected local serial state: session_us=%llu edge=%u bit=%u SC=0x%02X "
+                      "(expected active internal clock)",
+                      static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                      sequence, localBitPosition,
+                      static_cast<unsigned>(localSerialControl));
+        logMessage(RETRO_LOG_WARN, message);
+    }
     netpacketReply.reset();
+    netpacketDiagnostics.pendingSequence = sequence;
+    ++netpacketDiagnostics.requestsSent;
+    const auto requestStarted = std::chrono::steady_clock::now();
     sendLinkPacket({LinkPacketType::BitRequest, sequence, outgoing});
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto deadline = requestStarted + std::chrono::seconds(2);
     while (!netpacketReply && !netpacketFailed &&
            std::chrono::steady_clock::now() < deadline) {
         netpacketPollReceive();
@@ -255,11 +352,50 @@ bool exchangeNetworkBit(bool outgoing) {
     }
     if (netpacketFailed)
         throw std::runtime_error("Link peer disconnected during serial transfer");
-    if (!netpacketReply)
+    if (!netpacketReply) {
+        logNetpacketDiagnostics("serial reply timeout");
         throw std::runtime_error("Timed out waiting for a serial link bit");
+    }
     const auto [replySequence, incoming] = *netpacketReply;
-    if (replySequence != sequence)
+    if (replySequence != sequence) {
+        logNetpacketDiagnostics("serial reply sequence mismatch");
         throw std::runtime_error("Serial link reply sequence mismatch");
+    }
+    netpacketDiagnostics.pendingSequence = 0;
+    ++netpacketDiagnostics.repliesReceived;
+    const auto replyTimeUs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - requestStarted).count());
+    netpacketDiagnostics.totalReplyTimeUs += replyTimeUs;
+    netpacketDiagnostics.maxReplyTimeUs =
+        std::max(netpacketDiagnostics.maxReplyTimeUs, replyTimeUs);
+    if (netpacketDebugTraceEnabled && logCallback) {
+        char message[256];
+        std::snprintf(message, sizeof(message),
+                      "Serial edge TX: session_us=%llu sequence=%u bit=%u SC=0x%02X outgoing=%u "
+                      "incoming=%u rtt_us=%llu",
+                      static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                      sequence, localBitPosition,
+                      static_cast<unsigned>(localSerialControl), outgoing ? 1u : 0u,
+                      incoming ? 1u : 0u,
+                      static_cast<unsigned long long>(replyTimeUs));
+        logMessage(RETRO_LOG_DEBUG, message);
+    }
+    const bool logProgress = sequence == 1 || sequence % 64 == 0;
+    const bool logSlowByte = replyTimeUs >= 100000 && sequence % 8 == 0;
+    if (logProgress || logSlowByte) {
+        char message[224];
+        std::snprintf(message, sizeof(message),
+                      "Serial edge reply: session_us=%llu sequence=%u bit=%u rtt_us=%llu incoming=%u",
+                      static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                      sequence, localBitPosition,
+                      static_cast<unsigned long long>(replyTimeUs),
+                      incoming ? 1u : 0u);
+        logMessage(replyTimeUs >= 100000 ? RETRO_LOG_WARN : RETRO_LOG_INFO,
+                   message);
+        if (sequence % 64 == 0 || logSlowByte)
+            logNetpacketDiagnostics("serial edge progress");
+    }
     return incoming;
 }
 
@@ -279,12 +415,17 @@ void netpacketStart(uint16_t clientId, retro_netpacket_send_t send,
     netpacketFailed = false;
     netpacketSequence = 0;
     netpacketReply.reset();
+    netpacketDiagnostics = {};
+    netpacketDiagnostics.sessionStarted = std::chrono::steady_clock::now();
+    netpacketDiagnostics.lastPeerSerialControl = 0xFF;
     logMessage(RETRO_LOG_INFO, clientId == 0
         ? "RetroArch serial Netpacket started as host"
         : "RetroArch serial Netpacket started as client");
 }
 
 void netpacketStop() {
+    if (netpacketStarted)
+        logNetpacketDiagnostics("frontend stopped Netpacket");
     netpacketSend = nullptr;
     netpacketPollReceive = nullptr;
     netpacketStarted = false;
@@ -307,9 +448,63 @@ void netpacketReceive(const void *data, size_t size, uint16_t clientId) {
 
     try {
         if (packet->type == LinkPacketType::BitRequest) {
+            ++netpacketDiagnostics.requestsReceived;
+            if (netpacketDiagnostics.hasPeerRequestSequence &&
+                packet->sequence != netpacketDiagnostics.lastPeerRequestSequence + 1) {
+                char message[224];
+                std::snprintf(message, sizeof(message),
+                              "Peer serial edge sequence discontinuity: session_us=%llu got=%u expected=%u",
+                              static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                              packet->sequence,
+                              netpacketDiagnostics.lastPeerRequestSequence + 1);
+                logMessage(RETRO_LOG_WARN, message);
+            }
+            netpacketDiagnostics.hasPeerRequestSequence = true;
+            netpacketDiagnostics.lastPeerRequestSequence = packet->sequence;
             const bool outgoing = emulatorSystem
                                       ? emulatorSystem->getSerialOutgoingBit()
                                       : true;
+            const uint8_t serialControl = emulatorSystem
+                                              ? emulatorSystem->getSerialControl()
+                                              : 0xFF;
+            const unsigned bitPosition = emulatorSystem
+                                             ? emulatorSystem->getSerialBitsTransferred() + 1
+                                             : 0;
+            const bool externalClock = (serialControl & 1) == 0;
+            const bool transferActive = (serialControl & 0x80) != 0;
+            const bool externalEdgeAccepted = externalClock && transferActive;
+            if (netpacketDebugTraceEnabled && logCallback) {
+                char message[256];
+                std::snprintf(message, sizeof(message),
+                              "Serial edge RX: session_us=%llu sequence=%u bit=%u SC=0x%02X "
+                              "peer_outgoing=%u local_outgoing=%u shift=%s",
+                              static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                              packet->sequence, bitPosition,
+                              static_cast<unsigned>(serialControl),
+                              packet->bit ? 1u : 0u, outgoing ? 1u : 0u,
+                              externalEdgeAccepted ? "yes" : "no");
+                logMessage(RETRO_LOG_DEBUG, message);
+            }
+            if (externalEdgeAccepted)
+                ++netpacketDiagnostics.externalEdgesAccepted;
+            else
+                ++netpacketDiagnostics.externalEdgesIgnored;
+            if (packet->sequence == 1 ||
+                serialControl != netpacketDiagnostics.lastPeerSerialControl) {
+                char message[256];
+                std::snprintf(message, sizeof(message),
+                              "Incoming peer edge: session_us=%llu sequence=%u bit=%u SC=0x%02X "
+                              "transfer_active=%s clock=%s edge_will_shift=%s",
+                              static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                              packet->sequence, bitPosition,
+                              static_cast<unsigned>(serialControl),
+                              transferActive ? "yes" : "no",
+                              externalClock ? "external" : "internal",
+                              externalEdgeAccepted ? "yes" : "no");
+                logMessage(externalEdgeAccepted ? RETRO_LOG_INFO : RETRO_LOG_WARN,
+                           message);
+                netpacketDiagnostics.lastPeerSerialControl = serialControl;
+            }
             if (emulatorSystem)
                 emulatorSystem->clockSerialExternalBit(packet->bit);
             if (packet->sequence == 1)
@@ -329,12 +524,17 @@ bool netpacketConnectedClient(uint16_t clientId) {
         return false;
     netpacketPeerId = clientId;
     netpacketConnected = true;
-    logMessage(RETRO_LOG_INFO, "RetroArch serial link peer connected");
+    char message[144];
+    std::snprintf(message, sizeof(message),
+                  "RetroArch serial link peer connected: session_us=%llu",
+                  static_cast<unsigned long long>(netpacketSessionElapsedUs()));
+    logMessage(RETRO_LOG_INFO, message);
     return true;
 }
 
 void netpacketDisconnectedClient(uint16_t clientId) {
     if (clientId == netpacketPeerId) {
+        logNetpacketDiagnostics("peer disconnected");
         netpacketConnected = false;
         netpacketFailed = true;
     }
@@ -732,6 +932,7 @@ void retro_init(void) {
     frameProblemReported = false;
     emulationFaulted = false;
     initializationFaulted = false;
+    netpacketDebugTraceEnabled = false;
     rumbleInterface = {};
     rumbleInterfaceAvailable = false;
     rumbleUnsupportedReported = false;
@@ -845,6 +1046,10 @@ void retro_run(void) {
     if (!emulatorSystem)
         return;
 
+    const bool measureNetpacketRun = netpacketConnected;
+    const auto runStarted = measureNetpacketRun
+                                ? std::chrono::steady_clock::now()
+                                : std::chrono::steady_clock::time_point{};
     LOTUSGB::LibretroInternal::invokeCallbackSafely(
         emulationFaulted,
         [] {
@@ -898,6 +1103,29 @@ void retro_run(void) {
                           "Exception during retro_run: %s", error);
             logMessage(RETRO_LOG_ERROR, message);
         });
+
+    if (measureNetpacketRun) {
+        const auto runFinished = std::chrono::steady_clock::now();
+        const auto runTime = runFinished - runStarted;
+        const auto minimumTraceInterval = std::chrono::seconds(1);
+        if (runTime >= std::chrono::milliseconds(100) &&
+            (netpacketDiagnostics.lastSlowRunLog.time_since_epoch().count() == 0 ||
+             runFinished - netpacketDiagnostics.lastSlowRunLog >=
+                 minimumTraceInterval)) {
+            netpacketDiagnostics.lastSlowRunLog = runFinished;
+            char message[256];
+            std::snprintf(message, sizeof(message),
+                          "Long retro_run during Netpacket session: session_us=%llu elapsed_ms=%llu sent=%llu "
+                          "received=%llu pending=%u",
+                          static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                          static_cast<unsigned long long>(
+                              std::chrono::duration_cast<std::chrono::milliseconds>(runTime).count()),
+                          static_cast<unsigned long long>(netpacketDiagnostics.requestsSent),
+                          static_cast<unsigned long long>(netpacketDiagnostics.requestsReceived),
+                          netpacketDiagnostics.pendingSequence);
+            logMessage(RETRO_LOG_WARN, message);
+        }
+    }
 }
 
 size_t retro_serialize_size(void) {
@@ -990,6 +1218,7 @@ static bool loadContent(const retro_game_info *game, const retro_game_info *seco
             logMessage(RETRO_LOG_INFO,
                        "No frontend accelerometer available; MBC7 starts at neutral sensor values");
         loadedHardwareModel = model;
+        netpacketDebugTraceEnabled = !secondGame && selectNetpacketDebugTrace();
         loadedRom = std::move(rom);
         loadedBootRom = std::move(bootRom);
         emulatorSystem = std::move(newSystem);
@@ -1002,6 +1231,9 @@ static bool loadContent(const retro_game_info *game, const retro_game_info *seco
         invalidSensorValueReported = false;
         frameProblemReported = false;
         emulationFaulted = false;
+        if (netpacketDebugTraceEnabled)
+            logMessage(RETRO_LOG_INFO,
+                       "Netpacket per-bit DEBUG trace is enabled for this content");
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());
         return false;
@@ -1025,6 +1257,7 @@ bool retro_load_game_special(unsigned type, const retro_game_info *games, size_t
 void retro_unload_game(void) {
     setFrontendRumble(false);
     disableCartridgeSensor();
+    netpacketDebugTraceEnabled = false;
     audioDiagnostics.flush();
     emulatorSystem.reset();
     clearLink();

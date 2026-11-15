@@ -160,6 +160,10 @@ GameBoySystem::GameBoySystem(std::vector<uint8_t> rom,
 }
 
 bool GameBoySystem::getSerialOutgoingBit() const { return serial.getOutgoingBit(); }
+unsigned GameBoySystem::getSerialBitsTransferred() const {
+    return serial.getBitsTransferred();
+}
+uint8_t GameBoySystem::getSerialControl() { return serial.read(0xFF02); }
 void GameBoySystem::clockSerialExternalBit(bool incomingBit) { serial.clockExternalBit(incomingBit); }
 void GameBoySystem::setSerialClockCallback(std::function<bool(bool)> callback) {
     serial.setInternalClockCallback(std::move(callback));

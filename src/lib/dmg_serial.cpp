@@ -65,6 +65,7 @@ void DmgSerial::advanceTCycles(uint64_t tCycles) {
 }
 
 bool DmgSerial::getOutgoingBit() const { return (data & 0x80) != 0; }
+unsigned DmgSerial::getBitsTransferred() const { return bitsTransferred; }
 
 void DmgSerial::setInternalClockCallback(std::function<bool(bool)> callback) {
     internalClockCallback = std::move(callback);

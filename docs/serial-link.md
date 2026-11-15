@@ -175,11 +175,15 @@ The single-ROM core registers RetroArch's Netpacket interface. The current
 protocol exchanges each internal-clock sampling edge as a reliable packet.
 The receiving core supplies that edge to its external-clock serial port, then
 returns its outgoing bit. If there is no active Netplay connection, the
-internal-clock callback preserves disconnected incoming-high behavior.
-Packets include a protocol version, edge sequence, type and bit value. The
-host accepts one peer, and the sender waits up to two seconds for each reply.
-A timeout or peer disconnect faults the running core instead of silently
-substituting data.
+internal-clock callback preserves disconnected incoming-high behavior. The
+session advertises protocol `LotusGB-serial-bit-v1`; packet payloads contain a
+magic value, type, bit value and edge sequence. Fields are encoded byte by
+byte, with the 32-bit sequence in big-endian order; the wire format does not
+send native C++ structs. Netpacket's reliable flag guarantees delivery in send
+order. LotusGB has no application checksum today; it validates packet length,
+magic, type, bit range and reply sequence. The host accepts one peer, and the
+sender waits up to two seconds for each reply. A timeout or peer disconnect
+faults the running core instead of silently substituting data.
 
 Automated libretro tests run host and client cores in separate processes and
 relay reliable packets between them. A deterministic local relay adds
@@ -199,7 +203,126 @@ Both instances used `pause_nonactive = "false"`; the host completed the
 exchange after the client window was opened, validating this configured
 background-run scenario. The subsequent Mac ↔ Steam Deck test also passed its
 synthetic SRAM checks on both ends. The Deck SteamOS/RetroArch versions and
-client log were not captured. Internet direct/relay, real-network jitter,
-reconnect behavior, and Pokémon trading over cross-device Netpacket remain
-unverified. Per-edge request and reply traffic may be too slow over higher-
-latency connections.
+client log were not captured. Internet direct/relay, real-network jitter, and
+reconnect behavior remain unverified. The user deferred Internet testing on 2026-11-14 because their
+network has no port forwarding. RetroArch relay may avoid router port
+forwarding. An optional relay-lobby path is now prepared in the ignored
+Mac/Steam Deck probe launchers: the host advertises a password-protected room,
+and the client joins through RetroArch's Netplay host list instead of using
+`--connect`. Fake frontend dry-runs passed; no external relay was contacted.
+Actual relay, real-network jitter, and reconnect behavior remain unverified.
+The probe launchers now accept
+private ROM paths plus per-player data directories outside the repository, and
+an offline mode can reopen each side with the same SRAM directory. Fake
+frontend dry-runs verified these paths and the guard against repository ROMs
+or save directories; no commercial ROM or save was opened by the launcher in
+this work. The launchers also offer a GUI mode that loads each side's content
+and isolated data paths without auto-hosting or auto-connecting; the RetroArch
+menu can then host or enter the peer IP, with GUI connect/listen ports aligned.
+On 2026-11-15, the user joined the Mac host by scanning the LAN from the Steam
+Deck. The Deck client reported SRAM prefix `A5 3C A5`, and the Mac host
+verifier returned `3C A5 A5`. The Mac log recorded the peer connection, first
+remote serial edge, peer disconnect, and successful SRAM save. This confirms
+one GUI-driven LAN byte exchange and SRAM persistence on both ends. The local
+ignored host probe ROM was changed to wait for a button press after the Deck
+joins, removing the previous short startup delay. Deck background execution,
+Internet routing, and higher-latency link behavior remain unverified.
+
+On 2026-11-15, the user completed a Red/Blue trade over the Mac ↔ Steam Deck
+LAN session. Both sides received the other player's Pokémon, both Pokédexes
+showed the traded Pokémon, and both retained the result after choosing the
+game's restart option and reloading. The game saves the trade automatically;
+a separate Save command is unnecessary. This verifies one real cross-device
+trade and persistence by user report. The exact ROM/core hashes, Deck
+SteamOS/RetroArch versions and client log were not captured.
+
+The captured Mac host log ended cleanly: 14,472 serial edge requests had
+14,472 replies, with no timeout or sequence mismatch; mean reply time was
+17.0 ms and maximum 116 ms. It recorded a normal peer disconnect, Netpacket
+stop and successful SRAM save. `retro_run` still had calls lasting up to
+1.79 seconds. The host also received 2,000 peer edge requests, of which 1,624
+arrived while the host was active in external-clock mode and 376 were ignored
+while it was inactive or using internal clock. Those ignored edges may be
+relevant to the difficult in-game handshake, but the missing Deck log prevents
+confirming whether they caused a failed attempt. The RTT and long calls
+support synchronous per-edge waiting as the main observed source of trade
+stalls; this run completed correctly despite the delay.
+
+### Netpacket stall diagnostics
+
+The core now records the local SC state on the first outgoing edge and the
+remote SC state when it receives an edge. It marks whether the receiver had
+transfer-start set in external-clock mode, tracks the serial bit position,
+checks peer request sequence continuity, and measures request/reply latency.
+Diagnostic event lines include monotonic microseconds elapsed since the local
+Netpacket session started; these timestamps are per-machine and are not a
+shared clock.
+INFO/WARN summaries report progress every 64 edges, slow `retro_run` calls
+(rate limited to one per second), slow replies, timeouts, disconnects and
+frontend Netpacket stop. Detailed per-bit TX/RX tracing is opt-in through the
+`Netpacket bit trace` core option, which defaults to off; RetroArch must also
+permit DEBUG core logs (`libretro_log_level = 0` and verbose mode). These are
+diagnostic-only changes; the wire protocol and emulation behavior are
+unchanged. Tests verify that an active external-clock transfer accepts eight
+remote edges and receives the expected byte, while a late edge after transfer
+completion is counted as ignored. The serial unit test also checks that an
+active internal-clock transfer ignores external edges. The full `make test`
+suite passes with this instrumentation, including DMG serial, libretro normal
+and fixed-step, GBA, homebrew and PPU runner checks. A real Pokémon trade has
+now been manually reproduced with the Mac diagnostic host; the Steam Deck
+client binary identity and log remain unconfirmed. Keep detailed traces
+private: they contain game link data.
+
+On 2026-11-15, matched-source diagnostic builds were prepared for a controlled
+reproduction. The macOS installer is
+`build/packages/LotusGB-RetroArch-macOS-universal.zip` (core SHA-256
+`1b76c8b5efa1f8232bdc35c3c3bc10bc18a20331e9c9f60eb28f5ecf60e188c8`; package
+SHA-256 `e62fd9cf48f0d60e2aeca15ee26f00db3b53c6d9e1e98122b6e41e111da2c365`);
+its five installer/package tests passed. The Steam Deck diagnostic client
+package is `build/packages/LotusGB-Steam-Deck-Netpacket-Diagnostics.zip`
+(Linux core SHA-256
+`811b2e13fd4c1d60549e79cd99fd9413532a1a63e3fa93174569013f838c420c`;
+package SHA-256
+`6a03820e7417c03be2a43abaca15b103ac26dc46ce9cc4e5c679194223809982`). The
+Deck core cross-compiled and the package contains no commercial ROM or save;
+the exact client binary used for the real trade is unconfirmed. Both packages use protocol
+`LotusGB-serial-bit-v1` and the same source revision plus uncommitted
+diagnostic changes. The opt-in `Netpacket bit trace` option defaults off;
+the isolated Deck config captures initial INFO/WARN summaries at
+`libretro_log_level = 1`.
+The Mac diagnostic core has since been installed into the standalone
+RetroArch user core directory; its installed SHA-256 matches the packaged
+core (`1b76c8b5efa1f8232bdc35c3c3bc10bc18a20331e9c9f60eb28f5ecf60e188c8`).
+The diagnostics include session-relative monotonic timestamps. RetroArch
+must be fully restarted before loading the core. The Steam Deck
+package still needs to be copied to and run on the device.
+
+The standard standalone Mac config at
+`~/Library/Application Support/RetroArch/config/retroarch.cfg` has
+`log_to_file = false` and `log_verbosity = false`; the completed trade used
+the isolated host launcher and wrote its log to the external data folder. The
+isolated client launcher also writes logs to its external data folder, but the
+Steam Deck copy has not been collected. Initial INFO/WARN diagnostics use the
+default core log level. To capture per-bit DEBUG detail, enable the core
+option and set `libretro_log_level = 0` with verbose launch on both sides
+before reloading content.
+
+On 2026-11-15, the user completed a Red/Blue trade over the Mac ↔ Steam Deck
+LAN session. Both sides received the other player's Pokémon, both Pokédexes
+showed the traded Pokémon, and both retained the result after choosing the
+game's restart option and reloading. The game saves the trade automatically;
+a separate Save command is unnecessary. This verifies one real cross-device
+trade and persistence by user report. The exact ROM/core hashes, Deck
+SteamOS/RetroArch versions and client log were not captured.
+
+The captured Mac host log ended cleanly: 14,472 serial edge requests had
+14,472 replies, with no timeout or sequence mismatch; mean reply time was
+17.0 ms and maximum 116 ms. It recorded a normal peer disconnect, Netpacket
+stop and successful SRAM save. `retro_run` still had calls lasting up to
+1.79 seconds. The host also received 2,000 peer edge requests, of which 1,624
+arrived while the host was active in external-clock mode and 376 were ignored
+while it was inactive or using internal clock. Those ignored edges may be
+relevant to the difficult in-game handshake, but the missing Deck log prevents
+confirming whether they caused a failed attempt. The RTT and long calls
+support synchronous per-edge waiting as the main observed source of trade
+stalls; this run completed correctly despite the delay.

@@ -42,6 +42,8 @@ unsigned videoRefreshCount = 0;
 unsigned observedPitch = 0;
 std::string hardwareModelOption = "auto";
 bool modelOptionAdvertised = false;
+std::string netpacketTraceOption = "off";
+bool netpacketTraceOptionAdvertised = false;
 bool throwDuringModelRegistration = false;
 bool frontendAcceptsXrgb8888 = true;
 bool upPressed = false;
@@ -133,6 +135,7 @@ void frontendLog(retro_log_level level, const char *format, ...) {
 const retro_subsystem_info *linkSubsystem = nullptr;
 const retro_netpacket_callback *netpacketInterface = nullptr;
 unsigned mockSerialRequests = 0;
+unsigned mockSerialReplies = 0;
 unsigned mockDisconnectPolls = 0;
 int processNetpacketSocket = -1;
 uint16_t processNetpacketPeerId = 0;
@@ -151,13 +154,18 @@ void mockNetpacketSend(int flags, const void *data, size_t size, uint16_t client
            clientId == RETRO_NETPACKET_BROADCAST,
            "serial link sends reliable broadcast packets immediately");
     const auto *request = static_cast<const uint8_t *>(data);
-    expect(size == 10 && request[4] == 1, "core sends a serial edge request");
-    ++mockSerialRequests;
-    std::array<uint8_t, 10> response{};
-    std::copy(request, request + size, response.begin());
-    response[4] = 2;
-    response[5] = 0;
-    netpacketInterface->receive(response.data(), response.size(), 0);
+    expect(size == 10, "core sends a ten-byte serial packet");
+    if (request[4] == 1) {
+        ++mockSerialRequests;
+        std::array<uint8_t, 10> response{};
+        std::copy(request, request + size, response.begin());
+        response[4] = 2;
+        response[5] = 0;
+        netpacketInterface->receive(response.data(), response.size(), 0);
+    } else {
+        expect(request[4] == 2, "core sends only known serial packet types");
+        ++mockSerialReplies;
+    }
 }
 
 void mockNetpacketPollReceive() {}
@@ -220,14 +228,23 @@ bool environmentCallback(unsigned command, void *data) {
         for (; variables->key; ++variables) {
             if (std::string(variables->key) == "lotusgb_model") {
                 modelOptionAdvertised = std::string(variables->value).find("auto|dmg|cgb") != std::string::npos;
+            } else if (std::string(variables->key) == "lotusgb_netpacket_trace") {
+                netpacketTraceOptionAdvertised =
+                    std::string(variables->value).find("off|on") != std::string::npos;
             }
         }
         return true;
     }
     if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
         auto *variable = static_cast<retro_variable *>(data);
-        if (std::string(variable->key) != "lotusgb_model" || hardwareModelOption.empty()) return false;
-        variable->value = hardwareModelOption.c_str(); return true;
+        const std::string key(variable->key);
+        if (key == "lotusgb_model" && !hardwareModelOption.empty()) {
+            variable->value = hardwareModelOption.c_str(); return true;
+        }
+        if (key == "lotusgb_netpacket_trace" && !netpacketTraceOption.empty()) {
+            variable->value = netpacketTraceOption.c_str(); return true;
+        }
+        return false;
     }
     if (command == RETRO_ENVIRONMENT_GET_LOG_INTERFACE) {
         static_cast<retro_log_callback *>(data)->log = frontendLog;
@@ -1257,6 +1274,8 @@ void testLibretroCgbCompatibilitySelection() {
         retro_deinit(); frontendAcceptsXrgb8888 = xrgb; retro_init();
         logMessages.clear(); logLevels.clear();
         expect(modelOptionAdvertised, "frontend can choose automatic, DMG or CGB hardware");
+        expect(netpacketTraceOptionAdvertised,
+               "frontend can opt into detailed Netpacket bit tracing");
         hardwareModelOption = "cgb"; systemDirectory = directory.string();
         expect(retro_load_game(&game), "forced CGB loads a monochrome cartridge and CGB bootstrap");
         for (unsigned frame = 0; frame < 4; ++frame) retro_run();
@@ -2327,6 +2346,9 @@ void testLibretroNetpacketSerialExchange() {
            netpacketInterface->poll && netpacketInterface->protocol_version &&
            std::string(netpacketInterface->protocol_version) == "LotusGB-serial-bit-v1",
            "core registers a versioned RetroArch Netpacket interface");
+    netpacketTraceOption = "off";
+    logMessages.clear();
+    logLevels.clear();
     std::vector<uint8_t> rom(0x8000);
     rom[0x147] = 0x03;
     rom[0x149] = 0x02;
@@ -2348,7 +2370,95 @@ void testLibretroNetpacketSerialExchange() {
     auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
     expect(mockSerialRequests == 8 && saveRam && saveRam[0] == 0,
            "eight reliable Netpacket edges deliver the peer's byte to the game");
+    expect(std::none_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
+               return message.find("Serial edge TX:") != std::string::npos;
+           }),
+           "per-edge Netpacket logging stays disabled by default");
     netpacketInterface->stop();
+    retro_unload_game();
+
+    logMessages.clear();
+    logLevels.clear();
+    netpacketTraceOption = "on";
+    expect(retro_load_game(&game), "debug-trace serial ROM reloads with per-bit trace enabled");
+    netpacketInterface->start(1, mockNetpacketSend, mockNetpacketPollReceive);
+    retro_run();
+    expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
+               return message.find("Serial edge TX:") != std::string::npos;
+           }) && std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_DEBUG) != logLevels.end(),
+           "opt-in Netpacket trace records per-edge data at DEBUG level");
+    netpacketInterface->stop();
+    retro_unload_game();
+    netpacketTraceOption = "off";
+}
+
+void testLibretroNetpacketExternalEdgeDiagnostics() {
+    std::vector<uint8_t> rom(0x8000);
+    rom[0x147] = 0x03;
+    rom[0x149] = 0x02;
+    const uint8_t program[] = {
+        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
+        0x3E, 0x00, 0xE0, 1,          // Clear SB.
+        0x3E, 0x80, 0xE0, 2,          // Start external-clock transfer.
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 0, 0xA0,       // Store the received byte.
+        0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    const retro_game_info game{"netpacket-external-clock.gb", rom.data(),
+                               rom.size(), nullptr};
+    netpacketTraceOption = "off";
+    logMessages.clear();
+    logLevels.clear();
+    expect(retro_load_game(&game), "external-clock diagnostic ROM loads");
+    mockSerialRequests = 0;
+    mockSerialReplies = 0;
+    netpacketInterface->start(1, mockNetpacketSend, mockNetpacketPollReceive);
+    retro_run();
+
+    for (uint32_t sequence = 1; sequence <= 8; ++sequence) {
+        const unsigned bitIndex = sequence - 1;
+        const bool bit = (0x3C & (1U << (7 - bitIndex))) != 0;
+        const std::array<uint8_t, 10> request{
+            'L', 'G', 'B', 'L', 1, static_cast<uint8_t>(bit),
+            static_cast<uint8_t>(sequence >> 24),
+            static_cast<uint8_t>(sequence >> 16),
+            static_cast<uint8_t>(sequence >> 8),
+            static_cast<uint8_t>(sequence)};
+        netpacketInterface->receive(request.data(), request.size(), 0);
+    }
+    retro_run();
+    auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam && saveRam[0] == 0x3C,
+           "eight remote edges shift the peer byte into an active external transfer");
+
+    const std::array<uint8_t, 10> lateRequest{'L', 'G', 'B', 'L', 1, 1,
+                                               0, 0, 0, 9};
+    netpacketInterface->receive(lateRequest.data(), lateRequest.size(), 0);
+    expect(mockSerialReplies == 9,
+           "core replies to every peer edge, including one after the transfer ended");
+    netpacketInterface->stop();
+    expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
+               return message.find("clock=external edge_will_shift=yes") !=
+                      std::string::npos;
+           }),
+           "diagnostics identify an accepted active external-clock edge");
+    expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
+               return message.find("clock=external edge_will_shift=no") !=
+                      std::string::npos;
+           }),
+           "diagnostics identify an edge received after transfer-start cleared");
+    expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
+               return message.find("accepted_external_edges=8 ignored_external_edges=1") !=
+                      std::string::npos;
+           }),
+           "Netpacket summary counts accepted and ignored external edges");
+    expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
+               return message.find("Netpacket diagnostics (frontend stopped Netpacket") !=
+                          std::string::npos &&
+                      message.find("session_us=") != std::string::npos;
+           }),
+           "Netpacket summary includes monotonic elapsed time from session start");
     retro_unload_game();
 }
 
@@ -2707,6 +2817,7 @@ int main(int argc, char **argv) {
     testLibretroMbc5RumbleWithoutFrontendSupport();
     testLibretroLinkSubsystem();
     testLibretroNetpacketSerialExchange();
+    testLibretroNetpacketExternalEdgeDiagnostics();
     testLibretroNetpacketDisconnectFaultsCore();
     testLibretroNetpacketTimeoutFaultsCore();
     testLibretroNetpacketTwoProcessExchange();

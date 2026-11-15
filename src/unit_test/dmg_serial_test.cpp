@@ -66,6 +66,24 @@ void testExternalClockWaitsAndAbortRetainsPartialData() {
            "a transfer can complete after a previous transfer was aborted");
 }
 
+void testExternalEdgesRequireActiveExternalClock() {
+    InterruptRegisters interrupts;
+    DmgSerial serial(interrupts);
+    serial.write(0xFF01, 0xA5);
+    serial.write(0xFF02, 0x81);
+    serial.clockExternalBit(false);
+    expect(serial.read(0xFF01) == 0xA5 && serial.getBitsTransferred() == 0,
+           "external edge is ignored while an internal-clock transfer is active");
+    serial.write(0xFF02, 0x80);
+    serial.clockExternalBit(false);
+    expect(serial.read(0xFF01) == 0x4A && serial.getBitsTransferred() == 1,
+           "active external-clock transfer accepts the supplied edge");
+    serial.write(0xFF02, 0x00);
+    serial.clockExternalBit(true);
+    expect(serial.read(0xFF01) == 0x4A && serial.getBitsTransferred() == 0,
+           "external edge is ignored after transfer-start is cleared");
+}
+
 void testStartDoesNotResetSerialClockPhase() {
     InterruptRegisters interrupts;
     DmgSerial serial(interrupts);
@@ -137,6 +155,9 @@ void testExternalEdgesAndTwoPortExchange() {
                     const uint8_t expectedSlave = static_cast<uint8_t>((0x3C << (bit + 1)) | ((0xA5 >> (7 - bit)) & mask));
                     expect(master.read(0xFF01) == expectedMaster && slave.read(0xFF01) == expectedSlave,
                            "both ports sample outgoing MSBs before shifting partial received data");
+                    expect(master.getBitsTransferred() == ((bit + 1) % 8) &&
+                               slave.getBitsTransferred() == ((bit + 1) % 8),
+                           "serial diagnostic bit counts track the active byte on both ports");
                     expect(bool(masterIrq.read(0xFF0F) & 8) == (bit == 7) &&
                                bool(slaveIrq.read(0xFF0F) & 8) == (bit == 7),
                            "both serial IRQs occur only after the eighth edge");
@@ -237,6 +258,7 @@ int main() {
     testIrregularExternalEdgesAbortAndModeGate();
     testRegistersAndDisconnectedTransfer();
     testExternalClockWaitsAndAbortRetainsPartialData();
+    testExternalEdgesRequireActiveExternalClock();
     testStartDoesNotResetSerialClockPhase();
     testStartupProfilesRestoreSerialClockPhase();
     std::cout << "DMG serial tests passed\n";

@@ -20,8 +20,23 @@ For a cross-device serial-link probe, the ignored build directory also contains
 `build/retroarch-netpacket-live-20261113-steamdeck/client-steamdeck-package.zip`.
 It includes the same Linux core, its `.info`, an original synthetic serial test
 ROM, and a launcher that starts Steam RetroArch through Steam App ID 1118310.
-The launcher and verifier passed local dry-runs. The package README contains
-the host/client procedure.
+The direct-IP launcher and verifier passed local dry-runs. The package now
+also has an optional relay-lobby mode; its launcher arguments and password
+guard passed fake-Steam/RetroArch dry-runs. Package SHA-256:
+`9d9e2b0fb27900af710cda0865ee080d29c83c5810b754c57b698d997d3cab58`.
+The relay mode loads the client content without `--connect`; a user joins the
+password-protected host through RetroArch's Netplay host list. No public relay
+connection has been attempted. The launcher can also load a private ROM from
+an external path and direct saves, states, logs, screenshots, and history to
+an external data folder. `offline` mode reopens that same ROM and data folder
+without starting Netplay. These options passed fake-frontend dry-runs; no
+commercial ROM or save was opened. The dry-run also checked that a ROM
+symlink into the repository is rejected and that custom content requires an
+external data folder. A `gui` launcher mode now loads the chosen core/content
+and isolated paths without auto-hosting or auto-connecting; its GUI connection
+port matches the listening port (55437 by default). Fake-frontend checks pass.
+The GUI-driven LAN result is recorded below. The package README contains the
+procedures.
 
 ## Netpacket LAN probe — Mac host + Steam Deck client (2026-11-14)
 
@@ -35,8 +50,44 @@ later disconnected normally.
 
 The exact Deck SteamOS/RetroArch versions and the Deck log were not captured.
 This verifies the test ROM and this Deck/host setup, not a real Pokémon trade,
-internet routing, or Deck background execution. The package keeps its test
+Internet routing, or Deck background execution. The package keeps its test
 SRAM under `client/saves/LotusGB/client.srm` relative to its extracted folder.
+The relay-lobby mode remains unverified on the network and should be used only
+when an Internet check is requested. Cross-device Pokémon trade and save
+reopen on the Deck remain unverified; the README now has a LAN procedure using
+separate private ROM and data paths. Its synthetic probe procedure now has the
+Deck switch to another Desktop Mode window for 25 seconds before checking the
+client SRAM, which will verify `pause_nonactive=false` in actual Deck use.
+
+## GUI LAN probe — Mac host + Steam Deck client (2026-11-15)
+
+The user joined the Mac host by scanning the LAN in RetroArch. After the host
+started its serial transfer, the Steam Deck client verifier reported
+`Client: PASS (a53ca5)`. The Mac host verifier was run locally and returned
+`Host: PASS (3ca5a5)`. This confirms that the GUI-discovery connection carried
+the synthetic byte exchange and both sides saved the expected SRAM bytes.
+The Mac log records a peer connection, the first remote serial edge, a normal
+peer disconnect, and a successful SRAM save. The Deck log and exact
+SteamOS/RetroArch versions were not captured.
+
+For this attempt, the ignored local host probe ROM was changed to wait for the
+user to press RetroArch's A button (keyboard X in this config) after the Deck
+joins. This removes the previous short startup delay; it is a local test
+artifact and is not part of the repository or Steam Deck package.
+This GUI synthetic probe does not verify Deck background execution or
+Internet routing. The actual Pokémon trade result is recorded separately
+below.
+
+## Cross-device Red/Blue trade — user-reported pass (2026-11-15)
+
+The user reports completing a Red/Blue trade over the Mac ↔ Steam Deck LAN
+session. Both games received the other player's Pokémon, and both Pokédexes
+showed the traded Pokémon. After choosing the game's restart option and
+reloading, both sides retained the result. The user confirms the game saves
+the trade automatically; no separate in-game Save command is needed. This is
+one successful manual trade and persistence check. The exact ROM/core hashes,
+SteamOS/RetroArch versions, and Deck-side log were not captured. No ROM, save,
+or game capture is included here.
 
 On SteamOS Desktop Mode, copy `core/lotusgb_libretro.so` into the configured
 RetroArch core directory and `core/lotusgb_libretro.info` into its info
