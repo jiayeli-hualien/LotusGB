@@ -65,6 +65,7 @@ void DmgSerial::advanceTCycles(uint64_t tCycles) {
 }
 
 bool DmgSerial::getOutgoingBit() const { return (data & 0x80) != 0; }
+uint8_t DmgSerial::getData() const { return data; }
 unsigned DmgSerial::getBitsTransferred() const { return bitsTransferred; }
 
 void DmgSerial::setInternalClockCallback(std::function<bool(bool)> callback) {
@@ -76,6 +77,14 @@ void DmgSerial::clockExternalBit(bool incomingBit) {
         shiftBit(incomingBit);
 }
 
+bool DmgSerial::completeNetworkByte(uint8_t incomingByte) {
+    if (!(control & TRANSFER_ENABLE) || bitsTransferred != 0)
+        return false;
+    for (unsigned bit = 0; bit < 8; ++bit)
+        shiftBit((incomingByte & (0x80 >> bit)) != 0);
+    return true;
+}
+
 void DmgSerial::clockBit() {
     if ((control & (TRANSFER_ENABLE | INTERNAL_CLOCK)) !=
         (TRANSFER_ENABLE | INTERNAL_CLOCK))
@@ -83,7 +92,12 @@ void DmgSerial::clockBit() {
 
     // Both outgoing bits must be sampled before either peer shifts. The host
     // callback can sample a peer then deliver this outgoing bit to that peer.
+    const unsigned previousBitCount = bitsTransferred;
     const bool incoming = internalClockCallback ? internalClockCallback(getOutgoingBit()) : true;
+    // A Netpacket peer may complete this transfer while the callback is
+    // waiting for the matching byte. Do not apply a ninth/duplicate shift.
+    if (!(control & TRANSFER_ENABLE) || bitsTransferred != previousBitCount)
+        return;
     shiftBit(incoming);
 }
 

@@ -163,6 +163,14 @@ DoubleCherryGB documents this mode as trade-focused and warns that it can be
 too slow for general multiplayer; LotusGB's actual trade latency still needs
 measurement.
 
+RetroArch's [libretro Netpacket API](https://github.com/libretro/RetroArch/blob/master/libretro-common/include/libretro.h)
+defines custom packets up to 64 KiB. Reliable packets preserve delivery order,
+and the flush hint sends queued packets immediately without blocking. The API
+does not prescribe a bit-level Game Boy protocol. A core can also poll for
+incoming packets while running, though that poll may block and must have a
+short timeout. This makes byte packets and asynchronous send possible; deciding
+when the emulated serial transfer can finish remains LotusGB's responsibility.
+
 In the tested RetroArch 1.22.2 source, differing ROM CRCs in core Netpacket
 mode produce a warning rather than rejecting the connection. The handshake
 also omits SRAM synchronization in this mode, and the host does not send its
@@ -171,19 +179,34 @@ save while Netpacket carries the cable data ([CRC handling](https://github.com/l
 [SRAM sync](https://github.com/libretro/RetroArch/blob/v1.22.2/network/netplay/netplay_frontend.c#L1212-L1214),
 [state sync](https://github.com/libretro/RetroArch/blob/v1.22.2/network/netplay/netplay_frontend.c#L8709-L8717)).
 
-The single-ROM core registers RetroArch's Netpacket interface. The current
-protocol exchanges each internal-clock sampling edge as a reliable packet.
-The receiving core supplies that edge to its external-clock serial port, then
-returns its outgoing bit. If there is no active Netplay connection, the
-internal-clock callback preserves disconnected incoming-high behavior. The
-session advertises protocol `LotusGB-serial-bit-v1`; packet payloads contain a
-magic value, type, bit value and edge sequence. Fields are encoded byte by
-byte, with the 32-bit sequence in big-endian order; the wire format does not
-send native C++ structs. Netpacket's reliable flag guarantees delivery in send
-order. LotusGB has no application checksum today; it validates packet length,
-magic, type, bit range and reply sequence. The host accepts one peer, and the
-sender waits up to two seconds for each reply. A timeout or peer disconnect
-faults the running core instead of silently substituting data.
+The single-ROM core registers RetroArch's Netpacket interface. The diagnostic
+build used for the trade log below exchanged each internal-clock sampling
+edge as a reliable packet (`LotusGB-serial-bit-v1`). The current local
+prototype uses `LotusGB-serial-byte-v1`: one reliable packet carries a complete
+outgoing byte and a transfer sequence, and the peer returns its complete byte.
+Fields are encoded byte by byte, with 32-bit sequences in big-endian order;
+neither wire format sends native C++ structs. Netpacket's reliable flag
+guarantees delivery in send order. LotusGB has no application checksum today;
+the byte protocol validates packet length, magic, type, acceptance flag, and
+request/reply sequence. The host accepts one peer. The byte protocol waits at
+a byte boundary, retries requests every 125 ms, and faults the running core
+after five seconds without an accepted peer byte instead of silently
+substituting data. The disconnected callback still preserves incoming-high
+behavior.
+
+This changes the network packet size and relaxes the peer-visible serial
+timing. The local `SB` register still stores the same byte and completion still
+uses the serial interrupt path, but an active external-clock receiver currently
+shifts all eight incoming bits atomically when the peer byte arrives. Its
+transfer-complete flag and interrupt therefore occur earlier than they would
+after eight physical clock edges. The internal-clock sender uses the returned
+byte for its remaining local bit shifts. This reduces the usual wait from
+eight network round trips per byte to one, with a compatibility risk for games
+that observe serial status or interrupt timing during a transfer. The current
+core still blocks at the first edge while waiting for the peer. Nonblocking
+network I/O and continuing to present frames during that wait are not
+implemented. Real-game compatibility of this byte timing has not been
+verified.
 
 Automated libretro tests run host and client cores in separate processes and
 relay reliable packets between them. A deterministic local relay adds
@@ -248,25 +271,60 @@ confirming whether they caused a failed attempt. The RTT and long calls
 support synchronous per-edge waiting as the main observed source of trade
 stalls; this run completed correctly despite the delay.
 
-### Netpacket stall diagnostics
+### Byte-level latency prototype (2026-11-15)
 
-The core now records the local SC state on the first outgoing edge and the
-remote SC state when it receives an edge. It marks whether the receiver had
-transfer-start set in external-clock mode, tracks the serial bit position,
-checks peer request sequence continuity, and measures request/reply latency.
+The local prototype replaces eight per-edge network requests with one request
+and reply per serial byte. It adds atomic byte completion for an active
+external-clock receiver while preserving the ordinary bit-shift path for
+disconnected and local links. The first full test run exposed duplicate
+retries at 75–100 ms simulated round-trip delay with the prior 33 ms retry
+interval. A 125 ms interval passed the two-process delayed-relay exchange.
+`make build` and the full `make test` pass on macOS, including two consecutive
+bytes in both directions, delayed relay traffic, retry/timeout handling,
+duplicate requests, external-clock byte completion, and the existing serial
+tests. These are synthetic tests only. Matching Mac and Steam Deck byte-protocol
+packages were built under `build/byte-protocol-packages/`; the Mac package's
+five installer checks passed. A newer diagnostic build now prints the exact
+protocol string at Netpacket startup, with tests for both host and client roles.
+The new Mac diagnostic core is installed in the standalone RetroArch user core
+directory; its SHA-256 matches the package (`8e5a2160a271654e5c31de2237d137404f6a6fde2c221d213d490a6ca31b0e9b`).
+The installer backed up the prior core under
+`~/Library/Application Support/RetroArch/backups/LotusGB/20261115T173644Z-47053`.
+RetroArch must be restarted to load it. The Deck diagnostic package has not
+been installed, and neither endpoint has been tested in a real session with
+this diagnostic build. The reported real
+trade and the captured 14,472-edge log above were produced with the earlier
+bit protocol, so they are correctness and latency-baseline evidence, not a
+validation of the byte-protocol prototype.
+
+On 2026-11-16, the user reported that the byte-protocol version can connect
+and complete a trade, but the game becomes choppy during data exchange and
+audio is discontinuous. The user has not yet determined whether exchanges
+fail intermittently. This is a preliminary manual pass, not a repeated
+reliability result. The Mac diagnostic build is installed, but the Steam Deck
+diagnostic build and fresh client log are still missing. The blocking byte
+wait remains a known cause of frontend stalls; random link failure is not yet
+attributed to a specific cause.
+
+### Earlier per-edge Netpacket diagnostics
+
+The earlier per-edge diagnostic build recorded the local SC state on the first
+outgoing edge and the remote SC state when it received an edge. It marked
+whether the receiver had transfer-start set in external-clock mode, tracked
+the serial bit position, checked peer request sequence continuity, and measured
+request/reply latency.
 Diagnostic event lines include monotonic microseconds elapsed since the local
 Netpacket session started; these timestamps are per-machine and are not a
 shared clock.
 INFO/WARN summaries report progress every 64 edges, slow `retro_run` calls
 (rate limited to one per second), slow replies, timeouts, disconnects and
-frontend Netpacket stop. Detailed per-bit TX/RX tracing is opt-in through the
-`Netpacket bit trace` core option, which defaults to off; RetroArch must also
-permit DEBUG core logs (`libretro_log_level = 0` and verbose mode). These are
-diagnostic-only changes; the wire protocol and emulation behavior are
-unchanged. Tests verify that an active external-clock transfer accepts eight
-remote edges and receives the expected byte, while a late edge after transfer
-completion is counted as ignored. The serial unit test also checks that an
-active internal-clock transfer ignores external edges. The full `make test`
+frontend Netpacket stop. Detailed per-bit TX/RX tracing was opt-in through the
+old `Netpacket bit trace` option. These historical diagnostics predate the
+byte protocol; the current option is `Netpacket byte trace`. Tests for the
+earlier version verified that an active external-clock transfer accepted eight
+remote edges and received the expected byte, while a late edge after transfer
+completion was counted as ignored. The serial unit test also checked that an
+active internal-clock transfer ignored external edges. The full `make test`
 suite passes with this instrumentation, including DMG serial, libretro normal
 and fixed-step, GBA, homebrew and PPU runner checks. A real Pokémon trade has
 now been manually reproduced with the Mac diagnostic host; the Steam Deck
@@ -285,9 +343,10 @@ package is `build/packages/LotusGB-Steam-Deck-Netpacket-Diagnostics.zip`
 package SHA-256
 `6a03820e7417c03be2a43abaca15b103ac26dc46ce9cc4e5c679194223809982`). The
 Deck core cross-compiled and the package contains no commercial ROM or save;
-the exact client binary used for the real trade is unconfirmed. Both packages use protocol
-`LotusGB-serial-bit-v1` and the same source revision plus uncommitted
-diagnostic changes. The opt-in `Netpacket bit trace` option defaults off;
+the exact client binary used for the real trade is unconfirmed. Both packages
+use the earlier protocol `LotusGB-serial-bit-v1` and the same source revision
+plus uncommitted diagnostic changes. They are not compatible with the current
+byte-protocol prototype. The opt-in `Netpacket bit trace` option defaults off;
 the isolated Deck config captures initial INFO/WARN summaries at
 `libretro_log_level = 1`.
 The Mac diagnostic core has since been installed into the standalone

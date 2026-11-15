@@ -84,6 +84,38 @@ void testExternalEdgesRequireActiveExternalClock() {
            "external edge is ignored after transfer-start is cleared");
 }
 
+void testNetworkByteCompletesAtTransferBarrier() {
+    {
+        InterruptRegisters interrupts;
+        DmgSerial serial(interrupts);
+        serial.write(0xFF01, 0xA5);
+        serial.write(0xFF02, 0x80);
+        expect(serial.completeNetworkByte(0x3C),
+               "network byte completes an active external-clock transfer");
+        expect(serial.read(0xFF01) == 0x3C && serial.read(0xFF02) == 0x7E &&
+                   (interrupts.read(0xFF0F) & 8),
+               "network byte stores the peer byte and raises the serial interrupt once");
+        expect(!serial.completeNetworkByte(0xFF),
+               "a network byte is rejected after transfer completion");
+    }
+
+    {
+        InterruptRegisters interrupts;
+        DmgSerial serial(interrupts);
+        serial.write(0xFF01, 0xA5);
+        serial.write(0xFF02, 0x81);
+        serial.setInternalClockCallback([&](bool) {
+            expect(serial.completeNetworkByte(0x3C),
+                   "network byte can complete while an internal-edge callback waits");
+            return false;
+        });
+        serial.advanceTCycles(512);
+        expect(serial.read(0xFF01) == 0x3C && serial.read(0xFF02) == 0x7F &&
+                   (interrupts.read(0xFF0F) & 8),
+               "an already-completed network byte is not shifted a ninth time");
+    }
+}
+
 void testStartDoesNotResetSerialClockPhase() {
     InterruptRegisters interrupts;
     DmgSerial serial(interrupts);
@@ -253,6 +285,7 @@ void testSerialCallbackFailureAndDisconnect() {
 
 int main() {
     testSerialCallbackFailureAndDisconnect();
+    testNetworkByteCompletesAtTransferBarrier();
     testExternalEdgesAndTwoPortExchange();
     testChallengeResponseDistinguishesPeerFromDisconnectedLine();
     testIrregularExternalEdgesAbortAndModeGate();

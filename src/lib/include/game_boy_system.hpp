@@ -106,10 +106,12 @@ public:
     bool isCartridgeRumbleActive() const;
     void setCartridgeRumbleCallback(std::function<void(bool)> callback);
     // Link hosts schedule sampling edges and wire peers; callbacks are not serialized.
+    uint8_t getSerialData() const;
     bool getSerialOutgoingBit() const;
     unsigned getSerialBitsTransferred() const;
     uint8_t getSerialControl();
     void clockSerialExternalBit(bool incomingBit);
+    bool completeSerialNetworkByte(uint8_t incomingByte);
     void setSerialClockCallback(std::function<bool(bool)> callback);
     // CGB IR is level-based: the callback reports whether an external light
     // source is detected when the guest samples FF56. Host wiring is not state.

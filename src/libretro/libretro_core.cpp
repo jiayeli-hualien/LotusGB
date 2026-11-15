@@ -26,6 +26,8 @@
 
 namespace {
 
+constexpr auto kNetpacketByteRetryInterval = std::chrono::milliseconds(125);
+
 using LOTUSGB::GameBoySystem;
 using LOTUSGB::JoypadButton;
 
@@ -52,7 +54,7 @@ bool initializationFaulted = false;
 LOTUSGB::HardwareModel loadedHardwareModel = LOTUSGB::HardwareModel::Dmg;
 const retro_variable CORE_VARIABLES[] = {
     {"lotusgb_model", "Hardware model (reload content); auto|dmg|cgb"},
-    {"lotusgb_netpacket_trace", "Netpacket bit trace (reload content); off|on"},
+    {"lotusgb_netpacket_trace", "Netpacket byte trace (reload content); off|on"},
     {nullptr, nullptr}
 };
 LOTUSGB::HardwareModel selectHardwareModel(const std::vector<uint8_t> &rom) {
@@ -77,7 +79,7 @@ bool selectNetpacketDebugTrace() {
     if (std::strcmp(option.value, "off") == 0)
         return false;
     logMessage(RETRO_LOG_WARN,
-               "Invalid Netpacket bit trace option; using off");
+               "Invalid Netpacket byte trace option; using off");
     return false;
 }
 
@@ -211,13 +213,34 @@ bool netpacketHost = false;
 bool netpacketFailed = false;
 bool netpacketDebugTraceEnabled = false;
 uint32_t netpacketSequence = 0;
-std::optional<std::pair<uint32_t, bool>> netpacketReply;
+struct LinkByteReply {
+    uint32_t sequence = 0;
+    uint32_t peerSequence = 0;
+    uint8_t value = 0xFF;
+    bool accepted = false;
+};
+std::optional<LinkByteReply> netpacketReply;
+uint32_t netpacketLocalTransferSequence = 0;
+uint32_t netpacketLocalPairedPeerSequence = 0;
+uint8_t netpacketLocalOutgoingByte = 0xFF;
+uint8_t netpacketIncomingByte = 0xFF;
+bool netpacketLocalTransferActive = false;
+bool netpacketLocalByteReplyReady = false;
+uint32_t netpacketLastAcceptedPeerRequestSequence = 0;
+uint32_t netpacketLastAcceptedPeerReplyPeerSequence = 0;
+uint8_t netpacketLastAcceptedPeerReplyByte = 0xFF;
+bool netpacketHasAcceptedPeerSequence = false;
+uint32_t netpacketLastLocalTransferSequence = 0;
+uint32_t netpacketLastLocalPairedPeerSequence = 0;
+uint8_t netpacketLastLocalOutgoingByte = 0xFF;
+bool netpacketHasLastLocalTransfer = false;
 struct NetpacketDiagnostics {
     uint64_t requestsSent = 0;
     uint64_t requestsReceived = 0;
     uint64_t repliesReceived = 0;
-    uint64_t externalEdgesAccepted = 0;
-    uint64_t externalEdgesIgnored = 0;
+    uint64_t byteRequestsAccepted = 0;
+    uint64_t byteRequestsRejected = 0;
+    uint64_t duplicateByteRequests = 0;
     uint64_t totalReplyTimeUs = 0;
     uint64_t maxReplyTimeUs = 0;
     uint32_t lastPeerRequestSequence = 0;
@@ -238,40 +261,53 @@ uint64_t netpacketSessionElapsedUs() {
             netpacketDiagnostics.sessionStarted).count());
 }
 
-const char NETPACKET_PROTOCOL_VERSION[] = "LotusGB-serial-bit-v1";
+const char NETPACKET_PROTOCOL_VERSION[] = "LotusGB-serial-byte-v1";
 
-enum class LinkPacketType : uint8_t { BitRequest = 1, BitReply = 2 };
+enum class LinkPacketType : uint8_t { ByteRequest = 1, ByteReply = 2 };
 
-struct LinkPacket {
+struct LinkBytePacket {
     LinkPacketType type;
     uint32_t sequence;
-    bool bit;
+    uint8_t value;
+    bool accepted;
+    uint32_t peerSequence;
 };
 
-std::array<uint8_t, 10> encodeLinkPacket(const LinkPacket &packet) {
+std::array<uint8_t, 15> encodeLinkPacket(const LinkBytePacket &packet) {
     return {'L', 'G', 'B', 'L', static_cast<uint8_t>(packet.type),
-            static_cast<uint8_t>(packet.bit),
+            static_cast<uint8_t>(packet.accepted ? 1 : 0),
             static_cast<uint8_t>(packet.sequence >> 24),
             static_cast<uint8_t>(packet.sequence >> 16),
             static_cast<uint8_t>(packet.sequence >> 8),
-            static_cast<uint8_t>(packet.sequence)};
+            static_cast<uint8_t>(packet.sequence), packet.value,
+            static_cast<uint8_t>(packet.peerSequence >> 24),
+            static_cast<uint8_t>(packet.peerSequence >> 16),
+            static_cast<uint8_t>(packet.peerSequence >> 8),
+            static_cast<uint8_t>(packet.peerSequence)};
 }
 
-std::optional<LinkPacket> decodeLinkPacket(const void *data, size_t size) {
-    if (!data || size != 10)
+std::optional<LinkBytePacket> decodeLinkPacket(const void *data, size_t size) {
+    if (!data || size != 15)
         return std::nullopt;
     const auto *bytes = static_cast<const uint8_t *>(data);
     if (bytes[0] != 'L' || bytes[1] != 'G' || bytes[2] != 'B' ||
         bytes[3] != 'L' || (bytes[4] != 1 && bytes[4] != 2) || bytes[5] > 1)
         return std::nullopt;
-    return LinkPacket{static_cast<LinkPacketType>(bytes[4]),
-                      (static_cast<uint32_t>(bytes[6]) << 24) |
-                          (static_cast<uint32_t>(bytes[7]) << 16) |
-                          (static_cast<uint32_t>(bytes[8]) << 8) | bytes[9],
-                      bytes[5] != 0};
+    const auto type = static_cast<LinkPacketType>(bytes[4]);
+    const bool accepted = bytes[5] != 0;
+    const uint32_t sequence = (static_cast<uint32_t>(bytes[6]) << 24) |
+                              (static_cast<uint32_t>(bytes[7]) << 16) |
+                              (static_cast<uint32_t>(bytes[8]) << 8) | bytes[9];
+    const uint32_t peerSequence = (static_cast<uint32_t>(bytes[11]) << 24) |
+                                  (static_cast<uint32_t>(bytes[12]) << 16) |
+                                  (static_cast<uint32_t>(bytes[13]) << 8) | bytes[14];
+    if ((type == LinkPacketType::ByteRequest && (accepted || peerSequence != 0)) ||
+        (type == LinkPacketType::ByteReply && accepted != (peerSequence != 0)))
+        return std::nullopt;
+    return LinkBytePacket{type, sequence, bytes[10], accepted, peerSequence};
 }
 
-void sendLinkPacket(const LinkPacket &packet) {
+void sendLinkPacket(const LinkBytePacket &packet) {
     if (!netpacketSend)
         throw std::runtime_error("RetroArch Netpacket is not active");
     const auto bytes = encodeLinkPacket(packet);
@@ -287,20 +323,46 @@ void logNetpacketDiagnostics(const char *event) {
         : 0;
     std::snprintf(
         message, sizeof(message),
-        "Netpacket diagnostics (%s, %s): session_us=%llu sent=%llu received=%llu replies=%llu "
-        "accepted_external_edges=%llu ignored_external_edges=%llu "
+        "Netpacket diagnostics (%s, %s): session_us=%llu requests_sent=%llu requests_received=%llu replies=%llu "
+        "bytes_accepted=%llu requests_rejected=%llu duplicate_requests=%llu "
         "avg_reply_us=%llu max_reply_us=%llu pending=%u",
         event, netpacketHost ? "host" : "client",
         static_cast<unsigned long long>(netpacketSessionElapsedUs()),
         static_cast<unsigned long long>(netpacketDiagnostics.requestsSent),
         static_cast<unsigned long long>(netpacketDiagnostics.requestsReceived),
         static_cast<unsigned long long>(netpacketDiagnostics.repliesReceived),
-        static_cast<unsigned long long>(netpacketDiagnostics.externalEdgesAccepted),
-        static_cast<unsigned long long>(netpacketDiagnostics.externalEdgesIgnored),
+        static_cast<unsigned long long>(netpacketDiagnostics.byteRequestsAccepted),
+        static_cast<unsigned long long>(netpacketDiagnostics.byteRequestsRejected),
+        static_cast<unsigned long long>(netpacketDiagnostics.duplicateByteRequests),
         static_cast<unsigned long long>(averageReplyTimeUs),
         static_cast<unsigned long long>(netpacketDiagnostics.maxReplyTimeUs),
         netpacketDiagnostics.pendingSequence);
     logMessage(RETRO_LOG_INFO, message);
+}
+
+bool ensureLocalNetworkTransfer() {
+    if (!emulatorSystem || !(emulatorSystem->getSerialControl() & 0x80))
+        return false;
+    if (!netpacketLocalTransferActive) {
+        netpacketLocalTransferActive = true;
+        netpacketLocalTransferSequence = ++netpacketSequence;
+        netpacketLocalOutgoingByte = emulatorSystem->getSerialData();
+        netpacketLocalByteReplyReady = false;
+        netpacketLocalPairedPeerSequence = 0;
+    }
+    return true;
+}
+
+void finishLocalNetworkTransfer() {
+    if (!netpacketLocalTransferActive)
+        return;
+    netpacketLastLocalTransferSequence = netpacketLocalTransferSequence;
+    netpacketLastLocalPairedPeerSequence = netpacketLocalPairedPeerSequence;
+    netpacketLastLocalOutgoingByte = netpacketLocalOutgoingByte;
+    netpacketHasLastLocalTransfer = true;
+    netpacketLocalTransferActive = false;
+    netpacketLocalByteReplyReady = false;
+    netpacketLocalPairedPeerSequence = 0;
 }
 
 bool exchangeNetworkBit(bool outgoing) {
@@ -309,21 +371,50 @@ bool exchangeNetworkBit(bool outgoing) {
     if (netpacketFailed || !netpacketPollReceive)
         throw std::runtime_error("Link peer disconnected during serial transfer");
 
-    const uint32_t sequence = ++netpacketSequence;
     const uint8_t localSerialControl = emulatorSystem
                                           ? emulatorSystem->getSerialControl()
                                           : 0xFF;
-    const unsigned localBitPosition = emulatorSystem
-                                          ? emulatorSystem->getSerialBitsTransferred() + 1
-                                          : 0;
+    const unsigned localBitsTransferred = emulatorSystem
+                                              ? emulatorSystem->getSerialBitsTransferred()
+                                              : 0;
+    const unsigned localBitPosition = localBitsTransferred + 1;
+    if (localBitPosition > 1) {
+        if (!netpacketLocalByteReplyReady || !netpacketLocalTransferActive)
+            throw std::runtime_error("Missing peer byte during serial transfer");
+        const bool incoming =
+            (netpacketIncomingByte & (0x80u >> (localBitPosition - 1))) != 0;
+        if (netpacketDebugTraceEnabled && logCallback) {
+            char message[224];
+            std::snprintf(message, sizeof(message),
+                          "Serial byte bit: session_us=%llu sequence=%u bit=%u outgoing=%u incoming=%u",
+                          static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                          netpacketLocalTransferSequence, localBitPosition,
+                          outgoing ? 1u : 0u, incoming ? 1u : 0u);
+            logMessage(RETRO_LOG_DEBUG, message);
+        }
+        if (localBitPosition == 8)
+            finishLocalNetworkTransfer();
+        return incoming;
+    }
+
+    if (!ensureLocalNetworkTransfer())
+        throw std::runtime_error("Serial byte request started without an active transfer");
+    const uint32_t sequence = netpacketLocalTransferSequence;
+    const uint8_t outgoingByte = netpacketLocalOutgoingByte;
+    const bool firstBit = (outgoingByte & 0x80) != 0;
+    if (firstBit != outgoing) {
+        logMessage(RETRO_LOG_WARN,
+                   "Serial byte snapshot differs from its first outgoing bit");
+    }
     if (sequence == 1) {
         char message[224];
         std::snprintf(message, sizeof(message),
-                      "First outgoing serial edge: session_us=%llu sequence=%u bit=%u SC=0x%02X "
-                      "transfer_active=%s clock=%s",
+                      "First outgoing serial byte: session_us=%llu sequence=%u SC=0x%02X "
+                      "byte=0x%02X transfer_active=%s clock=%s",
                       static_cast<unsigned long long>(netpacketSessionElapsedUs()),
-                      sequence, localBitPosition,
+                      sequence,
                       static_cast<unsigned>(localSerialControl),
+                      static_cast<unsigned>(outgoingByte),
                       (localSerialControl & 0x80) ? "yes" : "no",
                       (localSerialControl & 1) ? "internal" : "external");
         logMessage(RETRO_LOG_INFO, message);
@@ -331,72 +422,94 @@ bool exchangeNetworkBit(bool outgoing) {
     if ((localSerialControl & 0x81) != 0x81) {
         char message[224];
         std::snprintf(message, sizeof(message),
-                      "Unexpected local serial state: session_us=%llu edge=%u bit=%u SC=0x%02X "
-                      "(expected active internal clock)",
+                      "Unexpected local serial state: session_us=%llu sequence=%u bit=%u SC=0x%02X "
+                      "(expected active internal clock at byte start)",
                       static_cast<unsigned long long>(netpacketSessionElapsedUs()),
                       sequence, localBitPosition,
                       static_cast<unsigned>(localSerialControl));
         logMessage(RETRO_LOG_WARN, message);
     }
-    netpacketReply.reset();
     netpacketDiagnostics.pendingSequence = sequence;
-    ++netpacketDiagnostics.requestsSent;
     const auto requestStarted = std::chrono::steady_clock::now();
-    sendLinkPacket({LinkPacketType::BitRequest, sequence, outgoing});
-    const auto deadline = requestStarted + std::chrono::seconds(2);
-    while (!netpacketReply && !netpacketFailed &&
-           std::chrono::steady_clock::now() < deadline) {
+    const auto deadline = requestStarted + std::chrono::seconds(5);
+    auto nextRetry = requestStarted;
+    while (!netpacketFailed && std::chrono::steady_clock::now() < deadline) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!netpacketReply && now >= nextRetry) {
+            ++netpacketDiagnostics.requestsSent;
+            sendLinkPacket({LinkPacketType::ByteRequest, sequence,
+                            outgoingByte, false, 0});
+            nextRetry = now + kNetpacketByteRetryInterval;
+        }
         netpacketPollReceive();
-        if (!netpacketReply && !netpacketFailed)
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (netpacketFailed)
+            break;
+        if (netpacketReply) {
+            if (netpacketReply->sequence != sequence) {
+                logMessage(RETRO_LOG_WARN,
+                           "Ignoring a serial byte reply for a different transfer");
+                netpacketReply.reset();
+            } else if (!netpacketReply->accepted) {
+                netpacketReply.reset();
+            } else {
+                const LinkByteReply reply = *netpacketReply;
+                netpacketReply.reset();
+                netpacketDiagnostics.pendingSequence = 0;
+                ++netpacketDiagnostics.repliesReceived;
+                const auto replyTimeUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - requestStarted).count());
+                netpacketDiagnostics.totalReplyTimeUs += replyTimeUs;
+                netpacketDiagnostics.maxReplyTimeUs =
+                    std::max(netpacketDiagnostics.maxReplyTimeUs, replyTimeUs);
+                if (emulatorSystem &&
+                    (emulatorSystem->getSerialControl() & 0x80)) {
+                    netpacketIncomingByte = reply.value;
+                    netpacketLocalByteReplyReady = true;
+                    netpacketLocalPairedPeerSequence = reply.peerSequence;
+                } else {
+                    // The peer's simultaneous request may have completed our
+                    // local byte while this request was waiting for its reply.
+                    finishLocalNetworkTransfer();
+                }
+                if (netpacketDebugTraceEnabled && logCallback) {
+                    char message[240];
+                    std::snprintf(message, sizeof(message),
+                                  "Serial byte TX: session_us=%llu sequence=%u local=0x%02X "
+                                  "peer=0x%02X peer_sequence=%u rtt_us=%llu",
+                                  static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                                  sequence, static_cast<unsigned>(outgoingByte),
+                                  static_cast<unsigned>(reply.value), reply.peerSequence,
+                                  static_cast<unsigned long long>(replyTimeUs));
+                    logMessage(RETRO_LOG_DEBUG, message);
+                }
+                if (sequence == 1 || sequence % 16 == 0 || replyTimeUs >= 100000) {
+                    char message[240];
+                    std::snprintf(message, sizeof(message),
+                                  "Serial byte reply: session_us=%llu sequence=%u local=0x%02X "
+                                  "peer=0x%02X rtt_us=%llu",
+                                  static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                                  sequence, static_cast<unsigned>(outgoingByte),
+                                  static_cast<unsigned>(reply.value),
+                                  static_cast<unsigned long long>(replyTimeUs));
+                    logMessage(replyTimeUs >= 100000 ? RETRO_LOG_WARN : RETRO_LOG_INFO,
+                               message);
+                    logNetpacketDiagnostics("serial byte progress");
+                }
+                if (!emulatorSystem ||
+                    !(emulatorSystem->getSerialControl() & 0x80))
+                    return true;
+                return (reply.value & 0x80) != 0;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     if (netpacketFailed)
         throw std::runtime_error("Link peer disconnected during serial transfer");
-    if (!netpacketReply) {
-        logNetpacketDiagnostics("serial reply timeout");
-        throw std::runtime_error("Timed out waiting for a serial link bit");
-    }
-    const auto [replySequence, incoming] = *netpacketReply;
-    if (replySequence != sequence) {
-        logNetpacketDiagnostics("serial reply sequence mismatch");
-        throw std::runtime_error("Serial link reply sequence mismatch");
-    }
     netpacketDiagnostics.pendingSequence = 0;
-    ++netpacketDiagnostics.repliesReceived;
-    const auto replyTimeUs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - requestStarted).count());
-    netpacketDiagnostics.totalReplyTimeUs += replyTimeUs;
-    netpacketDiagnostics.maxReplyTimeUs =
-        std::max(netpacketDiagnostics.maxReplyTimeUs, replyTimeUs);
-    if (netpacketDebugTraceEnabled && logCallback) {
-        char message[256];
-        std::snprintf(message, sizeof(message),
-                      "Serial edge TX: session_us=%llu sequence=%u bit=%u SC=0x%02X outgoing=%u "
-                      "incoming=%u rtt_us=%llu",
-                      static_cast<unsigned long long>(netpacketSessionElapsedUs()),
-                      sequence, localBitPosition,
-                      static_cast<unsigned>(localSerialControl), outgoing ? 1u : 0u,
-                      incoming ? 1u : 0u,
-                      static_cast<unsigned long long>(replyTimeUs));
-        logMessage(RETRO_LOG_DEBUG, message);
-    }
-    const bool logProgress = sequence == 1 || sequence % 64 == 0;
-    const bool logSlowByte = replyTimeUs >= 100000 && sequence % 8 == 0;
-    if (logProgress || logSlowByte) {
-        char message[224];
-        std::snprintf(message, sizeof(message),
-                      "Serial edge reply: session_us=%llu sequence=%u bit=%u rtt_us=%llu incoming=%u",
-                      static_cast<unsigned long long>(netpacketSessionElapsedUs()),
-                      sequence, localBitPosition,
-                      static_cast<unsigned long long>(replyTimeUs),
-                      incoming ? 1u : 0u);
-        logMessage(replyTimeUs >= 100000 ? RETRO_LOG_WARN : RETRO_LOG_INFO,
-                   message);
-        if (sequence % 64 == 0 || logSlowByte)
-            logNetpacketDiagnostics("serial edge progress");
-    }
-    return incoming;
+    logNetpacketDiagnostics("serial byte timeout");
+    finishLocalNetworkTransfer();
+    throw std::runtime_error("Timed out waiting for a peer serial byte");
 }
 
 void netpacketStart(uint16_t clientId, retro_netpacket_send_t send,
@@ -415,12 +528,29 @@ void netpacketStart(uint16_t clientId, retro_netpacket_send_t send,
     netpacketFailed = false;
     netpacketSequence = 0;
     netpacketReply.reset();
+    netpacketLocalTransferSequence = 0;
+    netpacketLocalPairedPeerSequence = 0;
+    netpacketLocalOutgoingByte = 0xFF;
+    netpacketIncomingByte = 0xFF;
+    netpacketLocalTransferActive = false;
+    netpacketLocalByteReplyReady = false;
+    netpacketLastAcceptedPeerRequestSequence = 0;
+    netpacketLastAcceptedPeerReplyPeerSequence = 0;
+    netpacketLastAcceptedPeerReplyByte = 0xFF;
+    netpacketHasAcceptedPeerSequence = false;
+    netpacketLastLocalTransferSequence = 0;
+    netpacketLastLocalPairedPeerSequence = 0;
+    netpacketLastLocalOutgoingByte = 0xFF;
+    netpacketHasLastLocalTransfer = false;
     netpacketDiagnostics = {};
     netpacketDiagnostics.sessionStarted = std::chrono::steady_clock::now();
     netpacketDiagnostics.lastPeerSerialControl = 0xFF;
-    logMessage(RETRO_LOG_INFO, clientId == 0
-        ? "RetroArch serial Netpacket started as host"
-        : "RetroArch serial Netpacket started as client");
+    char startMessage[160];
+    std::snprintf(startMessage, sizeof(startMessage),
+                  "RetroArch serial Netpacket started as %s; protocol=%s",
+                  clientId == 0 ? "host" : "client",
+                  NETPACKET_PROTOCOL_VERSION);
+    logMessage(RETRO_LOG_INFO, startMessage);
 }
 
 void netpacketStop() {
@@ -432,6 +562,8 @@ void netpacketStop() {
     netpacketConnected = false;
     netpacketFailed = true;
     netpacketReply.reset();
+    netpacketLocalTransferActive = false;
+    netpacketLocalByteReplyReady = false;
 }
 
 void netpacketPoll() {
@@ -447,71 +579,115 @@ void netpacketReceive(const void *data, size_t size, uint16_t clientId) {
         return;
 
     try {
-        if (packet->type == LinkPacketType::BitRequest) {
+        if (packet->type == LinkPacketType::ByteRequest) {
             ++netpacketDiagnostics.requestsReceived;
-            if (netpacketDiagnostics.hasPeerRequestSequence &&
-                packet->sequence != netpacketDiagnostics.lastPeerRequestSequence + 1) {
+            auto sendReply = [&](bool accepted, uint8_t value,
+                                 uint32_t peerSequence) {
+                sendLinkPacket({LinkPacketType::ByteReply, packet->sequence,
+                                value, accepted, accepted ? peerSequence : 0});
+            };
+
+            if (netpacketHasAcceptedPeerSequence &&
+                packet->sequence == netpacketLastAcceptedPeerRequestSequence) {
+                ++netpacketDiagnostics.duplicateByteRequests;
+                sendReply(true, netpacketLastAcceptedPeerReplyByte,
+                          netpacketLastAcceptedPeerReplyPeerSequence);
+                return;
+            }
+            const uint32_t expectedPeerSequence = netpacketHasAcceptedPeerSequence
+                ? netpacketLastAcceptedPeerRequestSequence + 1
+                : 1;
+            if (packet->sequence != expectedPeerSequence) {
                 char message[224];
                 std::snprintf(message, sizeof(message),
-                              "Peer serial edge sequence discontinuity: session_us=%llu got=%u expected=%u",
+                              "Peer serial byte sequence discontinuity: session_us=%llu got=%u expected=%u",
                               static_cast<unsigned long long>(netpacketSessionElapsedUs()),
                               packet->sequence,
-                              netpacketDiagnostics.lastPeerRequestSequence + 1);
+                              expectedPeerSequence);
                 logMessage(RETRO_LOG_WARN, message);
+                ++netpacketDiagnostics.byteRequestsRejected;
+                sendReply(false, 0xFF, 0);
+                return;
             }
             netpacketDiagnostics.hasPeerRequestSequence = true;
             netpacketDiagnostics.lastPeerRequestSequence = packet->sequence;
-            const bool outgoing = emulatorSystem
-                                      ? emulatorSystem->getSerialOutgoingBit()
-                                      : true;
             const uint8_t serialControl = emulatorSystem
                                               ? emulatorSystem->getSerialControl()
                                               : 0xFF;
-            const unsigned bitPosition = emulatorSystem
-                                             ? emulatorSystem->getSerialBitsTransferred() + 1
-                                             : 0;
-            const bool externalClock = (serialControl & 1) == 0;
+            const unsigned bitsTransferred = emulatorSystem
+                                                 ? emulatorSystem->getSerialBitsTransferred()
+                                                 : 0;
             const bool transferActive = (serialControl & 0x80) != 0;
-            const bool externalEdgeAccepted = externalClock && transferActive;
+            uint8_t localByte = 0xFF;
+            uint32_t localSequence = 0;
+            bool accepted = false;
+
+            if (transferActive && ensureLocalNetworkTransfer()) {
+                localByte = netpacketLocalOutgoingByte;
+                localSequence = netpacketLocalTransferSequence;
+                if (netpacketLocalByteReplyReady) {
+                    // A crossed request for the same transfer only needs the
+                    // cached byte; its data was already applied locally.
+                    accepted = netpacketLocalPairedPeerSequence == packet->sequence;
+                } else if (netpacketLocalPairedPeerSequence == packet->sequence) {
+                    accepted = true;
+                } else if (bitsTransferred == 0 && emulatorSystem &&
+                           emulatorSystem->completeSerialNetworkByte(packet->value)) {
+                    netpacketLocalPairedPeerSequence = packet->sequence;
+                    accepted = true;
+                    finishLocalNetworkTransfer();
+                }
+            } else if (netpacketHasLastLocalTransfer &&
+                       netpacketLastLocalPairedPeerSequence == packet->sequence) {
+                // A duplicate can arrive after this side has completed its
+                // byte and moved on from the active SC state.
+                localByte = netpacketLastLocalOutgoingByte;
+                localSequence = netpacketLastLocalTransferSequence;
+                accepted = true;
+            }
+
+            if (accepted) {
+                ++netpacketDiagnostics.byteRequestsAccepted;
+                netpacketHasAcceptedPeerSequence = true;
+                netpacketLastAcceptedPeerRequestSequence = packet->sequence;
+                netpacketLastAcceptedPeerReplyPeerSequence = localSequence;
+                netpacketLastAcceptedPeerReplyByte = localByte;
+            } else {
+                ++netpacketDiagnostics.byteRequestsRejected;
+            }
+
             if (netpacketDebugTraceEnabled && logCallback) {
                 char message[256];
                 std::snprintf(message, sizeof(message),
-                              "Serial edge RX: session_us=%llu sequence=%u bit=%u SC=0x%02X "
-                              "peer_outgoing=%u local_outgoing=%u shift=%s",
+                              "Serial byte RX: session_us=%llu peer_sequence=%u local_sequence=%u "
+                              "peer=0x%02X local=0x%02X SC=0x%02X bits=%u accepted=%s",
                               static_cast<unsigned long long>(netpacketSessionElapsedUs()),
-                              packet->sequence, bitPosition,
-                              static_cast<unsigned>(serialControl),
-                              packet->bit ? 1u : 0u, outgoing ? 1u : 0u,
-                              externalEdgeAccepted ? "yes" : "no");
+                              packet->sequence, localSequence,
+                              static_cast<unsigned>(packet->value),
+                              static_cast<unsigned>(localByte),
+                              static_cast<unsigned>(serialControl), bitsTransferred,
+                              accepted ? "yes" : "no");
                 logMessage(RETRO_LOG_DEBUG, message);
             }
-            if (externalEdgeAccepted)
-                ++netpacketDiagnostics.externalEdgesAccepted;
-            else
-                ++netpacketDiagnostics.externalEdgesIgnored;
-            if (packet->sequence == 1 ||
-                serialControl != netpacketDiagnostics.lastPeerSerialControl) {
-                char message[256];
+            if (!accepted && (netpacketDiagnostics.byteRequestsRejected == 1 ||
+                              netpacketDiagnostics.byteRequestsRejected % 32 == 0)) {
+                char message[224];
                 std::snprintf(message, sizeof(message),
-                              "Incoming peer edge: session_us=%llu sequence=%u bit=%u SC=0x%02X "
-                              "transfer_active=%s clock=%s edge_will_shift=%s",
+                              "Peer serial byte not ready: session_us=%llu sequence=%u SC=0x%02X bits=%u",
                               static_cast<unsigned long long>(netpacketSessionElapsedUs()),
-                              packet->sequence, bitPosition,
-                              static_cast<unsigned>(serialControl),
-                              transferActive ? "yes" : "no",
-                              externalClock ? "external" : "internal",
-                              externalEdgeAccepted ? "yes" : "no");
-                logMessage(externalEdgeAccepted ? RETRO_LOG_INFO : RETRO_LOG_WARN,
-                           message);
-                netpacketDiagnostics.lastPeerSerialControl = serialControl;
+                              packet->sequence, static_cast<unsigned>(serialControl),
+                              bitsTransferred);
+                logMessage(RETRO_LOG_INFO, message);
             }
-            if (emulatorSystem)
-                emulatorSystem->clockSerialExternalBit(packet->bit);
-            if (packet->sequence == 1)
-                logMessage(RETRO_LOG_INFO, "Received the first remote serial edge");
-            sendLinkPacket({LinkPacketType::BitReply, packet->sequence, outgoing});
+            if (accepted && packet->sequence == 1)
+                logMessage(RETRO_LOG_INFO, "Accepted the first peer serial byte");
+            sendReply(accepted, localByte, localSequence);
         } else {
-            netpacketReply = std::make_pair(packet->sequence, packet->bit);
+            if (packet->sequence == netpacketDiagnostics.pendingSequence)
+                netpacketReply = LinkByteReply{packet->sequence,
+                                               packet->peerSequence,
+                                               packet->value,
+                                               packet->accepted};
         }
     } catch (...) {
         netpacketFailed = true;
@@ -1233,7 +1409,7 @@ static bool loadContent(const retro_game_info *game, const retro_game_info *seco
         emulationFaulted = false;
         if (netpacketDebugTraceEnabled)
             logMessage(RETRO_LOG_INFO,
-                       "Netpacket per-bit DEBUG trace is enabled for this content");
+                       "Netpacket byte DEBUG trace is enabled for this content");
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());
         return false;

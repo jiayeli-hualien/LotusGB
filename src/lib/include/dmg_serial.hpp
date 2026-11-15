@@ -24,9 +24,13 @@ public:
     void advanceTCycles(uint64_t tCycles) override;
     // Logical next outgoing bit (SB bit 7), not an electrical line model.
     bool getOutgoingBit() const;
+    uint8_t getData() const;
     unsigned getBitsTransferred() const;
     // One externally supplied sampling edge; ignored unless external transfer is armed.
     void clockExternalBit(bool incomingBit);
+    // Netpacket can complete an active byte transfer atomically at a byte barrier.
+    // This is separate from the hardware-timed external edge path above.
+    bool completeNetworkByte(uint8_t incomingByte);
     // Called once per internal sampling edge with outgoing bit; returns incoming bit.
     // Empty restores the disconnected incoming-high behavior. Host wiring is not state.
     void setInternalClockCallback(std::function<bool(bool)> callback);
