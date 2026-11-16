@@ -605,6 +605,20 @@ longer delays. The successful 200 ms run is still a same-VM synthetic probe
 through a user-space TCP bridge; it does not establish WAN gameplay or
 packet-level jitter/loss behavior.
 
+A subsequent attempt on 2026-11-17 tried to repeat the bounded 16-byte probe
+through RetroArch's public relay, using two Ubuntu RetroArch 1.18.0 processes
+and the same synthetic ROMs. Both TCP connections reached the relay and the
+host logged a completed tunnel link, but RetroArch did not establish a Netplay
+peer: the client log reported `Incorrect password` and the host reported
+`Failed to receive netplay password`. The host, client and temporary password
+file contained identical values (checked without exposing the password), so
+the cause in the CLI relay/password handshake remains unresolved. Neither core
+received a peer serial byte; the SRAM verifiers correctly failed their
+completion checks. Both processes were stopped and the public room disappeared
+from the lobby. This attempt provides no evidence about 16-byte transport over
+the relay; it is separate from the passing same-VM direct and delayed tests and
+the earlier one-byte relay probe.
+
 The matching synthetic frontend probe artifacts are ready under the ignored
 build directory: the Mac host bundle is
 `build/serial-stream-v1-16byte/`, and the stable Steam Deck archive is
