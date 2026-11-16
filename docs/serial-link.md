@@ -663,3 +663,17 @@ The verifier fixture passed for both roles and correctly rejected one
 corrupted received byte. The 16-byte RetroArch frontend exchange has since
 passed on two Ubuntu processes; the prepared Mac and Steam Deck bundles remain
 available for cross-device GUI validation.
+
+A further Mac-to-Ubuntu frontend attempt on 2026-11-17 did not reach Netplay.
+The isolated Ubuntu RetroArch 1.18.0 host listened on TCP port 55494 and shut
+down normally with zero serial bytes sent, received or paired. On the Mac,
+directly invoking the standalone RetroArch executable reproduced `SIGABRT`
+during AppKit/HIServices application registration. `open -a` returned
+Launch Services error `kLSNoExecutableErr`; checking the installed app also
+reported an invalid code signature. A temporary copy was ad-hoc signed and
+verified, but Launch Services returned the same error for that copy. Thus no
+Mac core or client ROM loaded in this attempt, and it provides no evidence
+about cross-device serial transport. The blocker is opening RetroArch from the
+Codex-launched process context; it must be started in the interactive desktop
+session before this frontend test can continue. All test files and logs stayed
+outside the repository.
