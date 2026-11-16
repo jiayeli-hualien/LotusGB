@@ -13,15 +13,27 @@ def write_sram_marker(program: bytearray, marker: int, address: int) -> None:
     program.extend((0x3E, marker, 0xEA, address & 0xFF, address >> 8))
 
 
+def write_button_gate(program: bytearray) -> None:
+    # Wait for Game Boy A after the peer has joined the Netplay room.
+    # JOYP bit 5 low selects action buttons; A is active-low bit 0.
+    program.extend((
+        0x3E, 0x10, 0xE0, 0x00,  # Select action buttons at JOYP ($FF00).
+        0xF0, 0x00,              # Wait for A (JOYP bit 0 becomes zero).
+        0xCB, 0x47,              # BIT 0, A.
+        0x20, 0xFA,              # JR NZ, back to LDH A, ($FF00).
+        0x3E, 0x30, 0xE0, 0x00,  # Deselect both button groups.
+    ))
+
+
 def make_rom(role: str, client_start: str = "auto",
-             transfer_count: int = 1) -> bytes:
+             transfer_count: int = 1, host_start: str = "auto") -> bytes:
     if not 1 <= transfer_count <= 16:
         raise ValueError("transfer count must be between 1 and 16")
     if role == "host":
         outgoing = 0xA5
         # The host arms an external-clock transfer and waits for its peer.
         control = 0x80
-        title = b"LGB NET HOST"
+        title = b"LGB NET READY" if host_start == "button" else b"LGB NET HOST"
     elif role == "client":
         outgoing = 0x3C
         # The client starts the clock after a delay or an explicit A press.
@@ -31,6 +43,8 @@ def make_rom(role: str, client_start: str = "auto",
         raise ValueError(f"unsupported probe role: {role}")
     if client_start not in ("auto", "button"):
         raise ValueError(f"unsupported client start mode: {client_start}")
+    if host_start not in ("auto", "button"):
+        raise ValueError(f"unsupported host start mode: {host_start}")
 
     rom = bytearray(ROM_SIZE)
     rom[0x100:0x103] = bytes((0xC3, PROGRAM_ADDRESS & 0xFF,
@@ -46,17 +60,10 @@ def make_rom(role: str, client_start: str = "auto",
         0x3E, 0x0A, 0xEA, 0x00, 0x00,  # Enable cartridge SRAM.
     ))
     write_sram_marker(program, 0x11, 0xA010)  # Entered program.
-    if role == "client" and client_start == "button":
-        # Wait for Game Boy A after the client has joined the Netplay room.
-        # JOYP bit 5 low selects action buttons; A is active-low bit 0.
-        program.extend((
-            0x3E, 0x10, 0xE0, 0x00,  # Select action buttons at JOYP ($FF00).
-            0xF0, 0x00,              # Wait for A (JOYP bit 0 becomes zero).
-            0xCB, 0x47,              # BIT 0, A.
-            0x20, 0xFA,              # JR NZ, back to LDH A, ($FF00).
-            0x3E, 0x30, 0xE0, 0x00,  # Deselect both button groups.
-        ))
-    elif client_start == "auto" or role == "host":
+    start_mode = client_start if role == "client" else host_start
+    if start_mode == "button":
+        write_button_gate(program)
+    else:
         # Keep automatic probes for direct-IP launches and unattended tests.
         # This 250 ms delay is only a settling aid, not a join-state check.
         program.extend((
@@ -108,6 +115,10 @@ def main() -> int:
         help="start the client automatically after a short delay, or wait for Game Boy A",
     )
     parser.add_argument(
+        "--host-start", choices=("auto", "button"), default="auto",
+        help="start the host automatically after a short delay, or wait for Game Boy A",
+    )
+    parser.add_argument(
         "--transfers", type=int, choices=range(1, 17), default=1,
         metavar="1..16", help="number of ordered serial-byte pairs to probe",
     )
@@ -116,7 +127,8 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     for role in ("host", "client"):
         path = output_dir / f"{role}.gb"
-        path.write_bytes(make_rom(role, args.client_start, args.transfers))
+        path.write_bytes(make_rom(role, args.client_start, args.transfers,
+                                  args.host_start))
         print(path)
     return 0
 

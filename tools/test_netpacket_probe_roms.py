@@ -37,7 +37,8 @@ def main() -> int:
         rom_dir = root / "roms"
         subprocess.run(
             [sys.executable, str(args.generator), str(rom_dir),
-             "--client-start", "button", "--transfers", "16"],
+             "--client-start", "button", "--host-start", "button",
+             "--transfers", "16"],
             check=True, capture_output=True, text=True,
         )
         client_rom = rom_dir / "client.gb"
@@ -64,6 +65,23 @@ def main() -> int:
             "client did not store each received byte in order"
         )
 
+        host_rom = rom_dir / "host.gb"
+        host_before_input = run_probe(
+            args.runner, args.core, host_rom, 12, root, "host-before-input")
+        assert host_before_input[0x10] == 0x11, "host ROM did not reach its input gate"
+        assert host_before_input[0x11] != 0x22, "host started before Game Boy A was pressed"
+        assert host_before_input[0x12] != 0x33 and host_before_input[0x13] != 0x44, (
+            "host unexpectedly completed a transfer before input"
+        )
+
+        host_after_input = run_probe(
+            args.runner, args.core, host_rom, 48, root, "host-after-input",
+            input_script, root / "host-before-input.srm")
+        assert host_after_input[0x11] == 0x22, "Game Boy A did not start the host transfer"
+        assert host_after_input[0x12] != 0x33 and host_after_input[0x13] != 0x44, (
+            "host without a peer unexpectedly completed its external-clock transfer"
+        )
+
         auto_dir = root / "auto"
         subprocess.run(
             [sys.executable, str(args.generator), str(auto_dir),
@@ -80,7 +98,7 @@ def main() -> int:
             "automatic client mode did not complete its ordered transfer sequence"
         )
 
-    print("Netpacket probe ROMs: PASS (button gate, 16 transfers, auto mode)")
+    print("Netpacket probe ROMs: PASS (host/client button gates, 16 transfers, auto mode)")
     return 0
 
 

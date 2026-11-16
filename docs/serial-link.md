@@ -549,16 +549,17 @@ successful SRAM writes on normal exit and both save-file timestamps advanced.
 Together with the earlier manual Red/Blue trade, this verifies trade
 persistence for those saves; it does not establish battle-state synchronization.
 
-On 2026-11-17, the original probe-ROM generator gained a client start gate
-(`--client-start button`) and a bounded transfer count (`--transfers 1..16`).
-The gated client waits for the mapped Game Boy A input, allowing a GUI user to
-join the RetroArch room before starting serial traffic; the default automatic
-mode remains available for direct-IP launches. The full `make test` suite
-passed with a new ROM-runner check: the gated client sends no byte before
-input, then completes and stores 16 standalone serial bytes in order; the
-check also confirmed that automatic mode still completes without input. This
-checks the generated ROM and local serial behavior, not a 16-byte Netpacket
-frontend session.
+On 2026-11-17, the original probe-ROM generator gained independent host and
+client start gates (`--host-start button`, `--client-start button`) and a
+bounded transfer count (`--transfers 1..16`). Either side can wait for the
+mapped Game Boy A input so both peers can join the RetroArch room before
+starting serial traffic; automatic mode remains the default for direct-IP
+launches. The full `make test` suite passed with ROM-runner checks: neither
+gated role starts before input, the client then completes and stores 16
+standalone serial bytes in order, and the host starts an external-clock
+transfer but remains pending without a peer. Automatic client mode still
+completes without input. These checks cover generated ROMs and local serial
+behavior, not a 16-byte Netpacket frontend session.
 
 On 2026-11-17, two Ubuntu RetroArch 1.18.0 processes using the same LotusGB core
 then completed the bounded 16-byte probe over a direct local Netplay connection.
@@ -621,6 +622,20 @@ CPU-bound on its VM. This is an incomplete diagnostic run rather than a clean
 LAN reliability or latency result. It does show that the Mac client continued
 advancing through several transfers while RetroArch was unfocused with
 `pause_nonactive = false`; it does not establish completion of the byte stream.
+
+After adding the host start gate, a second direct Ubuntu 1.18.0 host / Mac
+1.22.2 client run joined successfully at 52 ms reported Netplay ping. Both
+peers were released after joining, but the run still ended early: the host
+reported four paired bytes and timed out at sequence 5; the Mac log showed
+sequence 3 paired and sequence 4 started. The 16-byte SRAM check was not
+completed. A separate same-Mac loopback attempt with two RetroArch 1.22.2
+processes also joined and the client paired its first byte, then started
+sequence 2 without completing the full stream. The two sides reported
+inconsistent initial Netplay ping values (5000 ms host-side and 234 ms
+client-side), and no 16-byte SRAM verification was run. Both are incomplete
+frontend probes; neither establishes multi-byte LAN stability. They leave
+frontend pacing, unfocused execution during Netplay, and peer timing as open
+diagnostic questions.
 
 A subsequent attempt on 2026-11-17 tried to repeat the bounded 16-byte probe
 through RetroArch's public relay, using two Ubuntu RetroArch 1.18.0 processes
