@@ -6,23 +6,26 @@ two-system CPU tests cover byte exchange, serial IRQ/HALT wake and paired
 partial-transfer snapshot replay. The libretro core provides a local two-ROM
 subsystem. On 2026-11-16, the user reported one successful, crash-free
 stream-v1 LAN trade between Pokémon Red (USA) on Mac and Pokémon Blue (USA) on
-Steam Deck. On 2026-11-17, the user reopened the Deck's isolated Blue save in
-Steam RetroArch 1.22.2; the frontend log confirms the Blue ROM and isolated
-SRAM path were loaded, and the user reports the saved game and current traded
-party/Pokédex state remain intact. The last operation had traded Squirtle
-back. Reopening the Mac Red stream-v1 save in-game remains to be verified. The
-user also tried a link battle. Both games displayed “You Win,” then the user
-observed that Mac's Charmander had fainted while the Deck game still treated
-it as alive. Captured session logs show both endpoints paired through transfer
-3202 with no sequence errors or duplicate peer bytes; the Deck had started
-transfer 3203 and was still waiting for the host byte after a five-second
-diagnostic timeout. This shows the next byte had not arrived at the client
-when sampled, but does not establish whether game protocol, different local
-progress, or another timing factor caused the battle-state divergence.
-Physical cables and accessories are also pending. CGB infrared peer behavior
-has a separate
+Steam Deck. On 2026-11-17, both isolated save files were reopened through Steam
+RetroArch 1.22.2. The Deck log confirms the Blue ROM and isolated SRAM path;
+the Mac log confirms the Red ROM, selected LotusGB core and isolated SRAM path.
+The user reports the last return trade persisted on both sides: Red's
+Charmander and Blue's Squirtle returned to their respective games and remain
+in the party or Pokédex. Both games exited normally; each frontend log records
+a successful SRAM write to its isolated file, and both file timestamps
+advanced after exit. This verifies both in-game readbacks for this ROM pair,
+not broad
+compatibility. The user also tried a link battle. Both games displayed “You
+Win,” then the user observed that Mac's Charmander had fainted while the Deck
+game still treated it as alive. Captured session logs show both endpoints
+paired through transfer 3202 with no sequence errors or duplicate peer bytes;
+the Deck had started transfer 3203 and was still waiting for the host byte
+after a five-second diagnostic timeout. This shows the next byte had not
+arrived at the client when sampled, but does not establish whether game
+protocol, different local progress, or another timing factor caused the
+battle-state divergence. Physical cables and accessories are also pending.
+CGB infrared peer behavior has a separate
 [level-based interface and evidence](cgb-infrared.md).
-
 ## Network-mode fidelity contract
 
 The network link mode prioritizes ordered game data and a responsive frontend;
@@ -293,11 +296,15 @@ not yet being available at that sample, not proof of the underlying cause.
 These observations demonstrate one ROM pair and session, not broad game
 compatibility. Both RetroArch instances were still open when the isolated SRAM
 files were sampled. After the later normal shutdown, both save files were
-updated on disk, confirming frontend flush. On 2026-11-17 the user reopened the
-Deck Blue save in Steam RetroArch 1.22.2. Its log confirmed the isolated SRAM
-redirect, and the user reported that the saved game and current traded
-party/Pokédex state remained intact (the last operation had returned Squirtle).
-The corresponding Mac Red in-game reload remains unverified.
+updated on disk, confirming frontend flush. On 2026-11-17 the user reopened
+both isolated saves through Steam RetroArch 1.22.2. The logs confirm the
+selected Red/Blue content and isolated SRAM redirects. The user reports the
+last return trade loaded correctly: Charmander was back in Red and Squirtle
+was back in Blue, with the current party/Pokédex state retained. Both
+frontends exited normally; their logs show successful SRAM writes to their
+isolated files, and both modification times advanced after exit. This is one
+game-level readback on each side, by user report, not a broad compatibility
+claim.
 
 ### Gen I Pokémon link-battle synchronization
 
