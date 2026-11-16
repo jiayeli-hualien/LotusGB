@@ -6,17 +6,21 @@ two-system CPU tests cover byte exchange, serial IRQ/HALT wake and paired
 partial-transfer snapshot replay. The libretro core provides a local two-ROM
 subsystem. On 2026-11-16, the user reported one successful, crash-free
 stream-v1 LAN trade between Pokémon Red (USA) on Mac and Pokémon Blue (USA) on
-Steam Deck. The user also tried a link battle. Both games displayed “You Win,”
-then the user observed that Mac's Charmander had fainted while the Deck game
-still treated it as alive. Captured session logs show both endpoints paired
-through transfer 3202 with no sequence errors or duplicate peer bytes; the
-Deck had started transfer 3203 and was still waiting for the host byte after a
-five-second diagnostic timeout. This shows the next byte had not arrived at
-the client when sampled, but does not establish whether game protocol,
-different local progress, or another timing factor caused the battle-state
-divergence. Save persistence after a normal frontend exit and reload remains
-to be verified. Physical cables and accessories are also pending. CGB infrared
-peer behavior has a separate
+Steam Deck. On 2026-11-17, the user reopened the Deck's isolated Blue save in
+Steam RetroArch 1.22.2; the frontend log confirms the Blue ROM and isolated
+SRAM path were loaded, and the user reports the saved game and current traded
+party/Pokédex state remain intact. The last operation had traded Squirtle
+back. Reopening the Mac Red stream-v1 save in-game remains to be verified. The
+user also tried a link battle. Both games displayed “You Win,” then the user
+observed that Mac's Charmander had fainted while the Deck game still treated
+it as alive. Captured session logs show both endpoints paired through transfer
+3202 with no sequence errors or duplicate peer bytes; the Deck had started
+transfer 3203 and was still waiting for the host byte after a five-second
+diagnostic timeout. This shows the next byte had not arrived at the client
+when sampled, but does not establish whether game protocol, different local
+progress, or another timing factor caused the battle-state divergence.
+Physical cables and accessories are also pending. CGB infrared peer behavior
+has a separate
 [level-based interface and evidence](cgb-infrared.md).
 
 ## Network-mode fidelity contract
@@ -289,8 +293,11 @@ not yet being available at that sample, not proof of the underlying cause.
 These observations demonstrate one ROM pair and session, not broad game
 compatibility. Both RetroArch instances were still open when the isolated SRAM
 files were sampled. After the later normal shutdown, both save files were
-updated on disk, confirming frontend flush; loading those files in the games
-and checking the traded party/Pokédex entries remains unverified.
+updated on disk, confirming frontend flush. On 2026-11-17 the user reopened the
+Deck Blue save in Steam RetroArch 1.22.2. Its log confirmed the isolated SRAM
+redirect, and the user reported that the saved game and current traded
+party/Pokédex state remained intact (the last operation had returned Squirtle).
+The corresponding Mac Red in-game reload remains unverified.
 
 ### Gen I Pokémon link-battle synchronization
 
