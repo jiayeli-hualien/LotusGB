@@ -47,13 +47,15 @@ $(build_dir)/lotusgb_libretro.info: $(core_info) | $(build_dir)
 
 $(build_dir)/libretro_core_test: libretro_core_test.cpp libretro_core.cpp \
 		$(core_sources) $(core_headers) $(libretro_header) $(libretro_headers) $(generated_tables) $(test_fixtures) | $(build_dir)
-	$(CXX) $(CPPFLAGS) -DLOTUSGB_LIBRETRO_TEST_ASSET_DIR=\"$(asset_dir)\" \
+	$(CXX) $(CPPFLAGS) -DLOTUSGB_LIBRETRO_TEST_TIMEOUT_MS=250 \
+		-DLOTUSGB_LIBRETRO_TEST_ASSET_DIR=\"$(asset_dir)\" \
 		-o $@ libretro_core_test.cpp libretro_core.cpp $(core_sources)
 
 # Fixed-step diagnostic executable, never installed as the ordinary core.
 $(build_dir)/libretro_fixed_input_test: libretro_core_test.cpp libretro_core.cpp \
 		$(core_sources) $(core_headers) $(libretro_header) $(libretro_headers) $(generated_tables) $(test_fixtures) | $(build_dir)
 	$(CXX) $(CPPFLAGS) -DLOTUSGB_TEST_FIXED_FRAME_STEP \
+		-DLOTUSGB_LIBRETRO_TEST_TIMEOUT_MS=250 \
 		-DLOTUSGB_LIBRETRO_TEST_ASSET_DIR=\"$(asset_dir)\" \
 		-o $@ libretro_core_test.cpp libretro_core.cpp $(core_sources)
 

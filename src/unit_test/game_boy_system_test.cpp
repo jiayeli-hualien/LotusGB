@@ -758,6 +758,35 @@ void testDisconnectedSerialWakesHaltAndRunsHandler() {
            "serial byte completes at the normal DMG clock rate while CPU is halted");
 }
 
+void testSerialDiagnosticStateCapturesCpuAndInterruptRegisters() {
+    std::vector<uint8_t> rom(0x8000, 0);
+    const uint8_t program[] = {
+        0x3E, 0xA5,             // LD A, $A5
+        0xE0, 0x01,             // SB = $A5
+        0x3E, 0x81,             // A = internal-clock transfer start
+        0xE0, 0x02,             // SC = $81
+        0x3E, 0x08,             // A = serial IF bit
+        0xE0, 0x0F,             // IF = $08
+        0x18, 0xFE,             // JR $ (keep the transfer pending)
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin());
+
+    auto system = GameBoySystem::createForTest(std::move(rom));
+    for (unsigned cycle = 0; cycle < 32; ++cycle)
+        expect(system.stepOneCycle().success,
+               "serial diagnostic fixture reaches its pending transfer");
+
+    const SerialDiagnosticState state = system.getSerialDiagnosticState();
+    expect(state.elapsedTCycles > 0 && state.programCounter > 0,
+           "serial diagnostic snapshot reports elapsed system time and CPU PC");
+    expect(state.serialData == 0xA5 && (state.serialControl & 0x81) == 0x81,
+           "serial diagnostic snapshot reports SB and active internal-clock SC");
+    expect((state.interruptFlags & 0x08) != 0 && state.interruptEnable == 0,
+           "serial diagnostic snapshot reports IF separately from IE");
+    expect(!state.halted && !state.stopped,
+           "serial diagnostic snapshot reports CPU run state");
+}
+
 void testSerialClockIsIndependentOfDividerWrites() {
     std::vector<uint8_t> rom(0x8000, 0);
     const uint8_t program[] = {
@@ -1040,6 +1069,7 @@ int main() {
     testLycZeroHandlerRunsBeforeVblankEnds();
     testVblankInterruptWakesHaltAndRunsHandler();
     testDisconnectedSerialWakesHaltAndRunsHandler();
+    testSerialDiagnosticStateCapturesCpuAndInterruptRegisters();
     testSerialClockIsIndependentOfDividerWrites();
     testCpuRunsHramDmaRoutineAndReturnsToRom();
     testPostBootInterruptsWaitForEi();

@@ -135,7 +135,6 @@ void frontendLog(retro_log_level level, const char *format, ...) {
 const retro_subsystem_info *linkSubsystem = nullptr;
 const retro_netpacket_callback *netpacketInterface = nullptr;
 unsigned mockSerialRequests = 0;
-unsigned mockSerialReplies = 0;
 unsigned mockDisconnectPolls = 0;
 int processNetpacketSocket = -1;
 uint16_t processNetpacketPeerId = 0;
@@ -152,22 +151,15 @@ void mockNetpacketSend(int flags, const void *data, size_t size, uint16_t client
     expect((flags & RETRO_NETPACKET_RELIABLE) != 0 &&
            (flags & RETRO_NETPACKET_FLUSH_HINT) != 0 &&
            clientId == RETRO_NETPACKET_BROADCAST,
-           "serial link sends reliable broadcast packets immediately");
+           "serial link sends reliable broadcast byte packets immediately");
     const auto *request = static_cast<const uint8_t *>(data);
     expect(size == 15, "core sends a fifteen-byte serial packet");
-    if (request[4] == 1) {
-        ++mockSerialRequests;
-        std::array<uint8_t, 15> response{};
-        std::copy(request, request + size, response.begin());
-        response[4] = 2;
-        response[5] = 1;
-        response[10] = 0x3C;
-        std::copy(request + 6, request + 10, response.begin() + 11);
-        netpacketInterface->receive(response.data(), response.size(), 0);
-    } else {
-        expect(request[4] == 2, "core sends only known serial packet types");
-        ++mockSerialReplies;
-    }
+    expect(request[4] == 3, "core sends only versioned peer-byte packets");
+    ++mockSerialRequests;
+    std::array<uint8_t, 15> peerByte{};
+    std::copy(request, request + size, peerByte.begin());
+    peerByte[10] = 0x3C;
+    netpacketInterface->receive(peerByte.data(), peerByte.size(), 0);
 }
 
 void mockNetpacketPollReceive() {}
@@ -177,8 +169,8 @@ void mockNetpacketSendWithoutReply(int flags, const void *data, size_t size,
     expect((flags & RETRO_NETPACKET_RELIABLE) != 0 &&
                (flags & RETRO_NETPACKET_FLUSH_HINT) != 0 &&
                clientId == RETRO_NETPACKET_BROADCAST && data && size == 15 &&
-               static_cast<const uint8_t *>(data)[4] == 1,
-           "host starts the expected reliable serial byte request before disconnect");
+               static_cast<const uint8_t *>(data)[4] == 3,
+           "host publishes its local serial byte before disconnect");
     ++mockSerialRequests;
 }
 
@@ -2346,7 +2338,8 @@ void testLibretroNetpacketSerialExchange() {
     expect(netpacketInterface && netpacketInterface->start &&
            netpacketInterface->receive && netpacketInterface->stop &&
            netpacketInterface->poll && netpacketInterface->protocol_version &&
-           std::string(netpacketInterface->protocol_version) == "LotusGB-serial-byte-v1",
+           std::string(netpacketInterface->protocol_version) ==
+               "LotusGB-serial-stream-v1",
            "core registers a versioned RetroArch Netpacket interface");
     netpacketTraceOption = "off";
     logMessages.clear();
@@ -2370,7 +2363,7 @@ void testLibretroNetpacketSerialExchange() {
     netpacketInterface->start(1, mockNetpacketSend, mockNetpacketPollReceive);
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
                return message.find(
-                   "RetroArch serial Netpacket started as client; protocol=LotusGB-serial-byte-v1") !=
+                   "RetroArch serial Netpacket started as client; protocol=LotusGB-serial-stream-v1") !=
                    std::string::npos;
            }),
            "Netpacket startup log identifies the client protocol version");
@@ -2379,7 +2372,7 @@ void testLibretroNetpacketSerialExchange() {
     expect(mockSerialRequests == 1 && saveRam && saveRam[0] == 0x3C,
            "one reliable Netpacket exchange delivers a complete peer byte to the game");
     expect(std::none_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
-               return message.find("Serial byte TX:") != std::string::npos;
+               return message.find("Serial byte pair:") != std::string::npos;
            }),
            "per-byte Netpacket logging stays disabled by default");
     netpacketInterface->stop();
@@ -2392,10 +2385,29 @@ void testLibretroNetpacketSerialExchange() {
     mockSerialRequests = 0;
     netpacketInterface->start(1, mockNetpacketSend, mockNetpacketPollReceive);
     retro_run();
+    const auto hasInfoSerialState = [](const char *event) {
+        const std::string prefix = std::string("Serial state (") + event + ")";
+        for (size_t index = 0; index < logMessages.size(); ++index) {
+            const std::string &message = logMessages[index];
+            if (logLevels[index] != RETRO_LOG_INFO ||
+                message.find(prefix) == std::string::npos)
+                continue;
+            const char *fields[] = {"cpu_tcycles=", "PC=", "SB=", "SC=",
+                                    "IF=", "IE=", "IME=", "HALT=", "STOP="};
+            return std::all_of(std::begin(fields), std::end(fields),
+                               [&message](const char *field) {
+                                   return message.find(field) != std::string::npos;
+                               });
+        }
+        return false;
+    };
+    expect(hasInfoSerialState("transfer-start") &&
+               hasInfoSerialState("after-byte-pair"),
+           "opt-in Netpacket trace records CPU and serial state before and after byte pairing at INFO level");
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
-               return message.find("Serial byte TX:") != std::string::npos;
+               return message.find("Serial byte pair:") != std::string::npos;
            }) && std::find(logLevels.begin(), logLevels.end(), RETRO_LOG_DEBUG) != logLevels.end(),
-           "opt-in Netpacket trace records byte data at DEBUG level");
+           "opt-in Netpacket trace also records detailed paired-byte data at DEBUG level");
     netpacketInterface->stop();
     retro_unload_game();
     netpacketTraceOption = "off";
@@ -2411,6 +2423,10 @@ void testLibretroNetpacketExternalEdgeDiagnostics() {
         0x3E, 0x80, 0xE0, 2,          // Start external-clock transfer.
         0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
         0xF0, 1, 0xEA, 0, 0xA0,       // Store the received byte.
+        0x3E, 0x00, 0xE0, 1,          // Prepare a second byte.
+        0x3E, 0x80, 0xE0, 2,          // Start the next external transfer.
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 1, 0xA0,       // Store the queued peer byte.
         0x18, 0xFE,
     };
     std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
@@ -2421,40 +2437,47 @@ void testLibretroNetpacketExternalEdgeDiagnostics() {
     logLevels.clear();
     expect(retro_load_game(&game), "external-clock diagnostic ROM loads");
     mockSerialRequests = 0;
-    mockSerialReplies = 0;
-    netpacketInterface->start(1, mockNetpacketSend, mockNetpacketPollReceive);
+    netpacketInterface->start(1, mockNetpacketSendWithoutReply,
+                              mockNetpacketPollReceive);
     retro_run();
 
-    const std::array<uint8_t, 15> request{
-        'L', 'G', 'B', 'L', 1, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
-    netpacketInterface->receive(request.data(), request.size(), 0);
+    const std::array<uint8_t, 15> peerByte{
+        'L', 'G', 'B', 'L', 3, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
+    netpacketInterface->receive(peerByte.data(), peerByte.size(), 0);
     retro_run();
     auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
     expect(saveRam && saveRam[0] == 0x3C,
            "one remote byte completes an active external-clock transfer");
 
-    netpacketInterface->receive(request.data(), request.size(), 0);
-    auto lateRequest = request;
-    lateRequest[9] = 2;
-    netpacketInterface->receive(lateRequest.data(), lateRequest.size(), 0);
-    expect(mockSerialReplies == 3,
-           "core replays an accepted duplicate and rejects a byte when no transfer is active");
+    netpacketInterface->receive(peerByte.data(), peerByte.size(), 0);
+    auto outOfOrderPeerByte = peerByte;
+    outOfOrderPeerByte[9] = 3;
+    outOfOrderPeerByte[10] = 0x88;
+    netpacketInterface->receive(outOfOrderPeerByte.data(),
+                                outOfOrderPeerByte.size(), 0);
+    auto secondPeerByte = peerByte;
+    secondPeerByte[9] = 2;
+    secondPeerByte[10] = 0x96;
+    netpacketInterface->receive(secondPeerByte.data(), secondPeerByte.size(), 0);
+    retro_run();
+    expect(saveRam && saveRam[1] == 0x96,
+           "the next peer byte is paired from the ordered receive queue");
     netpacketInterface->stop();
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
-               return message.find("Accepted the first peer serial byte") !=
+               return message.find("Received the first peer serial byte") !=
                       std::string::npos;
            }),
-           "diagnostics identify an accepted complete byte transfer");
+           "diagnostics identify the first peer byte");
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
-               return message.find("Peer serial byte not ready") !=
+               return message.find("Serial byte paired:") !=
                       std::string::npos;
            }),
-           "diagnostics identify a request received after transfer-start cleared");
+           "diagnostics identify an ordered byte pair");
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
-               return message.find("bytes_accepted=1 requests_rejected=1 duplicate_requests=1") !=
+               return message.find("bytes_sent=2 peer_bytes_received=4 bytes_paired=2 sequence_errors=1 duplicate_peer_bytes=1") !=
                       std::string::npos;
            }),
-           "Netpacket summary counts accepted bytes, rejected requests and duplicates");
+           "Netpacket summary counts paired bytes and duplicate peer packets");
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
                return message.find("Netpacket diagnostics (frontend stopped Netpacket") !=
                           std::string::npos &&
@@ -2464,7 +2487,40 @@ void testLibretroNetpacketExternalEdgeDiagnostics() {
     retro_unload_game();
 }
 
-void testLibretroNetpacketDisconnectFaultsCore() {
+void testLibretroNetpacketQueuesPeerByteBeforeLocalStart() {
+    std::vector<uint8_t> rom(0x8000);
+    rom[0x147] = 0x03;
+    rom[0x149] = 0x02;
+    const uint8_t program[] = {
+        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
+        0x3E, 0xA5, 0xE0, 1,          // Load the local byte.
+        0x3E, 0x81, 0xE0, 2,          // Start the internal-clock transfer later.
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 0, 0xA0,       // Store the queued peer byte.
+        0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    const retro_game_info game{"netpacket-prequeued-peer-byte.gb", rom.data(),
+                               rom.size(), nullptr};
+    netpacketTraceOption = "off";
+    expect(retro_load_game(&game), "prequeued-byte diagnostic ROM loads");
+    mockSerialRequests = 0;
+    netpacketInterface->start(1, mockNetpacketSendWithoutReply,
+                              mockNetpacketPollReceive);
+
+    const std::array<uint8_t, 15> earlyPeerByte{
+        'L', 'G', 'B', 'L', 3, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
+    netpacketInterface->receive(earlyPeerByte.data(), earlyPeerByte.size(), 0);
+    retro_run();
+
+    auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam && saveRam[0] == 0x3C && mockSerialRequests == 1,
+           "a peer byte arriving before SC start is queued and paired without an ACK round trip");
+    netpacketInterface->stop();
+    retro_unload_game();
+}
+
+void testLibretroNetpacketDisconnectKeepsFrontendResponsive() {
     std::vector<uint8_t> rom(0x8000);
     rom[0x147] = 0x03;
     rom[0x149] = 0x02;
@@ -2488,30 +2544,35 @@ void testLibretroNetpacketDisconnectFaultsCore() {
                               mockNetpacketDisconnectDuringPoll);
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
                return message.find(
-                   "RetroArch serial Netpacket started as host; protocol=LotusGB-serial-byte-v1") !=
+                   "RetroArch serial Netpacket started as host; protocol=LotusGB-serial-stream-v1") !=
                    std::string::npos;
            }),
            "Netpacket startup log identifies the host protocol version");
     expect(netpacketInterface->connected(1),
            "disconnect test host accepts its peer");
 
+    const unsigned videoBefore = videoRefreshCount;
+    const unsigned audioBefore = audioBatchCallCount;
     retro_run();
-    const bool loggedFault = std::any_of(
+    const bool loggedDisconnect = std::any_of(
         logMessages.begin(), logMessages.end(), [](const std::string &message) {
-            return message.find("Link peer disconnected during serial transfer") !=
-                   std::string::npos;
+            return message.find("peer disconnected") != std::string::npos;
         });
-    expect(mockSerialRequests == 1 && mockDisconnectPolls == 1 && loggedFault,
-           "peer disconnect faults the active transfer instead of inventing incoming bits");
+    expect(mockSerialRequests == 1 && mockDisconnectPolls == 1 && loggedDisconnect,
+           "peer disconnect is recorded while the guest transfer keeps running");
+    auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam && saveRam[0] == 0xFF &&
+               videoRefreshCount > videoBefore && audioBatchCallCount > audioBefore,
+           "a disconnected internal transfer completes with open-line bits without freezing A/V");
     std::vector<uint8_t> state(retro_serialize_size());
-    expect(!state.empty() && !retro_serialize(state.data(), state.size()),
-           "a disconnected link core refuses further snapshots after its execution fault");
+    expect(!state.empty() && retro_serialize(state.data(), state.size()),
+           "a disconnected link core remains usable after the active transfer ends");
 
     netpacketInterface->stop();
     retro_unload_game();
 }
 
-void testLibretroNetpacketTimeoutFaultsCore() {
+void testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply() {
     std::vector<uint8_t> rom(0x8000);
     rom[0x147] = 0x03;
     rom[0x149] = 0x02;
@@ -2533,17 +2594,55 @@ void testLibretroNetpacketTimeoutFaultsCore() {
     netpacketInterface->start(1, mockNetpacketSendWithoutReply,
                               mockNetpacketPollReceive);
 
+    const unsigned videoBefore = videoRefreshCount;
+    const unsigned audioBefore = audioBatchCallCount;
+    const auto timeoutTestDeadline = std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(2);
+    bool loggedTimeout = false;
+    while (!loggedTimeout &&
+           std::chrono::steady_clock::now() < timeoutTestDeadline) {
+        retro_run();
+        netpacketInterface->poll();
+        loggedTimeout = std::any_of(
+            logMessages.begin(), logMessages.end(), [](const std::string &message) {
+                return message.find("Timed out waiting for a peer serial byte") !=
+                       std::string::npos;
+            });
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    expect(mockSerialRequests == 1 && loggedTimeout,
+           "one reliable peer-byte packet times out without per-byte application retries");
+    const bool loggedTimeoutState = [&] {
+        const char *fields[] = {"cpu_tcycles=", "PC=", "SB=", "SC=", "IF=",
+                                "IE=", "IME=", "HALT=", "STOP="};
+        for (size_t index = 0; index < logMessages.size(); ++index) {
+            const std::string &message = logMessages[index];
+            if (logLevels[index] != RETRO_LOG_WARN ||
+                message.find("Serial state (peer-byte-timeout)") ==
+                    std::string::npos)
+                continue;
+            return std::all_of(std::begin(fields), std::end(fields),
+                               [&message](const char *field) {
+                                   return message.find(field) != std::string::npos;
+                               });
+        }
+        return false;
+    }();
+    expect(loggedTimeoutState,
+           "peer-byte timeout records guest CPU and serial state at WARN level");
+    expect(videoRefreshCount > videoBefore && audioBatchCallCount > audioBefore,
+           "frames and audio keep being published during an unanswered serial byte");
+
+    const std::array<uint8_t, 15> latePeerByte{
+        'L', 'G', 'B', 'L', 3, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
+    netpacketInterface->receive(latePeerByte.data(), latePeerByte.size(), 0);
     retro_run();
-    const bool loggedTimeout = std::any_of(
-        logMessages.begin(), logMessages.end(), [](const std::string &message) {
-            return message.find("Timed out waiting for a peer serial byte") !=
-                   std::string::npos;
-        });
-    expect(mockSerialRequests > 1 && loggedTimeout,
-           "a missing link reply retries and times out instead of inventing peer bytes");
+    auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam && saveRam[0] == 0x3C,
+           "a valid late peer byte resumes the pending transfer and reaches the game");
     std::vector<uint8_t> state(retro_serialize_size());
-    expect(!state.empty() && !retro_serialize(state.data(), state.size()),
-           "a timed-out link core refuses further snapshots after its execution fault");
+    expect(!state.empty() && retro_serialize(state.data(), state.size()),
+           "a timed-out but running link core remains usable when its peer recovers");
 
     netpacketInterface->stop();
     retro_unload_game();
@@ -2552,30 +2651,37 @@ void testLibretroNetpacketTimeoutFaultsCore() {
 [[noreturn]] void runNetpacketPairEndpoint(unsigned player, int socket) {
     processNetpacketSocket = socket;
     processNetpacketPeerId = player == 0 ? 1 : 0;
+    const auto frontendFramePace =
+        player == 0 ? std::chrono::milliseconds(17)
+                    : std::chrono::milliseconds(33);
     retro_deinit();
     retro_init();
 
+    constexpr unsigned transferCount = 16;
     std::vector<uint8_t> rom(0x8000);
     rom[0x147] = 0x03;
     rom[0x149] = 0x02;
     const uint8_t control = player == 0 ? 0x81 : 0x80;
-    const uint8_t program[] = {
-        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
-        0x3E, 0, 0xEA, 0, 0xA0,      // Clear received-byte locations.
-        0xEA, 1, 0xA0,
-        0x3E, static_cast<uint8_t>(player == 0 ? 0xA5 : 0x3C),
-        0xE0, 1, // First outgoing byte.
-        0x3E, control, 0xE0, 2,       // Host clocks internally; client is external.
-        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
-        0xF0, 1, 0xEA, 0, 0xA0,       // Store received byte.
-        0x3E, static_cast<uint8_t>(player == 0 ? 0x96 : 0x69),
-        0xE0, 1, // Second outgoing byte.
-        0x3E, control, 0xE0, 2,
-        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
-        0xF0, 1, 0xEA, 1, 0xA0,       // Store the second received byte.
-        0x18, 0xFE,
+    std::vector<uint8_t> program{
+        0x3E, 0x0A, 0xEA, 0, 0, // Enable SRAM.
     };
-    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    for (unsigned i = 0; i < transferCount; ++i) {
+        const uint8_t outgoing = static_cast<uint8_t>(
+            player == 0 ? 0xA5 + i * 11 : 0x3C + i * 7);
+        program.insert(program.end(), {
+            0x3E, outgoing, 0xE0, 1, // Write the next outgoing byte.
+            0x3E, control, 0xE0, 2, // Host clocks internally; client externally.
+            0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA, // Wait for SC transfer completion.
+            0xF0, 1, 0xEA, static_cast<uint8_t>(i), 0xA0, // Save received byte.
+        });
+    }
+    program.insert(program.end(), {0x18, 0xFE}); // Remain in the completed test ROM.
+    expect(program.size() < rom.size() - 0x150,
+           "stress ROM program fits after the cartridge header");
+    rom[0x100] = 0xC3; // JP $0150, past the cartridge header.
+    rom[0x101] = 0x50;
+    rom[0x102] = 0x01;
+    std::copy(program.begin(), program.end(), rom.begin() + 0x150);
     const retro_game_info game{player == 0 ? "host.gb" : "client.gb",
                                rom.data(), rom.size(), nullptr};
     expect(retro_load_game(&game), "process-pair serial ROM loads");
@@ -2590,18 +2696,31 @@ void testLibretroNetpacketTimeoutFaultsCore() {
     auto *saveRam = static_cast<uint8_t *>(
         retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
     expect(saveRam != nullptr, "process-pair save RAM is available");
-    const uint8_t expectedFirst = player == 0 ? 0x3C : 0xA5;
-    const uint8_t expectedSecond = player == 0 ? 0x69 : 0x96;
+    const auto expectedPeerByte = [player](unsigned i) {
+        return static_cast<uint8_t>(player == 0 ? 0x3C + i * 7
+                                                : 0xA5 + i * 11);
+    };
     const auto transferDeadline = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(8);
+                                  std::chrono::seconds(12);
+    const auto allTransfersCompleted = [&] {
+        if (!saveRam)
+            return false;
+        for (unsigned i = 0; i < transferCount; ++i) {
+            if (saveRam[i] != expectedPeerByte(i))
+                return false;
+        }
+        return true;
+    };
     while (std::chrono::steady_clock::now() < transferDeadline &&
-           (saveRam[0] != expectedFirst || saveRam[1] != expectedSecond)) {
+           !allTransfersCompleted()) {
         retro_run();
         netpacketInterface->poll();
+        // Exercise peers whose frontends advance at different wall-clock
+        // rates (for example, a background window that is being throttled).
+        std::this_thread::sleep_for(frontendFramePace);
     }
-    expect(saveRam && saveRam[0] == expectedFirst &&
-               saveRam[1] == expectedSecond,
-           "separate core processes exchange consecutive serial bytes in both directions");
+    expect(allTransfersCompleted(),
+           "separate core processes exchange sixteen ordered bytes in both directions");
 
     netpacketInterface->stop();
     retro_unload_game();
@@ -2611,6 +2730,7 @@ void testLibretroNetpacketTimeoutFaultsCore() {
 }
 
 void testLibretroNetpacketTwoProcessExchange() {
+    constexpr unsigned transferCount = 16;
     int sockets[2][2]{};
     expect(::socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets[0]) == 0,
            "host-to-relay Netpacket socket opens");
@@ -2660,7 +2780,7 @@ void testLibretroNetpacketTwoProcessExchange() {
     bool relaySucceeded = true;
     const auto relayStart = std::chrono::steady_clock::now();
     const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::seconds(10);
+                          std::chrono::seconds(20);
 
     while ((!finished[0] || !finished[1]) &&
            std::chrono::steady_clock::now() < deadline) {
@@ -2682,7 +2802,7 @@ void testLibretroNetpacketTwoProcessExchange() {
                                         packet.size(), 0);
             if (size == 0) {
                 relayEndpointClosed[source] = true;
-                if (relayedPackets != 4)
+                if (relayedPackets != 2 * transferCount)
                     relaySucceeded = false;
                 continue;
             }
@@ -2691,7 +2811,7 @@ void testLibretroNetpacketTwoProcessExchange() {
             if (size < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
                 continue;
             if (size <= 0) {
-                if (relayedPackets == 4) {
+                if (relayedPackets == 2 * transferCount) {
                     // The completed client may close its datagram endpoint
                     // before the host process has returned from the final
                     // serial callback.
@@ -2704,8 +2824,11 @@ void testLibretroNetpacketTwoProcessExchange() {
                 relaySucceeded = false;
                 continue;
             }
+            // Eight byte pairs first get a fixed 100 ms in each direction,
+            // modeling a 200 ms two-way RTT equivalent. The rest retain a
+            // variable-delay profile whose paired packets reach 400 ms RTT.
             const unsigned delayMs = relayedPackets < 16
-                ? 25 + 25 * (relayedPackets % 3)
+                ? 100
                 : 50 + 100 * (relayedPackets % 3);
             const auto packetDelay = std::chrono::milliseconds(delayMs);
             std::this_thread::sleep_for(packetDelay);
@@ -2749,8 +2872,9 @@ void testLibretroNetpacketTwoProcessExchange() {
         WIFEXITED(statuses[0]) && WEXITSTATUS(statuses[0]) == 0 &&
         WIFEXITED(statuses[1]) && WEXITSTATUS(statuses[1]) == 0;
     const auto relayElapsed = std::chrono::steady_clock::now() - relayStart;
-    if (!relaySucceeded || !bothSucceeded || relayedPackets != 4 ||
-        relayElapsed < std::chrono::milliseconds(160)) {
+    if (!relaySucceeded || !bothSucceeded ||
+        relayedPackets != 2 * transferCount ||
+        relayElapsed < std::chrono::seconds(3)) {
         std::cerr << "Netpacket relay diagnostic: relay=" << relaySucceeded
                   << " host_finished=" << finished[0]
                   << " host_status=" << statuses[0]
@@ -2762,9 +2886,10 @@ void testLibretroNetpacketTwoProcessExchange() {
                          relayElapsed).count()
                   << '\n';
     }
-    expect(relaySucceeded && bothSucceeded && relayedPackets == 4 &&
-               relayElapsed >= std::chrono::milliseconds(160),
-           "separate core processes exchange two bytes at 75 ms and 100 ms simulated RTT");
+    expect(relaySucceeded && bothSucceeded &&
+               relayedPackets == 2 * transferCount &&
+               relayElapsed >= std::chrono::seconds(3),
+           "core processes at asymmetric 60/30 FPS exchange sixteen bytes at 200 ms RTT and variable RTT up to 400 ms");
 }
 
 int main(int argc, char **argv) {
@@ -2826,8 +2951,9 @@ int main(int argc, char **argv) {
     testLibretroLinkSubsystem();
     testLibretroNetpacketSerialExchange();
     testLibretroNetpacketExternalEdgeDiagnostics();
-    testLibretroNetpacketDisconnectFaultsCore();
-    testLibretroNetpacketTimeoutFaultsCore();
+    testLibretroNetpacketQueuesPeerByteBeforeLocalStart();
+    testLibretroNetpacketDisconnectKeepsFrontendResponsive();
+    testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply();
     testLibretroNetpacketTwoProcessExchange();
 
     retro_unload_game();

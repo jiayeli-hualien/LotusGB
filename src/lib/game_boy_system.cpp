@@ -169,7 +169,8 @@ void GameBoySystem::clockSerialExternalBit(bool incomingBit) { serial.clockExter
 bool GameBoySystem::completeSerialNetworkByte(uint8_t incomingByte) {
     return serial.completeNetworkByte(incomingByte);
 }
-void GameBoySystem::setSerialClockCallback(std::function<bool(bool)> callback) {
+void GameBoySystem::setSerialClockCallback(
+    std::function<std::optional<bool>(bool)> callback) {
     serial.setInternalClockCallback(std::move(callback));
 }
 bool GameBoySystem::getInfraredLedState() const {
@@ -263,6 +264,15 @@ uint64_t GameBoySystem::getElapsedTCycles() const {
 
 Reg GameBoySystem::getCpuRegisters() {
     return cpu.getReg();
+}
+
+SerialDiagnosticState GameBoySystem::getSerialDiagnosticState() {
+    Reg registers = cpu.getReg();
+    return {systemClock.getElapsedTCycles(), registers.getRefPC(),
+            serial.getData(), serial.read(0xFF02),
+            interruptRegisters.read(0xFF0F),
+            interruptRegisters.read(0xFFFF), cpu.getIME(), cpu.getHALT(),
+            cpu.getStopped()};
 }
 
 const DmgPpu::ColorFrameBuffer &GameBoySystem::getCompletedColorFrameBuffer() const {

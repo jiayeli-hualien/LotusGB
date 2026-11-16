@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 #include "IInterruptController.hpp"
 #include "address_bus.hpp"
@@ -31,14 +32,16 @@ public:
     // Netpacket can complete an active byte transfer atomically at a byte barrier.
     // This is separate from the hardware-timed external edge path above.
     bool completeNetworkByte(uint8_t incomingByte);
-    // Called once per internal sampling edge with outgoing bit; returns incoming bit.
-    // Empty restores the disconnected incoming-high behavior. Host wiring is not state.
-    void setInternalClockCallback(std::function<bool(bool)> callback);
+    // Called once per internal sampling edge with outgoing bit. A missing bit
+    // leaves the transfer pending while the rest of the system keeps running.
+    // An empty callback restores disconnected incoming-high behavior.
+    void setInternalClockCallback(
+        std::function<std::optional<bool>(bool)> callback);
 
 private:
     void clockBit();
     void shiftBit(bool incomingBit);
-    std::function<bool(bool)> internalClockCallback;
+    std::function<std::optional<bool>(bool)> internalClockCallback;
 
     IInterruptController &interrupts;
     bool cgbMode;

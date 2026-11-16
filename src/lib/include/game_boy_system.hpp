@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "GBCPU.hpp"
@@ -42,6 +43,18 @@ enum class PresentationReason { VBlank, Repeat, CpuStopped, CpuFailure };
 struct RetPresentationStep {
     PresentationReason reason = PresentationReason::CpuFailure;
     uint64_t tCyclesElapsed = 0;
+};
+
+struct SerialDiagnosticState {
+    uint64_t elapsedTCycles = 0;
+    uint16_t programCounter = 0;
+    uint8_t serialData = 0xFF;
+    uint8_t serialControl = 0xFF;
+    uint8_t interruptFlags = 0xFF;
+    uint8_t interruptEnable = 0xFF;
+    bool interruptMasterEnable = false;
+    bool halted = false;
+    bool stopped = false;
 };
 
 // Shared DMG/native-CGB system composition.
@@ -96,6 +109,7 @@ public:
     RetPresentationStep stepForPresentation();
     uint64_t getElapsedTCycles() const;
     Reg getCpuRegisters();
+    SerialDiagnosticState getSerialDiagnosticState();
     const DmgPpu::FrameBuffer &getFrameBuffer() const;
     const DmgPpu::FrameBuffer &getCompletedFrameBuffer() const;
     std::vector<int16_t> takeAudioSamples();
@@ -112,7 +126,8 @@ public:
     uint8_t getSerialControl();
     void clockSerialExternalBit(bool incomingBit);
     bool completeSerialNetworkByte(uint8_t incomingByte);
-    void setSerialClockCallback(std::function<bool(bool)> callback);
+    void setSerialClockCallback(
+        std::function<std::optional<bool>(bool)> callback);
     // CGB IR is level-based: the callback reports whether an external light
     // source is detected when the guest samples FF56. Host wiring is not state.
     bool getInfraredLedState() const;

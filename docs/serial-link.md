@@ -4,11 +4,72 @@ The core supports logical serial bit exchange between DMG/CGB ports through
 host callbacks and externally scheduled sampling edges. Original component and
 two-system CPU tests cover byte exchange, serial IRQ/HALT wake and paired
 partial-transfer snapshot replay. The libretro core provides a local two-ROM
-subsystem. The user reports completing an in-game Pokémon trade and confirming
-the exchanged result remained after saving and reopening both games; the exact
-edition and ROM build were not recorded, so Red/Blue-specific acceptance is
-still pending. Physical cables and accessories are also pending. CGB infrared
-peer behavior has a separate [level-based interface and evidence](cgb-infrared.md).
+subsystem. On 2026-11-16, the user reported one successful, crash-free
+stream-v1 LAN trade between Pokémon Red (USA) on Mac and Pokémon Blue (USA) on
+Steam Deck. The user also tried a link battle. Both games displayed “You Win,”
+then the user observed that Mac's Charmander had fainted while the Deck game
+still treated it as alive. Captured session logs show both endpoints paired
+through transfer 3202 with no sequence errors or duplicate peer bytes; the
+Deck had started transfer 3203 and was still waiting for the host byte after a
+five-second diagnostic timeout. This shows the next byte had not arrived at
+the client when sampled, but does not establish whether game protocol,
+different local progress, or another timing factor caused the battle-state
+divergence. Save persistence after a normal frontend exit and reload remains
+to be verified. Physical cables and accessories are also pending. CGB infrared
+peer behavior has a separate
+[level-based interface and evidence](cgb-infrared.md).
+
+## Network-mode fidelity contract
+
+The network link mode prioritizes ordered game data and a responsive frontend;
+it does not claim bit-accurate cable timing. Each RetroArch instance advances
+its own CPU, PPU and APU clocks. The peers synchronize serial data by transfer
+sequence, not by locking whole-frame or CPU-cycle progress. The physical cable
+also has its own master-driven serial clock domain; the two consoles' CPU clock
+phases do not need to match ([hardware references](references.md#hardware-behavior)).
+
+For stream-v1, each peer's outgoing byte is paired only with the same transfer
+sequence from the other peer. While the session remains connected, a missing
+byte leaves the serial transfer pending as guest emulation and frontend
+callbacks continue; the core does not silently substitute data. On a detected
+peer disconnect it has an explicit open-line `$FF` fallback. Once the matching
+byte arrives, all eight shifts and the serial interrupt are applied atomically.
+This preserves byte values and order when both games issue matching transfer
+sequences, while changing observable partial-SB and SC/interrupt timing. A
+game's own link wait can therefore remain visible even while video and audio
+callbacks continue.
+
+The unit and delayed-process tests establish this contract for synthetic ROMs.
+They do not establish cycle-level cable accuracy, RetroArch GUI smoothness,
+Pokémon trade compatibility, or save persistence for stream-v1.
+
+## RetroArch input Netplay and link-cable transport
+
+RetroArch's standard input Netplay is replay-based: each player sends controller
+input by frame, the frontend predicts missing remote input, and rewinds/replays
+the core when the real input arrives. The server also supplies the canonical
+frame count and an initial serialized state to a joining client. This requires
+a deterministic core and identical core/content on every peer. Configuring
+input latency can make corrections less frequent and cheaper; it is not the
+same as turning rollback off ([Netplay design](https://docs.libretro.com/development/retroarch/netplay/)).
+
+RetroArch's FAQ says standard input Netplay is for local multiplayer that runs
+on one emulated system, not link-cable games ([Netplay FAQ](https://docs.libretro.com/guides/netplay-faq/)).
+The Nintendo Switch Online description supplied during this work is useful as
+a conceptual comparison, but its claims about Nintendo's internal instances,
+pointer wiring and exact synchronization behavior are not treated as verified
+implementation facts.
+
+LotusGB's current stream-v1 path sends serial `ByteReady` data through the
+libretro Netpacket interface. Changing RetroArch's input rollback behavior
+would not remove the per-transfer byte pairing or its game-visible completion
+barrier. A future deterministic twin-emulation design could have every peer run
+the same pair of linked Game Boy instances and synchronize controller input by
+frame, but it would also need identical initial state for both machines,
+consistent RNG/RTC and careful ownership of each player's persistent SRAM.
+That is a substantial alternative architecture, not a RetroArch setting; the
+current decision is to retain stream-v1 until real-game evidence shows it is
+insufficient.
 
 ## Host interface
 
@@ -158,10 +219,13 @@ it does not itself emulate a Game Boy link cable. LotusGB instead uses its
 Netpacket API as a custom cable-data channel, with one ROM running in each
 process. RetroArch's documentation identifies DoubleCherryGB as an example of
 Netpacket-based Pokémon trading ([Netplay FAQ](https://docs.libretro.com/guides/netplay-faq/),
-[DoubleCherryGB](https://github.com/madcock/libretro-doublecherryGB#link-cable-over-network)).
-DoubleCherryGB documents this mode as trade-focused and warns that it can be
-too slow for general multiplayer; LotusGB's actual trade latency still needs
-measurement.
+[DoubleCherryGB](https://github.com/TimOelrichs/doublecherryGB-libretro)).
+DoubleCherryGB's README documents Gen 1/2 online trading through Netplay,
+states that it also works over LAN, and lists Pokémon R/B/Y; it notes that
+battling can be unstable. LotusGB therefore does not claim to be the first
+RetroArch core for LAN Red/Blue trading. Its stream-v1 result below is a
+separate, directly tested implementation. The observed session latency is
+recorded below rather than generalized from the core's README.
 
 RetroArch's [libretro Netpacket API](https://github.com/libretro/RetroArch/blob/master/libretro-common/include/libretro.h)
 defines custom packets up to 64 KiB. Reliable packets preserve delivery order,
@@ -179,209 +243,221 @@ save while Netpacket carries the cable data ([CRC handling](https://github.com/l
 [SRAM sync](https://github.com/libretro/RetroArch/blob/v1.22.2/network/netplay/netplay_frontend.c#L1212-L1214),
 [state sync](https://github.com/libretro/RetroArch/blob/v1.22.2/network/netplay/netplay_frontend.c#L8709-L8717)).
 
-The single-ROM core registers RetroArch's Netpacket interface. The diagnostic
-build used for the trade log below exchanged each internal-clock sampling
-edge as a reliable packet (`LotusGB-serial-bit-v1`). The current local
-prototype uses `LotusGB-serial-byte-v1`: one reliable packet carries a complete
-outgoing byte and a transfer sequence, and the peer returns its complete byte.
-Fields are encoded byte by byte, with 32-bit sequences in big-endian order;
-neither wire format sends native C++ structs. Netpacket's reliable flag
-guarantees delivery in send order. LotusGB has no application checksum today;
-the byte protocol validates packet length, magic, type, acceptance flag, and
-request/reply sequence. The host accepts one peer. The byte protocol waits at
-a byte boundary, retries requests every 125 ms, and faults the running core
-after five seconds without an accepted peer byte instead of silently
-substituting data. The disconnected callback still preserves incoming-high
-behavior.
+The single-ROM core registers RetroArch's Netpacket interface. Earlier
+diagnostic builds exchanged each internal-clock sampling edge as a reliable
+packet (`LotusGB-serial-bit-v1`). The first byte-oriented prototype used a
+request/reply pair for each complete byte (`LotusGB-serial-byte-v1`). Its
+request waited for the peer reply at a byte boundary and retried at the
+application layer. These versions are historical; the current network prototype is
+`LotusGB-serial-stream-v1`.
 
-This changes the network packet size and relaxes the peer-visible serial
-timing. The local `SB` register still stores the same byte and completion still
-uses the serial interrupt path, but an active external-clock receiver currently
-shifts all eight incoming bits atomically when the peer byte arrives. Its
-transfer-complete flag and interrupt therefore occur earlier than they would
-after eight physical clock edges. The internal-clock sender uses the returned
-byte for its remaining local bit shifts. This reduces the usual wait from
-eight network round trips per byte to one, with a compatibility risk for games
-that observe serial status or interrupt timing during a transfer. The current
-core still blocks at the first edge while waiting for the peer. Nonblocking
-network I/O and continuing to present frames during that wait are not
-implemented. Real-game compatibility of this byte timing has not been
-verified.
+In stream-v1, each endpoint sends one reliable, ordered `ByteReady` packet
+when its ROM starts an SC transfer. The packet contains the full outgoing SB
+value and a 32-bit monotonically increasing transfer sequence, encoded
+explicitly in big-endian order. There is no per-byte reply or application retry:
+both endpoints publish their own byte, queue the peer's byte if it arrives
+early, and pair only equal sequence numbers. An active transfer whose byte has
+not arrived remains pending while the CPU, video and audio continue to advance.
+When the matching peer byte arrives, the core completes all eight local shifts
+at once through the normal serial completion/interrupt path. A timeout logs a
+warning but keeps the transfer pending so a late byte can still resume it. A
+peer disconnect supplies `0xFF` to an active transfer, matching the open-line
+value used by this core.
 
-Automated libretro tests run host and client cores in separate processes and
-relay reliable packets between them. A deterministic local relay adds
-25/50/75 ms one-way delays for the first byte (75–125 ms round-trip per serial
-edge), then 50/150/250 ms one-way delays for the second byte (200–400 ms
-round-trip). Both CPU programs complete the consecutive exchanges and write
-each received byte to their own SRAM. Separate tests verify the configured
-two-second no-reply timeout and that a peer disconnect faults the active
-transfer instead of substituting data. These cover the core transport with
-synthetic timing;
-actual network behavior remains unverified by those tests. On macOS, the user
-ran the standalone RetroArch 1.22.2 Host and Client in separate windows with
-the synthetic ROMs. Logs show the host accepted the client despite the
-different-ROM warning, both sides processed the first remote serial edge, and
-the isolated SRAM prefixes were `3C A5 A5` (host) and `A5 3C A5` (client).
-Both instances used `pause_nonactive = "false"`; the host completed the
-exchange after the client window was opened, validating this configured
-background-run scenario. The subsequent Mac ↔ Steam Deck test also passed its
-synthetic SRAM checks on both ends. The Deck SteamOS/RetroArch versions and
-client log were not captured. Internet direct/relay, real-network jitter, and
-reconnect behavior remain unverified. The user deferred Internet testing on 2026-11-14 because their
-network has no port forwarding. RetroArch relay may avoid router port
-forwarding. An optional relay-lobby path is now prepared in the ignored
-Mac/Steam Deck probe launchers: the host advertises a password-protected room,
-and the client joins through RetroArch's Netplay host list instead of using
-`--connect`. Fake frontend dry-runs passed; no external relay was contacted.
-Actual relay, real-network jitter, and reconnect behavior remain unverified.
-The probe launchers now accept
-private ROM paths plus per-player data directories outside the repository, and
-an offline mode can reopen each side with the same SRAM directory. Fake
-frontend dry-runs verified these paths and the guard against repository ROMs
-or save directories; no commercial ROM or save was opened by the launcher in
-this work. The launchers also offer a GUI mode that loads each side's content
-and isolated data paths without auto-hosting or auto-connecting; the RetroArch
-menu can then host or enter the peer IP, with GUI connect/listen ports aligned.
+The packet parser checks packet length, magic, type and reserved fields. It
+rejects duplicates and sequence discontinuities, and the queue is bounded.
+Netpacket's reliable flag provides ordered delivery within a session. LotusGB
+does not currently add an application-level checksum; packet integrity is left
+to RetroArch's transport and underlying network stack. This relies on both games starting the same number of serial-byte
+transfers in the same order. If the games diverge, the sequence mismatch is
+reported and the transfer remains pending instead of pairing unrelated bytes.
+The host accepts one peer.
+
+This stream design removes the application-level round trip per byte and avoids
+blocking `retro_run` for peer data. It deliberately relaxes physical cable
+timing: clock edges are not networked, byte completion and the serial interrupt
+occur atomically on peer-byte arrival, and the two CPUs are not kept in
+frame-level lockstep. Games that inspect partial SB values, exact SC/interrupt
+timing, or make different numbers of transfers may behave differently. One
+stream-v1 Red/Blue LAN trade has now been reported successful without a crash.
+In a later battle session, the user reported that one game registered a faint
+while the other still treated that Pokémon as alive. Captured logs showed both
+endpoints had paired through transfer 3202 without sequence errors or duplicate
+peer bytes; the client had sent transfer 3203 but timed out after five seconds
+without receiving the host's matching byte. This is evidence of a peer byte
+not yet being available at that sample, not proof of the underlying cause.
+These observations demonstrate one ROM pair and session, not broad game
+compatibility. Both RetroArch instances were still open when the isolated SRAM
+files were sampled, so post-exit save persistence remains unverified.
+
+A network relay can provide a route when direct connections or port forwarding
+are unavailable, but it does not change serial-byte scheduling or remove
+latency. RetroArch already provides a relay-server option for that connection
+path ([setup guide](https://docs.libretro.com/guides/netplay-getting-started/));
+the LotusGB Netpacket path through that relay has not yet been tested. Adding a
+second transparent proxy would duplicate transport responsibilities and can
+add another network hop. A proxy also cannot know a future byte before the ROM
+produces it; predicting or completing bytes early risks changing game-visible
+SB/SC/interrupt timing. Stream-v1 has passed same-Mac and cross-device LAN
+synthetic probes. These prove one-byte Netpacket exchange and SRAM persistence,
+not a real Pokémon trade. Keep the reliable ordered Netpacket path unless a
+real-game trace identifies a transport defect. Pending transfers do not block
+the core's frame/audio callbacks, so the frontend can keep presenting while a
+game waits for the serial interrupt; this does not make the exchange itself
+independent of ping.
+
+The libretro unit tests cover a local peer byte, pre-arrival queueing, sequence
+validation, duplicate rejection, disconnection and a late byte after timeout.
+They check that video and audio callbacks continue while a byte is pending. A
+two-process test relays 16 byte exchanges per endpoint. The first 16 packets
+use a fixed 100 ms delay per direction for eight byte pairs (200 ms
+round-trip equivalent); the remaining packets use 50/150/250 ms per-packet
+delays, reaching 400 ms round-trip latency under
+the variable-delay profile; both games store every peer byte in order. This
+exercises longer ordered streams and nonblocking progress under synthetic latency.
+The endpoint processes also wait 17 ms and 33 ms, respectively, after each
+`retro_run()` to model roughly 60 FPS versus 30 FPS frontend cadence; the byte
+stream still completes in sequence. This does not run RetroArch frontends or
+verify that a real background window uses either cadence. It does not cover real
+jitter or establish broad game compatibility. `make test` passed after the
+stream-v1 changes.
+
+Set the `Netpacket byte trace` core option to `on` and reload content to add
+per-transfer diagnostics. Logs include the emulated T-cycle count and CPU PC,
+SB/SC, IF/IE, IME, HALT and STOP state at transfer start, after byte pairing,
+and when a peer-byte wait times out. This makes an absent peer byte,
+sequence mismatch, or guest-side wait visible without changing transfer
+behavior. After collecting both endpoint logs, run
+`python3 tools/analyze_serial_link_timing.py HOST_LOG CLIENT_LOG` to compare
+guest T-cycles advanced during each endpoint's local transfer wait with its
+wall-clock wait. This can reveal whether a frontend advances guest time more
+slowly while waiting. It does not measure absolute phase skew between machines;
+the per-endpoint session clocks have independent origins, and different game
+code may spend different time between serial transfers.
+
+Prior manual evidence remains useful for the older byte-v1 implementation. On
+macOS, the user ran standalone RetroArch 1.22.2 Host and Client in separate
+windows with synthetic ROMs. Both sides exchanged bytes and retained separate
+SRAM; `pause_nonactive = "false"` allowed the host to continue when the client
+window had focus. A later Mac ↔ Steam Deck GUI LAN probe also passed its
+synthetic SRAM checks. Deck SteamOS/RetroArch versions and the client log were
+not captured. Internet relay, real-network jitter and reconnect behavior
+remain unverified. The user deferred Internet testing on 2026-11-14 because
+their network has no port forwarding. An optional relay-lobby path is prepared
+in ignored probe launchers, but no external relay was contacted. Probe
+launchers support private ROM paths, per-player data directories and GUI
+host/client setup; fake frontend dry-runs verified those paths and the guard
+against repository ROMs or saves. No commercial ROM or save was opened by the
+launcher in that work.
+
 On 2026-11-15, the user joined the Mac host by scanning the LAN from the Steam
 Deck. The Deck client reported SRAM prefix `A5 3C A5`, and the Mac host
 verifier returned `3C A5 A5`. The Mac log recorded the peer connection, first
-remote serial edge, peer disconnect, and successful SRAM save. This confirms
-one GUI-driven LAN byte exchange and SRAM persistence on both ends. The local
-ignored host probe ROM was changed to wait for a button press after the Deck
-joins, removing the previous short startup delay. Deck background execution,
-Internet routing, and higher-latency link behavior remain unverified.
+remote serial edge, peer disconnect and successful SRAM save. This confirms
+one GUI-driven LAN byte exchange and SRAM persistence on both ends with the
+prior implementation. At that point Deck background execution, Internet
+routing and higher-latency link behavior remained unverified; the later Deck
+focus result is recorded below.
 
 On 2026-11-15, the user completed a Red/Blue trade over the Mac ↔ Steam Deck
 LAN session. Both sides received the other player's Pokémon, both Pokédexes
 showed the traded Pokémon, and both retained the result after choosing the
 game's restart option and reloading. The game saves the trade automatically;
 a separate Save command is unnecessary. This verifies one real cross-device
-trade and persistence by user report. The exact ROM/core hashes, Deck
-SteamOS/RetroArch versions and client log were not captured.
+trade and persistence by user report on the prior implementation. The exact
+ROM/core hashes, Deck SteamOS/RetroArch versions and client log were not
+captured.
 
-The captured Mac host log ended cleanly: 14,472 serial edge requests had
-14,472 replies, with no timeout or sequence mismatch; mean reply time was
-17.0 ms and maximum 116 ms. It recorded a normal peer disconnect, Netpacket
-stop and successful SRAM save. `retro_run` still had calls lasting up to
-1.79 seconds. The host also received 2,000 peer edge requests, of which 1,624
-arrived while the host was active in external-clock mode and 376 were ignored
-while it was inactive or using internal clock. Those ignored edges may be
-relevant to the difficult in-game handshake, but the missing Deck log prevents
-confirming whether they caused a failed attempt. The RTT and long calls
-support synchronous per-edge waiting as the main observed source of trade
-stalls; this run completed correctly despite the delay.
+On 2026-11-16, stream-v1 passed `make build`, the complete `make test` suite,
+a subsequent Libretro test run, and the five macOS installer checks. The
+standalone RetroArch core hash is `7d753cf554b9c7a88806886d135e6745ac75c72cd52874dcc9e09ee2c2beb60a`;
+it matches the macOS package and the installed core. The Steam Deck diagnostic
+package contains Linux core hash
+`211d057d6e8ed874260ab9893654403f282c7464d2b18c6e2efa5f2100016f63`. The first
+package build had SHA-256
+`b37fb7e2bc73fbff4fdf65301cd92192a2e3aff6bb5047623cbc5952062ddca9`; the
+repaired package was installed on the Deck and its current archive hash is
+recorded below.
 
-### Byte-level latency prototype (2026-11-15)
+On 2026-11-16, two standalone RetroArch 1.22.2 GUI processes on the same Mac
+completed a stream-v1 synthetic loopback exchange. The logs are in the ignored
+`build/serial-stream-v1-live/` directory; `verify.sh both` passed with SRAM
+prefixes Host `3ca5a5` and Client `a53ca5`. Final counters on both sides were
+1 byte sent/received/paired, with zero sequence errors, duplicates or pending
+transfers. RetroArch reported ping 21 ms on the host and 14 ms on the client.
+The client transfer waited 10.76 s, logged the 5 s warning, then paired late;
+the host paired in 49 μs. These wait values include the synthetic ROMs'
+different start conditions and are not pure network latency. The trace analyzer
+could not compare guest-clock progress because the logs lacked host transfer
+state snapshots. RetroArch's existing per-core `LotusGB.opt` overrode the
+probe's `core_options_path`; the isolated Mac and Deck configs now set
+`global_core_options = true` to make their bundled trace settings take effect
+without editing the user-wide core options. See
+[RetroArch issue #12901](https://github.com/libretro/RetroArch/issues/12901)
+for the documented precedence behavior.
 
-The local prototype replaces eight per-edge network requests with one request
-and reply per serial byte. It adds atomic byte completion for an active
-external-clock receiver while preserving the ordinary bit-shift path for
-disconnected and local links. The first full test run exposed duplicate
-retries at 75–100 ms simulated round-trip delay with the prior 33 ms retry
-interval. A 125 ms interval passed the two-process delayed-relay exchange.
-`make build` and the full `make test` pass on macOS, including two consecutive
-bytes in both directions, delayed relay traffic, retry/timeout handling,
-duplicate requests, external-clock byte completion, and the existing serial
-tests. These are synthetic tests only. Matching Mac and Steam Deck byte-protocol
-packages were built under `build/byte-protocol-packages/`; the Mac package's
-five installer checks passed. A newer diagnostic build now prints the exact
-protocol string at Netpacket startup, with tests for both host and client roles.
-The new Mac diagnostic core is installed in the standalone RetroArch user core
-directory; its SHA-256 matches the package (`8e5a2160a271654e5c31de2237d137404f6a6fde2c221d213d490a6ca31b0e9b`).
-The installer backed up the prior core under
-`~/Library/Application Support/RetroArch/backups/LotusGB/20261115T173644Z-47053`.
-RetroArch must be restarted to load it. The Deck diagnostic package has not
-been installed, and neither endpoint has been tested in a real session with
-this diagnostic build. The reported real
-trade and the captured 14,472-edge log above were produced with the earlier
-bit protocol, so they are correctness and latency-baseline evidence, not a
-validation of the byte-protocol prototype.
+On 2026-11-16, the Steam Deck Steam build connected over LAN to the Ubuntu
+RetroArch host using the same LotusGB core binary on both ends
+(`211d057d6e8ed874260ab9893654403f282c7464d2b18c6e2efa5f2100016f63`). The
+Deck ran RetroArch 1.22.2; Ubuntu ran 1.18.0. RetroArch warned about different
+frontend versions and different synthetic games, but accepted the Netplay
+connection. Both verifiers passed: host SRAM `3ca5a5`, client SRAM `a53ca5`,
+each with one byte sent/received/paired and zero sequence errors, duplicates,
+or pending transfers. SRAM checkpoints `11 22 33 44` confirmed each probe ROM
+entered, started, received and completed its transfer. The client paired
+`0x3C` with host `0xA5`; the host paired `0xA5` with client `0x3C`. Reported
+pair wait was 95 μs on the Deck and 161 ms on the Ubuntu VM; these are local
+transfer wait measurements, not pure network RTT. The TCP connection to port
+55437 was established without adding a firewall rule. This verifies one
+cross-device synthetic exchange; it does not verify a Pokémon trade. The
+installed Deck package is
+`build/packages/LotusGB-Steam-Deck-Netpacket-Diagnostics.zip` (SHA-256
+`eb346e69576443898042ef2f750593d7c7f47543111c4b1e48c277b44e4543e4`), built
+from original probe ROMs generated by
+`tools/generate_netpacket_probe_roms.py`.
 
-On 2026-11-16, the user reported that the byte-protocol version can connect
-and complete a trade, but the game becomes choppy during data exchange and
-audio is discontinuous. The user has not yet determined whether exchanges
-fail intermittently. This is a preliminary manual pass, not a repeated
-reliability result. The Mac diagnostic build is installed, but the Steam Deck
-diagnostic build and fresh client log are still missing. The blocking byte
-wait remains a known cause of frontend stalls; random link failure is not yet
-attributed to a specific cause.
+On 2026-11-16, the Steam Deck Steam RetroArch 1.22.2 focus-marker test passed.
+The test used the bundled original `focus.gb`, an isolated save directory,
+`pause_nonactive = "false"` and `autosave_interval = "1"`. An X11 terminal
+window was confirmed active for the full 26-second measured interval while
+RetroArch remained unfocused. The SRAM frame marker changed from 240 to 32;
+the verifier reported `Focus test: PASS (marker advanced while unfocused)`.
+The test ROM, SRAM and RetroArch log remain outside the repository under
+`/home/deck/lotusgb-netpacket/focus-check-stream-v1-20261116/`. This verifies
+foreground loss does not stop this Deck RetroArch session; it does not test
+background controller input or a Pokémon trade.
 
-### Earlier per-edge Netpacket diagnostics
+On 2026-11-16, Ubuntu 24.04's RetroArch 1.18.0 produced an Apport report for a
+synthetic-host launch (`SIGSEGV`, 22:39:57; command line used the generated
+`host.gb`, not a commercial ROM). The available backtrace reaches libc's
+`exit()` handlers with an unresolved instruction address, so the exact crash
+cause is not established. A later host launch remained alive and bound TCP
+55437; a second simultaneous launch failed to bind the same port. Its log shows
+Wayland connection failure followed by X11 initialization, so the Wayland
+message alone does not explain the earlier crash. After the user closed all
+RetroArch windows, one isolated host was launched through Ubuntu's active X11
+session (`DISPLAY=:0`) with a separate synthetic save/log directory. Its
+RetroArch window became the active X11 window within six seconds without a key
+press, remained alive for 36 seconds, and shut down cleanly on SIGINT with SRAM
+saved and port 55437 released. The log had no usable audio driver but continued
+normally. This did not reproduce the crash. It suggests the key press was
+dismissing an earlier Apport crash notice rather than being required for a
+normal launch; that is an inference, and the original SIGSEGV cause remains
+unknown. This Ubuntu frontend issue is separate from the successful Deck focus
+test and the passing cross-device synthetic byte exchange.
 
-The earlier per-edge diagnostic build recorded the local SC state on the first
-outgoing edge and the remote SC state when it received an edge. It marked
-whether the receiver had transfer-start set in external-clock mode, tracked
-the serial bit position, checked peer request sequence continuity, and measured
-request/reply latency.
-Diagnostic event lines include monotonic microseconds elapsed since the local
-Netpacket session started; these timestamps are per-machine and are not a
-shared clock.
-INFO/WARN summaries report progress every 64 edges, slow `retro_run` calls
-(rate limited to one per second), slow replies, timeouts, disconnects and
-frontend Netpacket stop. Detailed per-bit TX/RX tracing was opt-in through the
-old `Netpacket bit trace` option. These historical diagnostics predate the
-byte protocol; the current option is `Netpacket byte trace`. Tests for the
-earlier version verified that an active external-clock transfer accepted eight
-remote edges and received the expected byte, while a late edge after transfer
-completion was counted as ignored. The serial unit test also checked that an
-active internal-clock transfer ignored external edges. The full `make test`
-suite passes with this instrumentation, including DMG serial, libretro normal
-and fixed-step, GBA, homebrew and PPU runner checks. A real Pokémon trade has
-now been manually reproduced with the Mac diagnostic host; the Steam Deck
-client binary identity and log remain unconfirmed. Keep detailed traces
-private: they contain game link data.
-
-On 2026-11-15, matched-source diagnostic builds were prepared for a controlled
-reproduction. The macOS installer is
-`build/packages/LotusGB-RetroArch-macOS-universal.zip` (core SHA-256
-`1b76c8b5efa1f8232bdc35c3c3bc10bc18a20331e9c9f60eb28f5ecf60e188c8`; package
-SHA-256 `e62fd9cf48f0d60e2aeca15ee26f00db3b53c6d9e1e98122b6e41e111da2c365`);
-its five installer/package tests passed. The Steam Deck diagnostic client
-package is `build/packages/LotusGB-Steam-Deck-Netpacket-Diagnostics.zip`
-(Linux core SHA-256
-`811b2e13fd4c1d60549e79cd99fd9413532a1a63e3fa93174569013f838c420c`;
-package SHA-256
-`6a03820e7417c03be2a43abaca15b103ac26dc46ce9cc4e5c679194223809982`). The
-Deck core cross-compiled and the package contains no commercial ROM or save;
-the exact client binary used for the real trade is unconfirmed. Both packages
-use the earlier protocol `LotusGB-serial-bit-v1` and the same source revision
-plus uncommitted diagnostic changes. They are not compatible with the current
-byte-protocol prototype. The opt-in `Netpacket bit trace` option defaults off;
-the isolated Deck config captures initial INFO/WARN summaries at
-`libretro_log_level = 1`.
-The Mac diagnostic core has since been installed into the standalone
-RetroArch user core directory; its installed SHA-256 matches the packaged
-core (`1b76c8b5efa1f8232bdc35c3c3bc10bc18a20331e9c9f60eb28f5ecf60e188c8`).
-The diagnostics include session-relative monotonic timestamps. RetroArch
-must be fully restarted before loading the core. The Steam Deck
-package still needs to be copied to and run on the device.
-
-The standard standalone Mac config at
-`~/Library/Application Support/RetroArch/config/retroarch.cfg` has
-`log_to_file = false` and `log_verbosity = false`; the completed trade used
-the isolated host launcher and wrote its log to the external data folder. The
-isolated client launcher also writes logs to its external data folder, but the
-Steam Deck copy has not been collected. Initial INFO/WARN diagnostics use the
-default core log level. To capture per-bit DEBUG detail, enable the core
-option and set `libretro_log_level = 0` with verbose launch on both sides
-before reloading content.
-
-On 2026-11-15, the user completed a Red/Blue trade over the Mac ↔ Steam Deck
-LAN session. Both sides received the other player's Pokémon, both Pokédexes
-showed the traded Pokémon, and both retained the result after choosing the
-game's restart option and reloading. The game saves the trade automatically;
-a separate Save command is unnecessary. This verifies one real cross-device
-trade and persistence by user report. The exact ROM/core hashes, Deck
-SteamOS/RetroArch versions and client log were not captured.
-
-The captured Mac host log ended cleanly: 14,472 serial edge requests had
-14,472 replies, with no timeout or sequence mismatch; mean reply time was
-17.0 ms and maximum 116 ms. It recorded a normal peer disconnect, Netpacket
-stop and successful SRAM save. `retro_run` still had calls lasting up to
-1.79 seconds. The host also received 2,000 peer edge requests, of which 1,624
-arrived while the host was active in external-clock mode and 376 were ignored
-while it was inactive or using internal clock. Those ignored edges may be
-relevant to the difficult in-game handshake, but the missing Deck log prevents
-confirming whether they caused a failed attempt. The RTT and long calls
-support synchronous per-edge waiting as the main observed source of trade
-stalls; this run completed correctly despite the delay.
+On 2026-11-16, the user tested the stream-v1 link with Pokémon Red (USA) as
+Mac host and Pokémon Blue (USA) as Steam Deck client. The user reported that a
+trade completed without a crash. They then tested a link battle and observed a
+state divergence: Mac's Charmander fainted while Blue still treated it as alive.
+Both games had also displayed “You Win” during the battle. Captured logs show
+both endpoints pairing transfers through sequence 3202 with no sequence errors
+or duplicate bytes; the Deck had started sequence 3203 and was still waiting
+for the host byte after the five-second diagnostic timeout. The logs do not
+establish whether the missing-at-that-time byte resulted from game handshake
+behavior, different guest progress, or another timing factor. The isolated SRAM
+files were unchanged on disk while both RetroArch sessions remained open, so
+post-exit save persistence still needs verification. The user plans to test
+ordinary RetroArch GUI launch and Host/Connect operation without the project
+launcher. Log snapshots are kept outside the repository under `/private/tmp/`
+for local analysis.

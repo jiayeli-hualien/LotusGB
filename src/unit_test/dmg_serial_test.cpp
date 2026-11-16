@@ -116,6 +116,31 @@ void testNetworkByteCompletesAtTransferBarrier() {
     }
 }
 
+void testPendingNetworkEdgeDoesNotBlockSerialComponent() {
+    InterruptRegisters interrupts;
+    DmgSerial serial(interrupts);
+    serial.write(0xFF01, 0xA5);
+    serial.write(0xFF02, 0x81);
+    unsigned requests = 0;
+    serial.setInternalClockCallback([&](bool) -> std::optional<bool> {
+        ++requests;
+        return std::nullopt;
+    });
+
+    serial.advanceTCycles(512 * 4);
+    expect(requests == 4 && serial.getBitsTransferred() == 0 &&
+               serial.read(0xFF01) == 0xA5 && (serial.read(0xFF02) & 0x80) &&
+               !(interrupts.read(0xFF0F) & 8),
+           "pending network edges leave the byte active without shifting or raising IRQ");
+
+    serial.setInternalClockCallback([](bool) -> std::optional<bool> {
+        return false;
+    });
+    serial.advanceTCycles(512);
+    expect(serial.getBitsTransferred() == 1 && serial.read(0xFF01) == 0x4A,
+           "the serial clock resumes shifting after a network bit becomes available");
+}
+
 void testStartDoesNotResetSerialClockPhase() {
     InterruptRegisters interrupts;
     DmgSerial serial(interrupts);
@@ -286,6 +311,7 @@ void testSerialCallbackFailureAndDisconnect() {
 int main() {
     testSerialCallbackFailureAndDisconnect();
     testNetworkByteCompletesAtTransferBarrier();
+    testPendingNetworkEdgeDoesNotBlockSerialComponent();
     testExternalEdgesAndTwoPortExchange();
     testChallengeResponseDistinguishesPeerFromDisconnectedLine();
     testIrregularExternalEdgesAbortAndModeGate();
