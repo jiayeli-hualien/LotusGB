@@ -84,6 +84,11 @@ install-retroarch-core-macos: $(build_dir)
 test: $(build_dir)
 	@test "$(TARGET)" = "$(HOST_TARGET)" || { printf '%s\n' 'Tests run on the local host; cross-target builds are compile/package only.' >&2; exit 1; }
 	$(MAKE) -C $(src_dir) test build_dir=$(build_dir)
+	$(MAKE) -C $(src_dir)/libretro rom-test-runner build_dir=$(build_dir)
+	python3 tools/test_netpacket_probe_roms.py \
+		--generator tools/generate_netpacket_probe_roms.py \
+		--core "$(build_dir)/lotusgb_libretro.$(if $(filter Darwin,$(HOST_OS)),dylib,so)" \
+		--runner "$(build_dir)/libretro_rom_runner"
 	$(MAKE) -C $(src_dir)/lib mooneye-runner build_dir=$(build_dir)
 	python3 tools/test_mooneye_runner.py --runner "$(build_dir)/mooneye_rom_runner"
 	python3 tools/test_homebrew_check.py

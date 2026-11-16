@@ -549,9 +549,20 @@ successful SRAM writes on normal exit and both save-file timestamps advanced.
 Together with the earlier manual Red/Blue trade, this verifies trade
 persistence for those saves; it does not establish battle-state synchronization.
 
-Next probe work should remove the startup race with an explicit peer-ready
-start condition, then exercise a bounded sequence of multiple matched bytes
-and repeat the synthetic run with controlled delay/jitter and disconnects.
-Do not have one peer retry unilaterally: both ROMs must arm transfers in the
-same sequence. Separate-Internet/NAT behavior, relay reconnects under loss,
-and Pokémon gameplay through the relay remain unverified.
+On 2026-11-17, the original probe-ROM generator gained a client start gate
+(`--client-start button`) and a bounded transfer count (`--transfers 1..16`).
+The gated client waits for the mapped Game Boy A input, allowing a GUI user to
+join the RetroArch room before starting serial traffic; the default automatic
+mode remains available for direct-IP launches. The full `make test` suite
+passed with a new ROM-runner check: the gated client sends no byte before
+input, then completes and stores 16 standalone serial bytes in order; the
+check also confirmed that automatic mode still completes without input. This
+checks the generated ROM and local serial behavior, not a 16-byte Netpacket
+frontend session.
+
+Next, run the bounded 16-byte ROM pair through RetroArch Netplay and require
+exactly 16 matched transfers in the verifiers. Then repeat with controlled
+delay/jitter and disconnects. Do not have one peer retry unilaterally: both
+ROMs must arm transfers in the same sequence. Separate-Internet/NAT behavior,
+relay reconnects under loss, and Pokémon gameplay through the relay remain
+unverified.
