@@ -566,3 +566,15 @@ delay/jitter and disconnects. Do not have one peer retry unilaterally: both
 ROMs must arm transfers in the same sequence. Separate-Internet/NAT behavior,
 relay reconnects under loss, and Pokémon gameplay through the relay remain
 unverified.
+
+The matching synthetic frontend probe artifacts are ready under the ignored
+build directory: the Mac host bundle is
+`build/serial-stream-v1-16byte/`, and the stable Steam Deck archive is
+`build/packages/LotusGB-Steam-Deck-Netpacket-Diagnostics.zip` (SHA-256
+`3be881ba8a0b76c59579f1671ed4871e46a707431be3fbab63e7c0c99064959b`). The
+Deck archive contains the original generated client test ROM, current
+stream-v1 core, launcher, verifier and focus ROM; it contains no commercial
+ROM, save, log or capture. The Mac bundle uses the installed standalone core.
+The verifier fixture passed for both roles and correctly rejected one
+corrupted received byte. These are prepared artifacts; the 16-byte RetroArch
+frontend exchange still needs its first run.
