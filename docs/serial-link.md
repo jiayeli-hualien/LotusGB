@@ -288,7 +288,46 @@ without receiving the host's matching byte. This is evidence of a peer byte
 not yet being available at that sample, not proof of the underlying cause.
 These observations demonstrate one ROM pair and session, not broad game
 compatibility. Both RetroArch instances were still open when the isolated SRAM
-files were sampled, so post-exit save persistence remains unverified.
+files were sampled. After the later normal shutdown, both save files were
+updated on disk, confirming frontend flush; loading those files in the games
+and checking the traded party/Pokédex entries remains unverified.
+
+### Gen I Pokémon link-battle synchronization
+
+The Pokémon Red disassembly shows that link battles reduce repeated cable data:
+the Cable Club setup exchanges a shared ten-byte random-number list, and the
+Game Boy providing the serial clock's list is used by both consoles. The other
+console copies that list from received data. During each turn, the game
+exchanges a compact action code (move selection, switching, or running); each
+ROM then applies the battle locally rather than receiving authoritative hit,
+critical-hit, damage, or HP results. `BattleRandom` advances an index into the
+shared list, including for random turn order when the Pokémon have equal speed.
+See the upstream [`pokered` link setup](https://github.com/pret/pokered/blob/master/engine/link/cable_club.asm),
+[`pokered` battle engine](https://github.com/pret/pokered/blob/master/engine/battle/core.asm),
+and [`pokeyellow` action exchange](https://github.com/pret/pokeyellow/blob/master/engine/battle/core.asm).
+
+This design requires matching logical battle state and matching consumption of
+the shared random sequence. If one side takes a different branch or consumes an
+extra random value, later accuracy, critical-hit, or damage rolls can diverge.
+It does not require the two emulated CPU clocks to have the same phase: the
+physical link's secondary serial port is clocked by the primary serial signal,
+while the consoles' system clocks remain independent ([Game Boy: Complete
+Technical Reference](https://gekkio.fi/files/gb-docs/gbctr.pdf)). LotusGB's
+stream-v1 pairs ordered serial bytes but does not synchronize Pokémon's battle
+state or its random-list index, so successful byte pairing alone cannot prove
+that both battle simulations stayed in agreement.
+
+For the 2026-11-16 battle observation, the Deck produced serial transfer 3203
+while the Mac had not produced the matching transfer before shutdown. This is
+consistent with the ROMs reaching different communication progress, but does
+not identify whether that was the cause or a consequence of the earlier HP
+disagreement. The `pokered` disassembly also documents a specific link-battle
+fainting desync involving Bide's accumulated-damage cleanup; that is a
+conditional game bug, not an explanation for this session unless Bide was
+involved. No battle fix is made yet. A later diagnosis should trace the action
+code, random-list index, and relevant HP on both endpoints around each turn,
+then distinguish RNG-position drift from a ROM-specific battle bug or serial
+progress mismatch.
 
 A network relay can provide a route when direct connections or port forwarding
 are unavailable, but it does not change serial-byte scheduling or remove
@@ -456,8 +495,9 @@ or duplicate bytes; the Deck had started sequence 3203 and was still waiting
 for the host byte after the five-second diagnostic timeout. The logs do not
 establish whether the missing-at-that-time byte resulted from game handshake
 behavior, different guest progress, or another timing factor. The isolated SRAM
-files were unchanged on disk while both RetroArch sessions remained open, so
-post-exit save persistence still needs verification. The user plans to test
-ordinary RetroArch GUI launch and Host/Connect operation without the project
-launcher. Log snapshots are kept outside the repository under `/private/tmp/`
-for local analysis.
+files were unchanged on disk while both RetroArch sessions remained open. They
+were updated after the later normal shutdown, confirming frontend flush; the
+in-game reload check is still pending. The user plans to test ordinary
+RetroArch GUI launch and Host/Connect operation without the project launcher.
+Log snapshots are kept outside the repository under `/private/tmp/` for local
+analysis.
