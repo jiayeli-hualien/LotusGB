@@ -560,12 +560,34 @@ check also confirmed that automatic mode still completes without input. This
 checks the generated ROM and local serial behavior, not a 16-byte Netpacket
 frontend session.
 
-Next, run the bounded 16-byte ROM pair through RetroArch Netplay and require
-exactly 16 matched transfers in the verifiers. Then repeat with controlled
-delay/jitter and disconnects. Do not have one peer retry unilaterally: both
-ROMs must arm transfers in the same sequence. Separate-Internet/NAT behavior,
-relay reconnects under loss, and Pokémon gameplay through the relay remain
-unverified.
+On 2026-11-17, two Ubuntu RetroArch 1.18.0 processes using the same LotusGB core
+then completed the bounded 16-byte probe over a direct local Netplay connection.
+Both final logs reported 16 bytes sent, received and paired, with zero sequence
+errors, duplicates and pending bytes. The host and client SRAM verifiers passed
+all four checkpoints and the full 16-byte receive streams (`3c a5 a5` host,
+`a5 3c a5` client). This confirms ordered multi-byte Netpacket delivery through
+the actual RetroArch frontend and save flush on both ends. RetroArch reported
+about 337–342 ms ping and the host recorded two `retro_run()` calls over 100 ms;
+because both processes ran on one Ubuntu VM, these are frontend/session
+measurements, not a WAN RTT or a clean latency benchmark. The test used only
+the original synthetic ROMs and isolated saves. Controlled delay/jitter,
+disconnects, separate-Internet/NAT behavior, relay reconnects under loss, and
+Pokémon gameplay through the relay remain unverified. The bounded 16-byte ROM
+pair is ready for repeating through RetroArch under controlled network
+conditions; do not have one peer retry unilaterally, since both ROMs must arm
+transfers in the same sequence.
+
+A second Ubuntu RetroArch run used a temporary user-space TCP bridge that
+delayed each forwarded read by 100 ms in each direction. All 16 transfers again
+paired with zero sequence errors, duplicates or pending bytes, and both SRAM
+verifiers passed. The reported average/max byte wait was 103.9/262.0 ms on the
+host and 133.6/277.9 ms on the client. This bridge is a bounded delay probe,
+not packet-level `netem` and not a precise 200 ms RTT simulation. After SIGINT
+shutdown, both RetroArch processes printed a segmentation fault after their
+final Netpacket summaries, successful SRAM writes and normal core-unload log
+entries. No new Ubuntu crash report was created (the existing report is from
+2026-11-16); treat this as an unresolved frontend shutdown issue, separate from
+the passing transfer and SRAM evidence.
 
 The matching synthetic frontend probe artifacts are ready under the ignored
 build directory: the Mac host bundle is
@@ -576,5 +598,6 @@ Deck archive contains the original generated client test ROM, current
 stream-v1 core, launcher, verifier and focus ROM; it contains no commercial
 ROM, save, log or capture. The Mac bundle uses the installed standalone core.
 The verifier fixture passed for both roles and correctly rejected one
-corrupted received byte. These are prepared artifacts; the 16-byte RetroArch
-frontend exchange still needs its first run.
+corrupted received byte. The 16-byte RetroArch frontend exchange has since
+passed on two Ubuntu processes; the prepared Mac and Steam Deck bundles remain
+available for cross-device GUI validation.
