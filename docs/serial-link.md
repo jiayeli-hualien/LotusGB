@@ -215,7 +215,8 @@ verifier returned `3C A5 A5`. The Deck launched through Steam App ID 1118310.
 This verifies a bounded cross-device LAN exchange; it does not verify gameplay
 or a Pokémon trade. Internet hosting also depends on RetroArch network setup:
 the host must be reachable on its Netplay TCP port, or both peers can use the
-RetroArch relay option. Neither Internet path has been tested with LotusGB yet
+RetroArch relay option. At the time of this earlier LAN test, neither path had
+been tested with LotusGB; later relay evidence is recorded below
 ([RetroArch Netplay setup](https://docs.libretro.com/guides/netplay-getting-started/)).
 
 
@@ -347,7 +348,8 @@ A network relay can provide a route when direct connections or port forwarding
 are unavailable, but it does not change serial-byte scheduling or remove
 latency. RetroArch already provides a relay-server option for that connection
 path ([setup guide](https://docs.libretro.com/guides/netplay-getting-started/));
-the LotusGB Netpacket path through that relay has not yet been tested. Adding a
+a later synthetic probe confirmed LotusGB Netpacket bytes through that relay,
+as recorded below. Adding a
 second transparent proxy would duplicate transport responsibilities and can
 add another network hop. A proxy also cannot know a future byte before the ROM
 produces it; predicting or completing bytes early risks changing game-visible
@@ -395,9 +397,10 @@ SRAM; `pause_nonactive = "false"` allowed the host to continue when the client
 window had focus. A later Mac ↔ Steam Deck GUI LAN probe also passed its
 synthetic SRAM checks. Deck SteamOS/RetroArch versions and the client log were
 not captured. Internet relay, real-network jitter and reconnect behavior
-remain unverified. The user deferred Internet testing on 2026-11-14 because
-their network has no port forwarding. An optional relay-lobby path is prepared
-in ignored probe launchers, but no external relay was contacted. Probe
+remain unverified. The user deferred direct Internet testing on 2026-11-14
+because their network has no port forwarding. A later test used RetroArch's
+public relay with both devices still on the same home LAN; it verified that
+relay route, but not peers on separate Internet connections. Probe
 launchers support private ROM paths, per-player data directories and GUI
 host/client setup; fake frontend dry-runs verified those paths and the guard
 against repository ROMs or saves. No commercial ROM or save was opened by the
@@ -515,3 +518,40 @@ in-game reload check is still pending. The user plans to test ordinary
 RetroArch GUI launch and Host/Connect operation without the project launcher.
 Log snapshots are kept outside the repository under `/private/tmp/` for local
 analysis.
+
+On 2026-11-17, an original synthetic host ROM on Ubuntu RetroArch 1.18.0 and
+the Deck Steam RetroArch 1.22.2 client exchanged one stream-v1 byte through a
+RetroArch public relay. Both devices were still on the same home LAN, so this
+proves the relay route and Netpacket payload, not cross-ISP/NAT operation.
+RetroArch reported roughly 406/412 ms ping. The first attempt exposed a probe
+startup race: with `menu_pause_libretro = false`, the client ROM had already
+started before it joined and the host's first byte remained pending. Restarting
+the client after joining paired sequence 1. At clean shutdown both endpoints
+reported one byte sent/received/paired and zero sequence errors, duplicates or
+pending transfers; SRAM markers were host `3c a5 a5` and client `a5 3c a5`.
+The host's reported wait includes the minutes before the client restart and is
+not a measure of network latency. This single-byte probe does not establish
+multi-byte reliability, reconnect behavior, or Pokémon gameplay over WAN.
+
+After the Deck was shut down, an Ubuntu RetroArch 1.18.0 host and Mac Steam
+RetroArch 1.22.2 client also exchanged one synthetic stream-v1 byte directly
+over LAN. The host verifier passed with one sent/received/paired byte, no
+sequence errors, duplicates or pending transfers, and SRAM marker `3c a5 a5`.
+The Mac log recorded the pair and matching counters, but its SRAM file was not
+present after signal shutdown, so this run does not verify Mac-side SRAM
+persistence. This validates a command-line Mac/Ubuntu LAN path without the
+Deck; it is not a second-network Internet test.
+
+The separate real-game save readback was also completed on 2026-11-17: the
+user confirmed the returned Charmander remained in Red and Squirtle remained
+in Blue after reopening their isolated saves. Both RetroArch logs reported
+successful SRAM writes on normal exit and both save-file timestamps advanced.
+Together with the earlier manual Red/Blue trade, this verifies trade
+persistence for those saves; it does not establish battle-state synchronization.
+
+Next probe work should remove the startup race with an explicit peer-ready
+start condition, then exercise a bounded sequence of multiple matched bytes
+and repeat the synthetic run with controlled delay/jitter and disconnects.
+Do not have one peer retry unilaterally: both ROMs must arm transfers in the
+same sequence. Separate-Internet/NAT behavior, relay reconnects under loss,
+and Pokémon gameplay through the relay remain unverified.
