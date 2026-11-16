@@ -570,12 +570,12 @@ the actual RetroArch frontend and save flush on both ends. RetroArch reported
 about 337–342 ms ping and the host recorded two `retro_run()` calls over 100 ms;
 because both processes ran on one Ubuntu VM, these are frontend/session
 measurements, not a WAN RTT or a clean latency benchmark. The test used only
-the original synthetic ROMs and isolated saves. Controlled delay/jitter,
+the original synthetic ROMs and isolated saves. Packet-level jitter/loss,
 disconnects, separate-Internet/NAT behavior, relay reconnects under loss, and
 Pokémon gameplay through the relay remain unverified. The bounded 16-byte ROM
-pair is ready for repeating through RetroArch under controlled network
-conditions; do not have one peer retry unilaterally, since both ROMs must arm
-transfers in the same sequence.
+pair supports repeating through RetroArch under controlled network conditions;
+do not have one peer retry unilaterally, since both ROMs must arm transfers in
+the same sequence.
 
 A second Ubuntu RetroArch run used a temporary user-space TCP bridge that
 delayed each forwarded read by 100 ms in each direction. All 16 transfers again
@@ -588,6 +588,22 @@ final Netpacket summaries, successful SRAM writes and normal core-unload log
 entries. No new Ubuntu crash report was created (the existing report is from
 2026-11-16); treat this as an unresolved frontend shutdown issue, separate from
 the passing transfer and SRAM evidence.
+
+A third run configured the same user-space bridge for 200 ms per forwarded read
+in each direction and used the join-gated client ROM. The client was started
+only after its RetroArch log confirmed the Netplay join, then received the
+mapped Game Boy A key. Both endpoints completed 16/16 sent, received and paired
+bytes with zero sequence errors, duplicates or pending data; both SRAM
+verifiers passed the complete receive streams and checkpoints. Excluding the
+host's first byte, which waited 109.9 seconds for the deliberate join/key gate,
+host byte wait was 198.1 ms average / 194.4 ms median / 385.2 ms max; client
+wait was 268.5 ms average / 248.3 ms median / 480.7 ms max. The initial
+auto-start attempt at this delay was invalid: the client completed its local
+ROM sequence before joining, wrote `0xFF` receive bytes, and the host timed out
+on its first transfer. This confirms the GUI probe must use its join gate at
+longer delays. The successful 200 ms run is still a same-VM synthetic probe
+through a user-space TCP bridge; it does not establish WAN gameplay or
+packet-level jitter/loss behavior.
 
 The matching synthetic frontend probe artifacts are ready under the ignored
 build directory: the Mac host bundle is
