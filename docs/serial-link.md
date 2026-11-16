@@ -605,6 +605,23 @@ longer delays. The successful 200 ms run is still a same-VM synthetic probe
 through a user-space TCP bridge; it does not establish WAN gameplay or
 packet-level jitter/loss behavior.
 
+A 2026-11-17 direct cross-device 16-byte attempt used Ubuntu RetroArch 1.18.0
+as host and standalone macOS RetroArch 1.22.2 as client. The client joined the
+Ubuntu host at 18–21 ms Netplay ping. RetroArch warned about the different
+frontend versions and different synthetic games; Netpacket still started on
+both peers. The join-gated client was released after the host had already
+timed out on its first byte. That byte paired late, but the test was stopped
+before the 16-byte sequence finished. The last flushed counters showed 10
+paired bytes on the Ubuntu host and 8 on the Mac client, with zero reported
+sequence errors or duplicate bytes; observed maximum waits reached about 111
+seconds, and the Ubuntu RetroArch process used about 95% CPU. The 16-byte SRAM
+verification was not completed. The host had run ahead while waiting for the
+gated client, the frontend versions differed, and the Ubuntu host process was
+CPU-bound on its VM. This is an incomplete diagnostic run rather than a clean
+LAN reliability or latency result. It does show that the Mac client continued
+advancing through several transfers while RetroArch was unfocused with
+`pause_nonactive = false`; it does not establish completion of the byte stream.
+
 A subsequent attempt on 2026-11-17 tried to repeat the bounded 16-byte probe
 through RetroArch's public relay, using two Ubuntu RetroArch 1.18.0 processes
 and the same synthetic ROMs. Both TCP connections reached the relay and the
