@@ -18,13 +18,7 @@ make test
 ```
 
 These default commands build and run tests for the detected local host:
-Ubuntu x86-64 or Mac M1. Use `make build TARGET=steamdeck` to cross-compile the Linux x86-64 core; use
-`make package-retroarch-steam-deck` to create its install ZIP. Cross-target
-builds do not run host tests, and `make test TARGET=steamdeck` is rejected.
-The Deck build uses `build/toolchains/zig-0.17.0/zig` by default; override it
-with `STEAM_DECK_ZIG=/path/to/zig` and select another Zig target triple with
-`STEAM_DECK_TARGET=x86_64-linux-gnu`. macOS Universal packaging remains
-`make package-retroarch-macos` and requires macOS/Xcode tools.
+Ubuntu x86-64 or Apple Silicon macOS.
 
 Then run LotusGB's GBIT instruction comparison from `build/`:
 
@@ -74,10 +68,57 @@ The libretro tests also print the [input-response baseline](input-latency.md):
 GB Pong press/release callback counts and synthetic one-poll input checks in
 both pixel formats. These do not measure physical controller/display latency.
 
+The Netpacket regression in `make test` runs two core processes on the same
+machine using Unix socket pairs. GitHub's Ubuntu runner runs it without
+RetroArch or an IP network connection. Both probe ROMs first arm external
+clock and must neither send packets nor complete a transfer. The harness
+then lets one ROM select internal clock and checks that the ROMs receive
+complementary role bytes and exchange the full ordered payload. The short
+and long runs give the clock to opposite Netpacket peers.
+
 The GBIT comparison should report 244/244 ordinary opcodes and 256/256 CB
 opcodes. The standard sequence was run on macOS on 2026-10-28: GBIT's own
 regressions, `make build`, `make test`, and the LotusGB GBIT comparison all
 passed.
+
+## Reuse one Linux core for Ubuntu and Steam Deck
+
+Cross-compile once per source revision, then copy the same Linux core to both
+machines. On Apple Silicon macOS, build with:
+
+~~~sh
+make build TARGET=steamdeck
+file build/steamdeck/lotusgb_libretro.so
+shasum -a 256 build/steamdeck/lotusgb_libretro.so
+~~~
+
+The target name is `steamdeck`, and its default Zig target is
+`x86_64-linux-gnu`. The output is a dynamically linked Linux x86-64 ELF
+library. Each destination needs an x86-64 RetroArch process and a Linux
+runtime that satisfies the library's dependencies, including its glibc
+symbol versions. macOS RetroArch loads a separate native Mach-O core.
+
+On Ubuntu and Steam Deck, check the SHA-256 of the file RetroArch will
+actually load with `sha256sum /path/to/lotusgb_libretro.so`. Confirm the core
+path in the RetroArch startup log and, for LAN tests, confirm the same
+Netpacket protocol version on both peers. This keeps the core build fixed
+while comparing the two environments.
+
+The Zig build path has passed gameplay checks on both distributions.
+The [Steam Deck checkpoint](steam-deck-check.md#m3-gameplay-and-battery-save-checkpoint--passed)
+records a hash-identified Linux core. The [Red/Blue LAN rematch](serial-link.md)
+used a later Mac-built Linux core on Ubuntu RetroArch 1.18.0. In the Ubuntu
+run, the deployed core's SHA-256 matched the Mac build output. The two
+checkpoints used different revisions, so a new build still needs a load
+check on each destination.
+
+The default toolchain is `build/toolchains/zig-0.17.0/zig`. Override it
+with `STEAM_DECK_ZIG=/path/to/zig` or change the target triple with
+`STEAM_DECK_TARGET`. Use `make package-retroarch-steam-deck` for the install
+ZIP. Cross-target builds are compile/package only, and
+`make test TARGET=steamdeck` is rejected. Use
+`make package-retroarch-macos` with macOS/Xcode tools for the native universal
+package.
 
 ## Add only the checks relevant to the change
 
