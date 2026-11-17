@@ -154,10 +154,11 @@ void mockNetpacketSend(int flags, const void *data, size_t size, uint16_t client
            "serial link sends reliable broadcast byte packets immediately");
     const auto *request = static_cast<const uint8_t *>(data);
     expect(size == 15, "core sends a fifteen-byte serial packet");
-    expect(request[4] == 3, "core sends only versioned peer-byte packets");
+    expect(request[4] == 4, "internal clock sends a clock request");
     ++mockSerialRequests;
     std::array<uint8_t, 15> peerByte{};
     std::copy(request, request + size, peerByte.begin());
+    peerByte[4] = 5; // External clock reply.
     peerByte[10] = 0x3C;
     netpacketInterface->receive(peerByte.data(), peerByte.size(), 0);
 }
@@ -169,8 +170,9 @@ void mockNetpacketSendWithoutReply(int flags, const void *data, size_t size,
     expect((flags & RETRO_NETPACKET_RELIABLE) != 0 &&
                (flags & RETRO_NETPACKET_FLUSH_HINT) != 0 &&
                clientId == RETRO_NETPACKET_BROADCAST && data && size == 15 &&
-               static_cast<const uint8_t *>(data)[4] == 3,
-           "host publishes its local serial byte before disconnect");
+               (static_cast<const uint8_t *>(data)[4] == 4 ||
+                static_cast<const uint8_t *>(data)[4] == 5),
+           "core publishes a clock request or reply as a reliable byte packet");
     ++mockSerialRequests;
 }
 
@@ -2339,7 +2341,7 @@ void testLibretroNetpacketSerialExchange() {
            netpacketInterface->receive && netpacketInterface->stop &&
            netpacketInterface->poll && netpacketInterface->protocol_version &&
            std::string(netpacketInterface->protocol_version) ==
-               "LotusGB-serial-stream-v1",
+               "LotusGB-serial-stream-v2",
            "core registers a versioned RetroArch Netpacket interface");
     netpacketTraceOption = "off";
     logMessages.clear();
@@ -2363,7 +2365,7 @@ void testLibretroNetpacketSerialExchange() {
     netpacketInterface->start(1, mockNetpacketSend, mockNetpacketPollReceive);
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
                return message.find(
-                   "RetroArch serial Netpacket started as client; protocol=LotusGB-serial-stream-v1") !=
+                   "RetroArch serial Netpacket started as client; protocol=LotusGB-serial-stream-v2") !=
                    std::string::npos;
            }),
            "Netpacket startup log identifies the client protocol version");
@@ -2441,13 +2443,16 @@ void testLibretroNetpacketExternalEdgeDiagnostics() {
                               mockNetpacketPollReceive);
     retro_run();
 
+    expect(mockSerialRequests == 0,
+           "arming an external port does not send a byte or supply a clock");
+
     const std::array<uint8_t, 15> peerByte{
-        'L', 'G', 'B', 'L', 3, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
+        'L', 'G', 'B', 'L', 4, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
     netpacketInterface->receive(peerByte.data(), peerByte.size(), 0);
     retro_run();
     auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
-    expect(saveRam && saveRam[0] == 0x3C,
-           "one remote byte completes an active external-clock transfer");
+    expect(saveRam && saveRam[0] == 0x3C && mockSerialRequests == 1,
+           "a peer clock request completes the external transfer and emits one reply");
 
     netpacketInterface->receive(peerByte.data(), peerByte.size(), 0);
     auto outOfOrderPeerByte = peerByte;
@@ -2487,6 +2492,50 @@ void testLibretroNetpacketExternalEdgeDiagnostics() {
     retro_unload_game();
 }
 
+void testLibretroNetpacketClockNegotiationUsesCurrentSerialData() {
+    std::vector<uint8_t> rom(0x8000);
+    rom[0x147] = 0x03;
+    rom[0x149] = 0x02;
+    const uint8_t program[] = {
+        0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
+        0xAF, 0xEA, 0x00, 0xA0,       // Clear the test gate.
+        0x3E, 0x02, 0xE0, 1,          // Advertise the external role.
+        0x3E, 0x80, 0xE0, 2,          // Arm without providing a clock.
+        0xFA, 0x00, 0xA0, 0xA7, 0x28, 0xFA, // Wait for the test to allow negotiation.
+        0x3E, 0x01, 0xE0, 1,          // Switch to the internal role.
+        0x3E, 0x81, 0xE0, 2,
+        0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
+        0xF0, 1, 0xEA, 1, 0xA0,       // Record the peer's role byte.
+        0x18, 0xFE,
+    };
+    std::copy(std::begin(program), std::end(program), rom.begin() + 0x100);
+    const retro_game_info game{"netpacket-clock-negotiation.gb", rom.data(),
+                               rom.size(), nullptr};
+    expect(retro_load_game(&game), "clock negotiation ROM loads");
+    mockSerialRequests = 0;
+    netpacketInterface->start(
+        1, +[](int, const void *data, size_t size, uint16_t) {
+            const auto *bytes = static_cast<const uint8_t *>(data);
+            expect(size == 15 && bytes[4] == 4 && bytes[9] == 1 && bytes[10] == 0x01,
+                   "the first clock request sends the current internal role byte");
+            ++mockSerialRequests;
+            const std::array<uint8_t, 15> reply{
+                'L', 'G', 'B', 'L', 5, 0, 0, 0, 0, 1, 0x02, 0, 0, 0, 0};
+            netpacketInterface->receive(reply.data(), reply.size(), 0);
+        }, mockNetpacketPollReceive);
+    retro_run();
+    netpacketInterface->poll();
+    auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    expect(saveRam && mockSerialRequests == 0,
+           "the initial external role never publishes a clock request");
+    saveRam[0] = 1;
+    retro_run();
+    expect(mockSerialRequests == 1 && saveRam[1] == 0x02,
+           "switching to internal clock exchanges complementary role bytes");
+    netpacketInterface->stop();
+    retro_unload_game();
+}
+
 void testLibretroNetpacketQueuesPeerByteBeforeLocalStart() {
     std::vector<uint8_t> rom(0x8000);
     rom[0x147] = 0x03;
@@ -2494,7 +2543,7 @@ void testLibretroNetpacketQueuesPeerByteBeforeLocalStart() {
     const uint8_t program[] = {
         0x3E, 0x0A, 0xEA, 0, 0,       // Enable SRAM.
         0x3E, 0xA5, 0xE0, 1,          // Load the local byte.
-        0x3E, 0x81, 0xE0, 2,          // Start the internal-clock transfer later.
+        0x3E, 0x80, 0xE0, 2,          // Arm the external-clock transfer later.
         0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA,
         0xF0, 1, 0xEA, 0, 0xA0,       // Store the queued peer byte.
         0x18, 0xFE,
@@ -2509,13 +2558,15 @@ void testLibretroNetpacketQueuesPeerByteBeforeLocalStart() {
                               mockNetpacketPollReceive);
 
     const std::array<uint8_t, 15> earlyPeerByte{
-        'L', 'G', 'B', 'L', 3, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
+        'L', 'G', 'B', 'L', 4, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
     netpacketInterface->receive(earlyPeerByte.data(), earlyPeerByte.size(), 0);
+    retro_run();
+    netpacketInterface->poll();
     retro_run();
 
     auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
     expect(saveRam && saveRam[0] == 0x3C && mockSerialRequests == 1,
-           "a peer byte arriving before SC start is queued and paired without an ACK round trip");
+           "a peer byte arriving before SC start is queued and paired when the external port arms");
     netpacketInterface->stop();
     retro_unload_game();
 }
@@ -2544,7 +2595,7 @@ void testLibretroNetpacketDisconnectKeepsFrontendResponsive() {
                               mockNetpacketDisconnectDuringPoll);
     expect(std::any_of(logMessages.begin(), logMessages.end(), [](const std::string &message) {
                return message.find(
-                   "RetroArch serial Netpacket started as host; protocol=LotusGB-serial-stream-v1") !=
+                   "RetroArch serial Netpacket started as host; protocol=LotusGB-serial-stream-v2") !=
                    std::string::npos;
            }),
            "Netpacket startup log identifies the host protocol version");
@@ -2641,7 +2692,7 @@ void testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply() {
            "frames and audio keep being published during an unanswered serial byte");
 
     const std::array<uint8_t, 15> latePeerByte{
-        'L', 'G', 'B', 'L', 3, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
+        'L', 'G', 'B', 'L', 5, 0, 0, 0, 0, 1, 0x3C, 0, 0, 0, 0};
     netpacketInterface->receive(latePeerByte.data(), latePeerByte.size(), 0);
     retro_run();
     auto *saveRam = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
@@ -2981,6 +3032,7 @@ int main(int argc, char **argv) {
     testLibretroLinkSubsystem();
     testLibretroNetpacketSerialExchange();
     testLibretroNetpacketExternalEdgeDiagnostics();
+    testLibretroNetpacketClockNegotiationUsesCurrentSerialData();
     testLibretroNetpacketQueuesPeerByteBeforeLocalStart();
     testLibretroNetpacketDisconnectKeepsFrontendResponsive();
     testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply();

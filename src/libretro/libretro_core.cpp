@@ -221,12 +221,14 @@ uint32_t netpacketSequence = 0;
 uint32_t netpacketLocalTransferSequence = 0;
 uint8_t netpacketLocalOutgoingByte = 0xFF;
 bool netpacketLocalTransferActive = false;
+bool netpacketLocalInternalClock = false;
 bool netpacketLocalByteSent = false;
 bool netpacketPeerByteTimedOut = false;
 std::chrono::steady_clock::time_point netpacketTransferStarted{};
 struct PeerSerialByte {
     uint32_t sequence = 0;
     uint8_t value = 0xFF;
+    bool internalClock = false;
 };
 std::deque<PeerSerialByte> netpacketPeerByteQueue;
 uint32_t netpacketLastReceivedPeerSequence = 0;
@@ -254,29 +256,23 @@ uint64_t netpacketSessionElapsedUs() {
             netpacketDiagnostics.sessionStarted).count());
 }
 
-const char NETPACKET_PROTOCOL_VERSION[] = "LotusGB-serial-stream-v1";
+const char NETPACKET_PROTOCOL_VERSION[] = "LotusGB-serial-stream-v2";
 
-enum class LinkPacketType : uint8_t { ByteReady = 3 };
+enum class LinkPacketType : uint8_t { ClockRequest = 4, ClockReply = 5 };
 
 struct LinkBytePacket {
     LinkPacketType type;
     uint32_t sequence;
     uint8_t value;
-    bool accepted;
-    uint32_t peerSequence;
 };
 
 std::array<uint8_t, 15> encodeLinkPacket(const LinkBytePacket &packet) {
     return {'L', 'G', 'B', 'L', static_cast<uint8_t>(packet.type),
-            static_cast<uint8_t>(packet.accepted ? 1 : 0),
+            0,
             static_cast<uint8_t>(packet.sequence >> 24),
             static_cast<uint8_t>(packet.sequence >> 16),
             static_cast<uint8_t>(packet.sequence >> 8),
-            static_cast<uint8_t>(packet.sequence), packet.value,
-            static_cast<uint8_t>(packet.peerSequence >> 24),
-            static_cast<uint8_t>(packet.peerSequence >> 16),
-            static_cast<uint8_t>(packet.peerSequence >> 8),
-            static_cast<uint8_t>(packet.peerSequence)};
+            static_cast<uint8_t>(packet.sequence), packet.value, 0, 0, 0, 0};
 }
 
 std::optional<LinkBytePacket> decodeLinkPacket(const void *data, size_t size) {
@@ -284,20 +280,16 @@ std::optional<LinkBytePacket> decodeLinkPacket(const void *data, size_t size) {
         return std::nullopt;
     const auto *bytes = static_cast<const uint8_t *>(data);
     if (bytes[0] != 'L' || bytes[1] != 'G' || bytes[2] != 'B' ||
-        bytes[3] != 'L' || bytes[4] != static_cast<uint8_t>(LinkPacketType::ByteReady) ||
-        bytes[5] != 0)
+        bytes[3] != 'L' || bytes[5] != 0 || bytes[11] != 0 ||
+        bytes[12] != 0 || bytes[13] != 0 || bytes[14] != 0)
         return std::nullopt;
     const auto type = static_cast<LinkPacketType>(bytes[4]);
-    const bool accepted = bytes[5] != 0;
+    if (type != LinkPacketType::ClockRequest && type != LinkPacketType::ClockReply)
+        return std::nullopt;
     const uint32_t sequence = (static_cast<uint32_t>(bytes[6]) << 24) |
                               (static_cast<uint32_t>(bytes[7]) << 16) |
                               (static_cast<uint32_t>(bytes[8]) << 8) | bytes[9];
-    const uint32_t peerSequence = (static_cast<uint32_t>(bytes[11]) << 24) |
-                                  (static_cast<uint32_t>(bytes[12]) << 16) |
-                                  (static_cast<uint32_t>(bytes[13]) << 8) | bytes[14];
-    if (accepted || peerSequence != 0)
-        return std::nullopt;
-    return LinkBytePacket{type, sequence, bytes[10], accepted, peerSequence};
+    return LinkBytePacket{type, sequence, bytes[10]};
 }
 
 void sendLinkPacket(const LinkBytePacket &packet) {
@@ -358,11 +350,10 @@ void logSerialDiagnosticState(const char *event, uint32_t sequence,
     logMessage(level, message);
 }
 
-bool ensureLocalNetworkTransfer() {
-    if (!emulatorSystem || !(emulatorSystem->getSerialControl() & 0x80))
-        return false;
+void beginLocalNetworkTransfer(bool internalClock) {
     if (!netpacketLocalTransferActive) {
         netpacketLocalTransferActive = true;
+        netpacketLocalInternalClock = internalClock;
         netpacketLocalTransferSequence = ++netpacketSequence;
         netpacketLocalOutgoingByte = emulatorSystem->getSerialData();
         netpacketLocalByteSent = false;
@@ -373,7 +364,6 @@ bool ensureLocalNetworkTransfer() {
                                  netpacketLocalTransferSequence,
                                  RETRO_LOG_INFO);
     }
-    return true;
 }
 
 void finishLocalNetworkTransfer() {
@@ -402,9 +392,10 @@ void publishLocalNetworkByte() {
         return;
     netpacketLocalByteSent = true;
     ++netpacketDiagnostics.bytesSent;
-    sendLinkPacket({LinkPacketType::ByteReady,
+    sendLinkPacket({netpacketLocalInternalClock ? LinkPacketType::ClockRequest
+                                              : LinkPacketType::ClockReply,
                     netpacketLocalTransferSequence,
-                    netpacketLocalOutgoingByte, false, 0});
+                    netpacketLocalOutgoingByte});
 }
 
 bool completeLocalNetworkTransferFromQueue() {
@@ -439,6 +430,8 @@ bool completeLocalNetworkTransferFromQueue() {
         return false;
 
     const PeerSerialByte peerByte = netpacketPeerByteQueue.front();
+    if (!netpacketLocalInternalClock && !peerByte.internalClock)
+        return false;
     logSerialDiagnosticState("before-byte-pair",
                              netpacketLocalTransferSequence);
     if (!emulatorSystem->completeSerialNetworkByte(peerByte.value))
@@ -486,20 +479,29 @@ bool completeLocalNetworkTransferFromQueue() {
     return true;
 }
 
+bool pairAvailableNetworkByte() {
+    // An armed external port can update SB while waiting. Sample it only
+    // when the peer actually supplies a clock request.
+    if (!netpacketLocalTransferActive && emulatorSystem &&
+        (emulatorSystem->getSerialControl() & 0x81) == 0x80 &&
+        !netpacketPeerByteQueue.empty() &&
+        netpacketPeerByteQueue.front().internalClock &&
+        netpacketPeerByteQueue.front().sequence == netpacketSequence + 1) {
+        beginLocalNetworkTransfer(false);
+        publishLocalNetworkByte();
+    }
+    return completeLocalNetworkTransferFromQueue();
+}
+
 void serviceNetworkSerialTransfer() {
     if (!netpacketStarted || !netpacketConnected || netpacketFailed ||
         !netpacketSend || !netpacketPollReceive)
         return;
 
-    if (emulatorSystem && (emulatorSystem->getSerialControl() & 0x80)) {
-        ensureLocalNetworkTransfer();
-        publishLocalNetworkByte();
-    }
-
     // Netpacket polling drains already available data and does not wait for a
     // response. A peer byte can be queued before this game starts its transfer.
     netpacketPollReceive();
-    completeLocalNetworkTransferFromQueue();
+    pairAvailableNetworkByte();
 
     if (netpacketLocalTransferActive && !netpacketPeerByteTimedOut &&
         std::chrono::steady_clock::now() - netpacketTransferStarted >=
@@ -511,6 +513,10 @@ std::optional<bool> exchangeNetworkBit(bool outgoing) {
     if (!netpacketStarted || !netpacketConnected)
         return true;
     (void)outgoing;
+    if (!netpacketFailed) {
+        beginLocalNetworkTransfer(true);
+        publishLocalNetworkByte();
+    }
     serviceNetworkSerialTransfer();
     return std::nullopt;
 }
@@ -586,72 +592,73 @@ void netpacketReceive(const void *data, size_t size, uint16_t clientId) {
         return;
 
     try {
-        if (packet->type == LinkPacketType::ByteReady) {
-            ++netpacketDiagnostics.peerBytesReceived;
-            if (netpacketHasReceivedPeerSequence &&
-                packet->sequence == netpacketLastReceivedPeerSequence) {
-                ++netpacketDiagnostics.duplicatePeerBytes;
-                return;
-            }
-            const uint32_t expectedPeerSequence = netpacketHasReceivedPeerSequence
-                ? netpacketLastReceivedPeerSequence + 1
-                : 1;
-            if (packet->sequence != expectedPeerSequence) {
-                char message[224];
-                std::snprintf(message, sizeof(message),
-                              "Peer serial byte sequence discontinuity: session_us=%llu got=%u expected=%u; dropping byte",
-                              static_cast<unsigned long long>(netpacketSessionElapsedUs()),
-                              packet->sequence,
-                              expectedPeerSequence);
-                logMessage(RETRO_LOG_WARN, message);
-                ++netpacketDiagnostics.sequenceErrors;
-                return;
-            }
-            netpacketHasReceivedPeerSequence = true;
-            netpacketLastReceivedPeerSequence = packet->sequence;
-            if (netpacketPeerByteQueue.size() >= 16) {
-                netpacketFailed = true;
-                logMessage(RETRO_LOG_ERROR,
-                           "Peer serial byte queue exceeded its safety limit");
-                return;
-            }
-            netpacketPeerByteQueue.push_back(
-                {packet->sequence, packet->value});
-
-            if (emulatorSystem &&
-                (emulatorSystem->getSerialControl() & 0x80)) {
-                ensureLocalNetworkTransfer();
-                publishLocalNetworkByte();
-            }
-            const bool paired = completeLocalNetworkTransferFromQueue();
-            if (!paired && netpacketLocalTransferActive &&
-                !netpacketPeerByteQueue.empty() &&
-                netpacketPeerByteQueue.front().sequence >
-                    netpacketLocalTransferSequence) {
-                char message[192];
-                std::snprintf(message, sizeof(message),
-                              "Peer byte stream is ahead: local_sequence=%u peer_sequence=%u",
-                              netpacketLocalTransferSequence,
-                              netpacketPeerByteQueue.front().sequence);
-                logMessage(RETRO_LOG_WARN, message);
-            }
-
-            if (netpacketDebugTraceEnabled && logCallback) {
-                char message[256];
-                std::snprintf(message, sizeof(message),
-                              "Serial byte RX: session_us=%llu peer_sequence=%u local_sequence=%u "
-                              "peer=0x%02X local=0x%02X paired=%s queued=%zu",
-                              static_cast<unsigned long long>(netpacketSessionElapsedUs()),
-                              packet->sequence, netpacketLocalTransferSequence,
-                              static_cast<unsigned>(packet->value),
-                              static_cast<unsigned>(netpacketLocalOutgoingByte),
-                              paired ? "yes" : "no",
-                              netpacketPeerByteQueue.size());
-                logMessage(RETRO_LOG_DEBUG, message);
-            }
-            if (packet->sequence == 1)
-                logMessage(RETRO_LOG_INFO, "Received the first peer serial byte");
+        ++netpacketDiagnostics.peerBytesReceived;
+        if (netpacketHasReceivedPeerSequence &&
+            packet->sequence == netpacketLastReceivedPeerSequence) {
+            ++netpacketDiagnostics.duplicatePeerBytes;
+            return;
         }
+        if (packet->type == LinkPacketType::ClockReply &&
+            (!netpacketLocalTransferActive || !netpacketLocalInternalClock ||
+             packet->sequence != netpacketLocalTransferSequence)) {
+            ++netpacketDiagnostics.sequenceErrors;
+            logMessage(RETRO_LOG_WARN, "Ignoring a serial clock reply without a matching local request");
+            return;
+        }
+        const uint32_t expectedPeerSequence = netpacketHasReceivedPeerSequence
+            ? netpacketLastReceivedPeerSequence + 1
+            : 1;
+        if (packet->sequence != expectedPeerSequence) {
+            char message[224];
+            std::snprintf(message, sizeof(message),
+                          "Peer serial byte sequence discontinuity: session_us=%llu got=%u expected=%u; dropping byte",
+                          static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                          packet->sequence,
+                          expectedPeerSequence);
+            logMessage(RETRO_LOG_WARN, message);
+            ++netpacketDiagnostics.sequenceErrors;
+            return;
+        }
+        netpacketHasReceivedPeerSequence = true;
+        netpacketLastReceivedPeerSequence = packet->sequence;
+        if (netpacketPeerByteQueue.size() >= 16) {
+            netpacketFailed = true;
+            logMessage(RETRO_LOG_ERROR,
+                       "Peer serial byte queue exceeded its safety limit");
+            return;
+        }
+        netpacketPeerByteQueue.push_back(
+            {packet->sequence, packet->value,
+             packet->type == LinkPacketType::ClockRequest});
+
+        const bool paired = pairAvailableNetworkByte();
+        if (!paired && netpacketLocalTransferActive &&
+            !netpacketPeerByteQueue.empty() &&
+            netpacketPeerByteQueue.front().sequence >
+                netpacketLocalTransferSequence) {
+            char message[192];
+            std::snprintf(message, sizeof(message),
+                          "Peer byte stream is ahead: local_sequence=%u peer_sequence=%u",
+                          netpacketLocalTransferSequence,
+                          netpacketPeerByteQueue.front().sequence);
+            logMessage(RETRO_LOG_WARN, message);
+        }
+
+        if (netpacketDebugTraceEnabled && logCallback) {
+            char message[256];
+            std::snprintf(message, sizeof(message),
+                          "Serial byte RX: session_us=%llu peer_sequence=%u local_sequence=%u "
+                          "peer=0x%02X local=0x%02X paired=%s queued=%zu",
+                          static_cast<unsigned long long>(netpacketSessionElapsedUs()),
+                          packet->sequence, netpacketLocalTransferSequence,
+                          static_cast<unsigned>(packet->value),
+                          static_cast<unsigned>(netpacketLocalOutgoingByte),
+                          paired ? "yes" : "no",
+                          netpacketPeerByteQueue.size());
+            logMessage(RETRO_LOG_DEBUG, message);
+        }
+        if (packet->sequence == 1)
+            logMessage(RETRO_LOG_INFO, "Received the first peer serial byte");
     } catch (...) {
         netpacketFailed = true;
         logMessage(RETRO_LOG_ERROR, "Failed to process a serial link network packet");

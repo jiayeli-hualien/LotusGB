@@ -28,7 +28,15 @@ the Deck had started transfer 3203 and was still waiting for the host byte
 after a five-second diagnostic timeout. This shows the next byte had not
 arrived at the client when sampled, but does not establish whether game
 protocol, different local progress, or another timing factor caused the
-battle-state divergence. Physical cables and accessories are also pending.
+battle-state divergence. On 2026-11-17, a stream-v2 LAN rematch between
+Mac RetroArch 1.22.2 (Red, Charmander) and Ubuntu RetroArch 1.18.0
+(Blue, Squirtle) completed with matching turn order and critical hits and
+opposite win/loss results, as observed by the user. Both logs confirm the
+first role bytes were Red `$01` and Blue `$02`; Blue stayed in external
+clock mode in the captured trace. Both endpoints reported at least 1,440
+paired transfers with zero sequence errors or duplicate peer bytes. This
+verifies the reproduced battle scenario on this LAN setup. Physical cables
+and accessories are also pending.
 CGB infrared peer behavior has a separate
 [level-based interface and evidence](cgb-infrared.md).
 ## Network-mode fidelity contract
@@ -40,8 +48,11 @@ sequence, not by locking whole-frame or CPU-cycle progress. The physical cable
 also has its own master-driven serial clock domain; the two consoles' CPU clock
 phases do not need to match ([hardware references](references.md#hardware-behavior)).
 
-For stream-v1, each peer's outgoing byte is paired only with the same transfer
-sequence from the other peer. While the session remains connected, a missing
+In stream-v2, an internal serial clock edge sends the outgoing byte with a
+transfer sequence. An armed external port replies to that request with its
+current SB value. Two external ports wait until one supplies a clock. The
+RetroArch host and client can each initiate a transfer when their ROM selects
+internal clock. While the session remains connected, a missing
 byte leaves the serial transfer pending as guest emulation and frontend
 callbacks continue; the core does not silently substitute data. On a detected
 peer disconnect it has an explicit open-line `$FF` fallback. Once the matching
@@ -55,11 +66,11 @@ After a peer disconnect or transport failure, this core session cannot safely
 resume: the games may have advanced through different serial transfers. The
 host rejects a replacement peer while the failed Netpacket session is active.
 Both players must restart the content and multiplayer session before trying
-again; stream-v1 does not restore or reconcile guest state across reconnects.
+again; the protocol does not restore or reconcile guest state across reconnects.
 
 The unit and delayed-process tests establish this contract for synthetic ROMs.
 They do not establish cycle-level cable accuracy, RetroArch GUI smoothness,
-Pokémon trade compatibility, or save persistence for stream-v1.
+Pokémon trade compatibility, or save persistence for stream-v2.
 
 ## RetroArch input Netplay and link-cable transport
 
@@ -78,16 +89,14 @@ a conceptual comparison, but its claims about Nintendo's internal instances,
 pointer wiring and exact synchronization behavior are not treated as verified
 implementation facts.
 
-LotusGB's current stream-v1 path sends serial `ByteReady` data through the
+LotusGB's stream-v2 path sends serial clock requests and replies through the
 libretro Netpacket interface. Changing RetroArch's input rollback behavior
 would not remove the per-transfer byte pairing or its game-visible completion
 barrier. A future deterministic twin-emulation design could have every peer run
 the same pair of linked Game Boy instances and synchronize controller input by
 frame, but it would also need identical initial state for both machines,
 consistent RNG/RTC and careful ownership of each player's persistent SRAM.
-That is a substantial alternative architecture, not a RetroArch setting; the
-current decision is to retain stream-v1 until real-game evidence shows it is
-insufficient.
+That architecture remains separate from the current byte transfer protocol.
 
 ## Host interface
 
@@ -267,8 +276,13 @@ diagnostic builds exchanged each internal-clock sampling edge as a reliable
 packet (`LotusGB-serial-bit-v1`). The first byte-oriented prototype used a
 request/reply pair for each complete byte (`LotusGB-serial-byte-v1`). Its
 request waited for the peer reply at a byte boundary and retried at the
-application layer. These versions are historical; the current network prototype is
-`LotusGB-serial-stream-v1`.
+application layer. Both peers now need `LotusGB-serial-stream-v2`. The
+stream-v1 Red/Blue battle trace showed Red's ROM switching to internal clock
+with SB set to `$01` while its outgoing packet still contained the earlier
+`$02`. This could leave both games selecting the clock provider role and
+keeping their own battle RNG tables. The new transport samples SB when
+the clock request starts or reaches an armed external port. The Red/Blue LAN
+rematch above verified the handshake and the observed battle outcome.
 
 In stream-v1, each endpoint sends one reliable, ordered `ByteReady` packet
 when its ROM starts an SC transfer. The packet contains the full outgoing SB
