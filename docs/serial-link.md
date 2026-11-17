@@ -677,3 +677,121 @@ about cross-device serial transport. The blocker is opening RetroArch from the
 Codex-launched process context; it must be started in the interactive desktop
 session before this frontend test can continue. All test files and logs stayed
 outside the repository.
+
+A corrected Ubuntu relay attempt later on 2026-11-17 found the password-
+protected host in RetroArch's public lobby and established the host's tunnel
+link. The first harness lookup missed the room because lobby entries wrap
+their values in a `fields` object; after correcting that, the client process
+loaded the synthetic ROM but never logged a Netplay join or LotusGB client
+startup. The host ended with `bytes_sent/peer_bytes_received/bytes_paired =
+0/0/0`, and both SRAM verifiers correctly failed. Both the lobby-composite
+`--connect=HOST|PORT|SESSION` form and the separate `--connect`, `--port`, and
+`--mitm-session` form were tried. A localhost CLI control did enter Netplay
+and logged the expected connection failure, so command-line Netplay itself is
+available; the relay-session client path remains unresolved. This is not a
+failed serial-payload test. All RetroArch processes and the temporary lobby
+room were closed; test ROMs, saves and logs remain outside the repository at
+`/home/ubuntu/lotusgb-netpacket-relay-uiargs-20261117/`.
+
+A GUI-based public-relay probe on 2026-11-17 then completed the full synthetic
+16-byte stream. Ubuntu RetroArch 1.18.0 host and client were separate GUI
+instances on the same Ubuntu VM, using the same LotusGB core and isolated
+probe ROMs. The client found the password-protected host in the public lobby,
+joined it, and started the stream after the mapped Game Boy A input. RetroArch
+reported 98 ms host-side and 126 ms client-side Netplay ping. On graceful
+shutdown, both final summaries reported sent/received/paired `16/16/16`, zero
+sequence errors, duplicates and pending bytes. `verify.sh both` passed: both
+SRAMs had checkpoints `11223344` and the expected complete received streams
+(`3ca5a5` host, `a53ca5` client). The host's first byte waited 57.6 seconds
+while the lobby was being navigated and the client joined, inflating its
+overall average wait to 3.64 seconds; the client average/max were 78.4/158.7
+ms. This verifies the GUI lobby, relay join and multi-byte Netpacket path, but
+the two emulators were still on one VM, so it does not validate different
+networks, NAT traversal between players, or Pokémon gameplay. Both processes
+were stopped and the temporary room was removed; artifacts remain outside the
+repository under `/home/ubuntu/lotusgb-netpacket-relay-gui-20261117/`.
+
+A 2026-11-17 direct LAN run then used the Steam-launched Mac RetroArch 1.22.2
+client and Ubuntu RetroArch 1.18.0 host, both with the stream-v1 LotusGB core.
+The Steam core was updated from the current installed universal Mac core; the
+previous Steam core was preserved in `/private/tmp/`. The peer connected to
+`192.168.1.191:55495`; RetroArch warned that frontend versions and game
+contents differed, and reported 27 ms client-side / 35 ms host-side ping. Both
+logs show all 16 byte pairs. A check of the Mac client's `transfer-start` and
+`after-byte-pair` log records matched all 16 local bytes and all 16 received
+bytes to the expected streams. The Ubuntu host exited normally and
+`verify.sh host` passed with checkpoints `11223344`, SRAM `3ca5a5`, and the
+complete received stream. The Mac client was stopped with SIGINT; its log
+contains all pairs but lacks the final frontend-stopped summary, and no client
+SRAM file was flushed, so `verify.sh client` failed. This validates the
+cross-device serial byte exchange from both logs, but leaves client-side SRAM
+persistence unverified for this run. The earlier user-confirmed Red/Blue save
+readback remains separate evidence. All probe ROMs, logs and saves stayed
+outside the repository under `/private/tmp/lotusgb-netpacket-mac-lan-run2-20261117/`
+and `/home/ubuntu/lotusgb-netpacket-mac-lan-run2-20261117/`.
+
+
+A follow-up direct-LAN run on 2026-11-17 repeated the 16-byte exchange with
+Steam RetroArch 1.22.2 on Mac and RetroArch 1.18.0 on Ubuntu, using isolated
+synthetic ROMs and port 55499. RetroArch reported a 36 ms host-side ping and
+warned about frontend and content version differences. Both sides completed
+sent/received/paired `16/16/16`, with zero sequence errors, duplicates or
+pending bytes. The client was launched through Steam with
+`--max-frames=300`, allowing RetroArch to exit normally and flush its SRAM;
+`verify.sh client` passed checkpoints `11223344`, SRAM `a53ca5`, and all
+received bytes. The Ubuntu host was then stopped cleanly and
+`verify.sh host` passed checkpoints `11223344`, SRAM `3ca5a5`, and all
+received bytes. This closes the prior client-save gap for a synthetic direct
+LAN stream. It still does not test Pokémon gameplay, cross-ISP/NAT or WAN
+latency. Artifacts remain outside the repository under
+`/private/tmp/lotusgb-netpacket-mac-lan-max-20261117/` and
+`/home/ubuntu/lotusgb-netpacket-mac-lan-max-20261117/`.
+
+
+A 2026-11-17 cross-device high-latency probe routed the Mac Steam RetroArch
+1.22.2 client to the Ubuntu RetroArch 1.18.0 host through a temporary
+user-space TCP bridge that delayed each forwarded read by 200 ms in both
+directions. RetroArch reported 416–417 ms ping. After adding startup delay to
+the synthetic ROMs so the Netplay peer could join before serial transfers,
+both logs reached sent/received/paired `16/16/16`, with zero sequence errors
+or duplicate peer bytes. Client average/max byte wait was 223.9/446.6 ms; host
+average/max was 309.5 ms/2.05 s, with the maximum including its slow first
+byte. The host exited and `verify.sh host` passed SRAM `3ca5a5` and the
+complete received stream. The Mac log records all 16 correct pairs, but the
+RetroArch client produced no final shutdown summary or SRAM file, so its save
+verifier failed. An earlier attempt without startup delay joined at the same
+latency but raced the client ROM before pairing; it is invalid and not counted
+as a transport failure. The bridge adds delay per forwarded TCP read, so this
+is a bounded high-latency proxy test, not WAN packet jitter, loss or an
+Internet route. Artifacts remain outside the repository under
+`/private/tmp/lotusgb-netpacket-mac-lan-proxy200-retry-20261117/` and
+`/home/ubuntu/lotusgb-netpacket-mac-lan-proxy200-retry-20261117/`.
+
+
+A follow-up Steam RetroArch shutdown-control probe on 2026-11-17 enabled the
+Network Control Interface on localhost UDP port 55356. The Steam RetroArch
+1.22.2 log confirmed that it opened the command port. After the delayed 16-byte
+exchange, both core logs again showed all 16 pairs and no sequence errors or
+duplicates; the Ubuntu host SRAM verifier passed. The client did not write an
+SRAM file or emit the frontend-stopped summary. `GET_STATUS` and `QUIT` UDP
+commands received no response, both with content loaded and in a separate
+empty-front-end check. A short macOS stack sample showed the main thread
+waiting in AppKit's event loop; it did not identify a core deadlock. The test
+client was force-stopped after the synthetic exchange, and the Ubuntu host was
+closed cleanly. This leaves Steam frontend shutdown/control behavior unresolved;
+it does not change the successful direct-LAN client SRAM verification above.
+
+A repeat Mac Steam RetroArch 1.22.2 ↔ Ubuntu RetroArch 1.18.0 direct-LAN probe
+on 2026-11-17 used isolated synthetic ROMs and TCP port 55506. The client
+connected at 42 ms reported ping and the host reported 51 ms. Both endpoints
+completed sent/received/paired `16/16/16`, with zero sequence errors,
+duplicates, or pending bytes. The client average/max byte wait was 22.5/51.1
+ms; the host was 11.3/124.5 ms. Both frontends exited normally after the
+bounded probe, and both SRAM verifiers passed: client `a53ca5`, host `3ca5a5`,
+with checkpoints `11223344` and all 16 received bytes intact. RetroArch warned
+about the frontend version and synthetic content differences but accepted the
+session. This repeats the cross-device LAN byte-stream and save-flush check;
+it is not a WAN, cross-NAT, or Pokémon gameplay test. Test files and saves
+remain outside the repository under
+`/private/tmp/lotusgb-netpacket-mac-lan-rerun-20261117/` and
+`/home/ubuntu/lotusgb-netpacket-mac-lan-rerun-20261117/`.
