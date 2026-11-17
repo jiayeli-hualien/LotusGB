@@ -554,8 +554,7 @@ The test used the bundled original `focus.gb`, an isolated save directory,
 window was confirmed active for the full 26-second measured interval while
 RetroArch remained unfocused. The SRAM frame marker changed from 240 to 32;
 the verifier reported `Focus test: PASS (marker advanced while unfocused)`.
-The test ROM, SRAM and RetroArch log remain outside the repository under
-`/home/deck/lotusgb-netpacket/focus-check-stream-v1-20261116/`. This verifies
+The test ROM, SRAM and RetroArch log remain outside the repository. This verifies
 foreground loss does not stop this Deck RetroArch session; it does not test
 background controller input or a Pokémon trade.
 
@@ -592,8 +591,7 @@ files were unchanged on disk while both RetroArch sessions remained open. They
 were updated after the later normal shutdown, confirming frontend flush; the
 in-game reload check is still pending. The user plans to test ordinary
 RetroArch GUI launch and Host/Connect operation without the project launcher.
-Log snapshots are kept outside the repository under `/private/tmp/` for local
-analysis.
+Log snapshots are kept outside the repository for local analysis.
 
 On 2026-11-17, an original synthetic host ROM on Ubuntu RetroArch 1.18.0 and
 the Deck Steam RetroArch 1.22.2 client exchanged one stream-v1 byte through a
@@ -766,8 +764,7 @@ startup. The host ended with `bytes_sent/peer_bytes_received/bytes_paired =
 and logged the expected connection failure, so command-line Netplay itself is
 available; the relay-session client path remains unresolved. This is not a
 failed serial-payload test. All RetroArch processes and the temporary lobby
-room were closed; test ROMs, saves and logs remain outside the repository at
-`/home/ubuntu/lotusgb-netpacket-relay-uiargs-20261117/`.
+room were closed. Test ROMs, saves and logs remain outside the repository.
 
 A GUI-based public-relay probe on 2026-11-17 then completed the full synthetic
 16-byte stream. Ubuntu RetroArch 1.18.0 host and client were separate GUI
@@ -785,14 +782,14 @@ ms. This verifies the GUI lobby, relay join and multi-byte Netpacket path, but
 the two emulators were still on one VM, so it does not validate different
 networks, NAT traversal between players, or Pokémon gameplay. Both processes
 were stopped and the temporary room was removed; artifacts remain outside the
-repository under `/home/ubuntu/lotusgb-netpacket-relay-gui-20261117/`.
+repository.
 
 A 2026-11-17 direct LAN run then used the Steam-launched Mac RetroArch 1.22.2
 client and Ubuntu RetroArch 1.18.0 host, both with the stream-v1 LotusGB core.
 The Steam core was updated from the current installed universal Mac core; the
-previous Steam core was preserved in `/private/tmp/`. The peer connected to
-`192.168.1.191:55495`; RetroArch warned that frontend versions and game
-contents differed, and reported 27 ms client-side / 35 ms host-side ping. Both
+previous Steam core was backed up locally. The peer connected directly to the
+LAN host. RetroArch warned that frontend versions and game contents differed
+and reported 27 ms client-side / 35 ms host-side ping. Both
 logs show all 16 byte pairs. A check of the Mac client's `transfer-start` and
 `after-byte-pair` log records matched all 16 local bytes and all 16 received
 bytes to the expected streams. The Ubuntu host exited normally and
@@ -803,8 +800,7 @@ SRAM file was flushed, so `verify.sh client` failed. This validates the
 cross-device serial byte exchange from both logs, but leaves client-side SRAM
 persistence unverified for this run. The earlier user-confirmed Red/Blue save
 readback remains separate evidence. All probe ROMs, logs and saves stayed
-outside the repository under `/private/tmp/lotusgb-netpacket-mac-lan-run2-20261117/`
-and `/home/ubuntu/lotusgb-netpacket-mac-lan-run2-20261117/`.
+outside the repository.
 
 
 A follow-up direct-LAN run on 2026-11-17 repeated the 16-byte exchange with
@@ -819,9 +815,7 @@ received bytes. The Ubuntu host was then stopped cleanly and
 `verify.sh host` passed checkpoints `11223344`, SRAM `3ca5a5`, and all
 received bytes. This closes the prior client-save gap for a synthetic direct
 LAN stream. It still does not test Pokémon gameplay, cross-ISP/NAT or WAN
-latency. Artifacts remain outside the repository under
-`/private/tmp/lotusgb-netpacket-mac-lan-max-20261117/` and
-`/home/ubuntu/lotusgb-netpacket-mac-lan-max-20261117/`.
+latency. Artifacts remain outside the repository.
 
 
 A 2026-11-17 cross-device high-latency probe routed the Mac Steam RetroArch
@@ -839,9 +833,7 @@ verifier failed. An earlier attempt without startup delay joined at the same
 latency but raced the client ROM before pairing; it is invalid and not counted
 as a transport failure. The bridge adds delay per forwarded TCP read, so this
 is a bounded high-latency proxy test, not WAN packet jitter, loss or an
-Internet route. Artifacts remain outside the repository under
-`/private/tmp/lotusgb-netpacket-mac-lan-proxy200-retry-20261117/` and
-`/home/ubuntu/lotusgb-netpacket-mac-lan-proxy200-retry-20261117/`.
+Internet route. Artifacts remain outside the repository.
 
 
 A follow-up Steam RetroArch shutdown-control probe on 2026-11-17 enabled the
@@ -868,9 +860,7 @@ with checkpoints `11223344` and all 16 received bytes intact. RetroArch warned
 about the frontend version and synthetic content differences but accepted the
 session. This repeats the cross-device LAN byte-stream and save-flush check;
 it is not a WAN, cross-NAT, or Pokémon gameplay test. Test files and saves
-remain outside the repository under
-`/private/tmp/lotusgb-netpacket-mac-lan-rerun-20261117/` and
-`/home/ubuntu/lotusgb-netpacket-mac-lan-rerun-20261117/`.
+remain outside the repository.
 
 
 A later 2026-11-17 direct-LAN probe between Steam Deck Steam RetroArch 1.22.2
