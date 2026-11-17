@@ -14,8 +14,13 @@ Charmander and Blue's Squirtle returned to their respective games and remain
 in the party or Pokédex. Both games exited normally; each frontend log records
 a successful SRAM write to its isolated file, and both file timestamps
 advanced after exit. This verifies both in-game readbacks for this ROM pair,
-not broad
-compatibility. The user also tried a link battle. Both games displayed “You
+not broad compatibility. On 2026-11-17, SHA-1 checks of the private Mac Red
+and Steam Deck Blue files matched the clean USA/Europe release hashes. The
+“SGB Enhanced” suffix is used for these clean base ROMs in patch-source
+checksum tables; it does not by itself mean the tested files are modified
+games ([example clean-base table](https://github.com/ScoopDunk/Super-Vanilla-Red-and-Blue#how-to-patch)).
+No ROM file or hash was added to the repository. The user also tried a link
+battle. Both games displayed “You
 Win,” then the user observed that Mac's Charmander had fainted while the Deck
 game still treated it as alive. Captured session logs show both endpoints
 paired through transfer 3202 with no sequence errors or duplicate peer bytes;
@@ -45,6 +50,12 @@ This preserves byte values and order when both games issue matching transfer
 sequences, while changing observable partial-SB and SC/interrupt timing. A
 game's own link wait can therefore remain visible even while video and audio
 callbacks continue.
+
+After a peer disconnect or transport failure, this core session cannot safely
+resume: the games may have advanced through different serial transfers. The
+host rejects a replacement peer while the failed Netpacket session is active.
+Both players must restart the content and multiplayer session before trying
+again; stream-v1 does not restore or reconcile guest state across reconnects.
 
 The unit and delayed-process tests establish this contract for synthetic ROMs.
 They do not establish cycle-level cable accuracy, RetroArch GUI smoothness,
@@ -339,10 +350,63 @@ not identify whether that was the cause or a consequence of the earlier HP
 disagreement. The `pokered` disassembly also documents a specific link-battle
 fainting desync involving Bide's accumulated-damage cleanup; that is a
 conditional game bug, not an explanation for this session unless Bide was
-involved. No battle fix is made yet. A later diagnosis should trace the action
-code, random-list index, and relevant HP on both endpoints around each turn,
-then distinguish RNG-position drift from a ROM-specific battle bug or serial
-progress mismatch.
+involved. It also labels a missing Mirror Move check as a possible source of
+link desync when combined with multi-turn moves such as Wrap. These are
+specific move/state conditions, not a Charmander-versus-Squirtle matchup bug.
+The species pairing alone does not show that either cartridge bug applies. If
+the mismatch happened during ordinary moves without Bide, Mirror Move, or a
+multi-turn trapping state, the documented cases do not explain it; an emulator,
+ROM hack, or link-state divergence remains possible. No battle fix is made yet.
+A later diagnosis should trace the action code, random-list index, and relevant
+HP on both endpoints around each turn, then distinguish RNG-position drift
+from a ROM-specific battle bug or serial progress mismatch. See the upstream
+[`pokered` battle engine](https://github.com/pret/pokered/blob/master/engine/battle/core.asm)
+for the commented Bide fainting and Mirror Move edge cases.
+
+#### Synthetic shared-RNG and long-payload probe (2026-11-17)
+
+`game_boy_system_test` now builds two original MBC1 battery-backed test ROMs
+and runs them as linked `GameBoySystem` instances. The fixture uses a fixed
+host seed table rather than reading either console's DIV, so it isolates the
+link-battle rule: the host sends ten seed bytes once, both sides use the same
+table, and the battle consumes the first nine values. After the ninth value,
+the test ROM updates those nine values with `(5 * value + 1) mod 256` and resets
+the index. The tenth transmitted byte remains outside that nine-value battle
+table. This matches the behavior in the upstream
+[`pokered` Cable Club setup](https://github.com/pret/pokered/blob/master/engine/link/cable_club.asm)
+and [`BattleRandom`](https://github.com/pret/pokered/blob/master/engine/battle/core.asm).
+
+After seed exchange, the client begins with a different table so the test
+checks that it adopts the host's values. Both ROMs save an immediate copy of
+the ten exchanged bytes. Each then sends a distinct patterned 512-byte payload
+and saves every byte received from its peer to a separate SRAM range. They also
+exchange one action byte per synthetic battle turn. Their small battle model
+records random draws, hit/miss and critical counts, damage, turns and both HP
+values in SRAM. The automated test compares every byte in both payload
+directions and the SRAM battle records on both peers against an independent
+C++ reference. Negative controls deliberately corrupt one received seed and
+consume one extra random value; the checks detect the table mismatch and later
+battle divergence.
+
+Run the focused check with:
+
+```sh
+make -C src/unit_test build/game_boy_system_test -j8
+src/unit_test/build/game_boy_system_test
+```
+
+To export the same ROM pair for a later RetroArch/Netpacket experiment:
+
+```sh
+src/unit_test/build/game_boy_system_test \
+  --generate-pokemon-link-probes build/test-roms/pokemon-link-battle
+```
+
+The ROMs and their notes are build artifacts, not committed game files. This
+fixture validates the shared-table model and ordered bidirectional long serial
+streams in a local two-system test. It does not implement the full Pokémon
+battle engine, model seed generation from DIV, add network latency, or establish
+real-game battle compatibility.
 
 A network relay can provide a route when direct connections or port forwarding
 are unavailable, but it does not change serial-byte scheduling or remove
@@ -364,18 +428,16 @@ independent of ping.
 The libretro unit tests cover a local peer byte, pre-arrival queueing, sequence
 validation, duplicate rejection, disconnection and a late byte after timeout.
 They check that video and audio callbacks continue while a byte is pending. A
-two-process test relays 16 byte exchanges per endpoint. The first 16 packets
-use a fixed 100 ms delay per direction for eight byte pairs (200 ms
-round-trip equivalent); the remaining packets use 50/150/250 ms per-packet
-delays, reaching 400 ms round-trip latency under
-the variable-delay profile; both games store every peer byte in order. This
-exercises longer ordered streams and nonblocking progress under synthetic latency.
-The endpoint processes also wait 17 ms and 33 ms, respectively, after each
-`retro_run()` to model roughly 60 FPS versus 30 FPS frontend cadence; the byte
-stream still completes in sequence. This does not run RetroArch frontends or
-verify that a real background window uses either cadence. It does not cover real
-jitter or establish broad game compatibility. `make test` passed after the
-stream-v1 changes.
+two-process 64-byte test stores every received byte in SRAM and runs the peers
+at asymmetric 17 ms / 33 ms `retro_run()` cadence. Its first eight byte pairs
+use a fixed 100 ms delay in each direction (200 ms round-trip equivalent); the
+remaining 56 pairs repeat 50/150/250 ms per-packet delays (up to 400 ms
+round-trip equivalent). A separate two-process stress test stores and compares all 4,096
+received bytes per endpoint, beyond the 3,202 paired transfers seen before the
+real battle divergence; it applies bounded 100/200/300 μs packet delay jitter
+and runs the frontend loop without artificial frame pacing. Both use a local
+socket relay and the Netpacket core interface, not RetroArch frontends or
+physical networks. They do not establish broad game compatibility.
 
 Set the `Netpacket byte trace` core option to `on` and reload content to add
 per-transfer diagnostics. Logs include the emulated T-cycle count and CPU PC,
@@ -795,3 +857,21 @@ it is not a WAN, cross-NAT, or Pokémon gameplay test. Test files and saves
 remain outside the repository under
 `/private/tmp/lotusgb-netpacket-mac-lan-rerun-20261117/` and
 `/home/ubuntu/lotusgb-netpacket-mac-lan-rerun-20261117/`.
+
+
+A later 2026-11-17 direct-LAN probe between Steam Deck Steam RetroArch 1.22.2
+and Ubuntu RetroArch 1.18.0 completed the gated 16-byte synthetic exchange on
+TCP port 55508. Both endpoints used LotusGB core SHA-256
+`211d057d6e8ed874260ab9893654403f282c7464d2b18c6e2efa5f2100016f63`. Despite
+RetroArch warnings about frontend-version and synthetic-content differences,
+both sides passed their SRAM verifiers: sent/received/paired `16/16/16`, zero
+sequence errors, duplicates, or pending bytes, and complete expected receive
+streams (`3c a5 a5 ...` on the host and `a5 b0 bb ...` on the client). Reported
+LAN ping was about 12–20 ms. The host's maximum byte wait included the long
+manual join/start gate and should not be read as steady-state network latency.
+The Deck test package's stale client ROM and missing isolated keyboard binding
+were corrected outside the repository before the passing run. This is a
+cross-device synthetic LAN result, not a Pokémon gameplay test. At the user's
+request, the current phase stays on direct LAN; no cross-network relay
+transfer was attempted in this run. Generated ROMs, saves, and logs remain
+outside the repository.

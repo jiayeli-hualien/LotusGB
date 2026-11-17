@@ -21,10 +21,15 @@ advancement have been observed. Its video, audio, save, BIOS startup and timing
 coverage remain bounded; these results do not establish broad GBA compatibility
 or hardware-level fidelity. See the [GBA development record](docs/gba-development.md).
 
-Game Boy link-cable transport is not implemented. Local Pokémon trading and
-battles are a later roadmap goal. The project uses licensed homebrew and
-original fixtures for reproducible public checks; private commercial ROMs and
-derived saves or captures are not included.
+The libretro core has a custom ordered serial-byte stream over RetroArch
+Netpacket. One Red/Blue LAN trade and save readback have passed by user report;
+link-battle state synchronization remains under investigation. A synthetic
+shared-RNG battle and 512-byte payload probe now checks these paths without
+commercial game files. A separate two-process stress test verifies 4,096
+ordered Netpacket bytes per peer, exceeding the 3,202 paired transfers seen
+before a real battle divergence. See the [serial-link design and evidence](docs/serial-link.md).
+Public checks use licensed homebrew and original fixtures; commercial ROMs,
+derived saves and captures are not included.
 
 ## Build and checks
 
@@ -53,6 +58,7 @@ macOS builds also produce `.dylib` variants. See the
 - [CGB development and acceptance](docs/cgb-development.md)
 - [GBA implementation and evidence](docs/gba-development.md)
 - [Homebrew gameplay checks](docs/homebrew-check.md)
+- [Serial-link design and evidence](docs/serial-link.md)
 - [Save-state format and limits](docs/save-states.md)
 - [Input and presentation behavior](docs/input-latency.md)
 - [Documentation writing guide](docs/documentation-guide.md)

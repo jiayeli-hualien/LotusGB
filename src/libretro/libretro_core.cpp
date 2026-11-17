@@ -661,6 +661,11 @@ void netpacketReceive(const void *data, size_t size, uint16_t clientId) {
 bool netpacketConnectedClient(uint16_t clientId) {
     if (netpacketConnected)
         return false;
+    if (netpacketFailed) {
+        logMessage(RETRO_LOG_WARN,
+                   "Rejected Netpacket peer reconnect; restart the content and multiplayer session before reconnecting");
+        return false;
+    }
     netpacketPeerId = clientId;
     netpacketConnected = true;
     char message[144];

@@ -1,8 +1,14 @@
 #include <algorithm>
+#include <array>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <iostream>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <tuple>
 #include <vector>
 
 #include "game_boy_system.hpp"
@@ -969,6 +975,510 @@ void testTwoSystemsSerialExchangeAndPairedRestore() {
     }
 }
 
+class TestRomAssembler {
+public:
+    void bytes(std::initializer_list<uint8_t> values) {
+        code.insert(code.end(), values.begin(), values.end());
+    }
+
+    void label(const std::string &name) {
+        if (!labels.emplace(name, code.size()).second)
+            throw std::runtime_error("duplicate synthetic ROM label: " + name);
+    }
+
+    void jr(uint8_t opcode, const std::string &target) {
+        bytes({opcode, 0});
+        relativeFixups.emplace_back(code.size() - 1, target);
+    }
+
+    void call(const std::string &target) {
+        bytes({0xCD, 0, 0});
+        absoluteFixups.emplace_back(code.size() - 2, target);
+    }
+
+    std::vector<uint8_t> makeMbc1BatteryRom(const char *title) const {
+        std::vector<uint8_t> program = code;
+        for (const auto &fixup : relativeFixups) {
+            const auto found = labels.find(fixup.second);
+            if (found == labels.end())
+                throw std::runtime_error("missing synthetic ROM label: " + fixup.second);
+            const int offset = static_cast<int>(found->second) -
+                               static_cast<int>(fixup.first + 1);
+            if (offset < -128 || offset > 127)
+                throw std::runtime_error("synthetic ROM JR is out of range: " + fixup.second);
+            program[fixup.first] = static_cast<uint8_t>(static_cast<int8_t>(offset));
+        }
+        for (const auto &fixup : absoluteFixups) {
+            const auto found = labels.find(fixup.second);
+            if (found == labels.end())
+                throw std::runtime_error("missing synthetic ROM label: " + fixup.second);
+            const uint16_t address = static_cast<uint16_t>(0x0150 + found->second);
+            program[fixup.first] = static_cast<uint8_t>(address & 0xFF);
+            program[fixup.first + 1] = static_cast<uint8_t>(address >> 8);
+        }
+
+        std::vector<uint8_t> rom(0x8000, 0);
+        rom[0x100] = 0xC3;
+        rom[0x101] = 0x50;
+        rom[0x102] = 0x01;
+        const size_t titleLength = std::min<size_t>(11, std::char_traits<char>::length(title));
+        std::copy(title, title + titleLength, rom.begin() + 0x134);
+        rom[0x147] = 0x03; // MBC1 + RAM + battery.
+        rom[0x148] = 0x00; // 32 KiB ROM.
+        rom[0x149] = 0x02; // 8 KiB SRAM.
+        std::copy(program.begin(), program.end(), rom.begin() + 0x150);
+
+        uint8_t headerChecksum = 0;
+        for (size_t address = 0x134; address <= 0x14C; ++address)
+            headerChecksum = static_cast<uint8_t>(headerChecksum - rom[address] - 1);
+        rom[0x14D] = headerChecksum;
+        uint32_t globalChecksum = 0;
+        for (size_t address = 0; address < rom.size(); ++address) {
+            if (address != 0x14E && address != 0x14F)
+                globalChecksum += rom[address];
+        }
+        rom[0x14E] = static_cast<uint8_t>(globalChecksum >> 8);
+        rom[0x14F] = static_cast<uint8_t>(globalChecksum & 0xFF);
+        return rom;
+    }
+
+private:
+    std::vector<uint8_t> code;
+    std::map<std::string, size_t> labels;
+    std::vector<std::pair<size_t, std::string>> relativeFixups;
+    std::vector<std::pair<size_t, std::string>> absoluteFixups;
+};
+
+constexpr uint16_t POKEMON_TEST_TRACE_COUNT = 0xA0F0;
+constexpr uint16_t POKEMON_TEST_TRACE = 0xA100;
+constexpr uint16_t POKEMON_TEST_ACTION_LOG = 0xA200;
+
+std::vector<uint8_t> makePokemonBattleProbeRom(bool host, bool driftBeforeBattle = false,
+                                               bool includeLongPayload = true,
+                                               bool corruptSeedBeforeSnapshot = false) {
+    TestRomAssembler rom;
+    const auto storeA = [&](uint16_t address) {
+        rom.bytes({0xEA, static_cast<uint8_t>(address & 0xFF),
+                   static_cast<uint8_t>(address >> 8)});
+    };
+    const auto loadA = [&](uint16_t address) {
+        rom.bytes({0xFA, static_cast<uint8_t>(address & 0xFF),
+                   static_cast<uint8_t>(address >> 8)});
+    };
+
+    rom.bytes({0xF3, 0x31, 0xFE, 0xFF, // DI; SP = $FFFE.
+               0x3E, 0x0A, 0xEA, 0x00, 0x00}); // Enable battery SRAM.
+    rom.bytes({0x21, 0x20, 0xA0}); // HL = seed table.
+    const std::array<uint8_t, 10> hostSeeds = {
+        0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x22, 0x44};
+    const std::array<uint8_t, 10> clientSeeds = {
+        0x01, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F, 0x11, 0x13};
+    for (const uint8_t seed : (host ? hostSeeds : clientSeeds))
+        rom.bytes({0x3E, seed, 0x22}); // LD A,seed; LD (HL+),A.
+
+    if (includeLongPayload) {
+        // Give each peer's long payload a distinct deterministic pattern:
+        // payload[i] = (37 * (i & 255) + roleSalt) mod 256.
+        // The two salt values make the later SRAM receive check bidirectional.
+        rom.bytes({0x21, 0x00, 0xA3, 0x06, 0x02}); // HL = $A300; B = two 256-byte blocks.
+        rom.label("payload_fill_block");
+        rom.bytes({0x0E, 0x00}); // C = 0.
+        rom.label("payload_fill_byte");
+        rom.bytes({0x79, 0x57, 0x87, 0x87, 0x5F, // DE = i; E = 4*i.
+                   0x7A, 0x87, 0x87, 0x87, 0x87, 0x87, 0x83, 0x82,
+                   0xC6, static_cast<uint8_t>(host ? 0x51 : 0x93),
+                   0x22, 0x0C, 0x79, 0xA7});
+        rom.jr(0x20, "payload_fill_byte");
+        rom.bytes({0x05});
+        rom.jr(0x20, "payload_fill_block");
+    }
+
+    rom.bytes({0x3E, 0x11});
+    storeA(0xA010); // Startup checkpoint.
+
+    if (host) {
+        rom.bytes({0x21, 0x20, 0xA0, 0x06, 0x0A}); // HL = table; B = ten bytes.
+        rom.label("seed_host_byte");
+        rom.bytes({0x7E, 0xE0, 0x01, 0x3E, 0x81, 0xE0, 0x02});
+        rom.label("seed_host_wait");
+        rom.bytes({0xF0, 0x02, 0xCB, 0x7F});
+        rom.jr(0x20, "seed_host_wait");
+        rom.bytes({0x23, 0x05});
+        rom.jr(0x20, "seed_host_byte");
+    } else {
+        rom.bytes({0x21, 0x20, 0xA0, 0x06, 0x0A}); // HL = table; B = ten bytes.
+        rom.label("seed_client_byte");
+        rom.bytes({0x3E, 0xFF, 0xE0, 0x01, 0x3E, 0x80, 0xE0, 0x02});
+        rom.label("seed_client_wait");
+        rom.bytes({0xF0, 0x02, 0xCB, 0x7F});
+        rom.jr(0x20, "seed_client_wait");
+        rom.bytes({0xF0, 0x01, 0x22, 0x05});
+        rom.jr(0x20, "seed_client_byte");
+    }
+
+    if (!host && corruptSeedBeforeSnapshot) {
+        loadA(0xA023);
+        rom.bytes({0xEE, 0x01}); // Deliberate corrupted received seed for negative control.
+        storeA(0xA023);
+    }
+    rom.bytes({0x21, 0x20, 0xA0, 0x11, 0x80, 0xA0, 0x06, 0x0A});
+    rom.label("seed_snapshot_copy");
+    rom.bytes({0x2A, 0x12, 0x13, 0x05}); // Copy exchanged table before battle updates it.
+    rom.jr(0x20, "seed_snapshot_copy");
+    rom.bytes({0x3E, 0x22});
+    storeA(0xA011); // Exact post-exchange table snapshot is ready.
+
+    if (includeLongPayload) {
+        rom.bytes({0x21, 0x00, 0xA3, // HL = outgoing payload.
+                   0x11, 0x00, 0xA5, // DE = incoming payload log.
+                   0x01, 0x00, 0x02}); // BC = 512 transfers.
+        const std::string payloadLoop = host ? "payload_host_byte" : "payload_client_byte";
+        const std::string payloadWait = host ? "payload_host_wait" : "payload_client_wait";
+        rom.label(payloadLoop);
+        rom.bytes({0x7E, 0xE0, 0x01, 0x3E,
+                   static_cast<uint8_t>(host ? 0x81 : 0x80), 0xE0, 0x02});
+        rom.label(payloadWait);
+        rom.bytes({0xF0, 0x02, 0xCB, 0x7F});
+        rom.jr(0x20, payloadWait);
+        rom.bytes({0xF0, 0x01, 0x12, // Save the peer's byte to SRAM at DE.
+                   0x23, 0x13, 0x0B, 0x78, 0xB1}); // Advance pointers; BC--.
+        rom.jr(0x20, payloadLoop);
+    }
+
+    rom.bytes({0x3E, 0x33});
+    storeA(0xA013); // 512-byte party-like payload transfer completed (or was omitted).
+
+    rom.bytes({0x3E, 0x00});
+    storeA(0xA030); // Battle RNG index.
+    storeA(POKEMON_TEST_TRACE_COUNT);
+    storeA(0xA033); // Completed turns.
+    storeA(0xA034); // Hits.
+    storeA(0xA035); // Critical hits.
+    storeA(0xA036); // Total damage, low byte.
+    storeA(0xA038); // Misses.
+    storeA(0xA03A); // Peer-action protocol error.
+    if (driftBeforeBattle)
+        rom.call("battle_random"); // Deliberate off-by-one negative control.
+    rom.bytes({0x3E, 120});
+    storeA(0xA031); // Player 1 HP.
+    storeA(0xA032); // Player 2 HP.
+    rom.bytes({0x21, 0x00, 0xA2, 0x06, 0x08}); // Action log; eight turns max.
+
+    rom.label("battle_turn");
+    loadA(0xA031);
+    rom.bytes({0xA7});
+    rom.jr(0x28, "battle_finish");
+    loadA(0xA032);
+    rom.bytes({0xA7});
+    rom.jr(0x28, "battle_finish");
+
+    // Exchange one selected-action byte before resolving each synthetic turn.
+    loadA(0xA033);
+    rom.bytes({0xC6, static_cast<uint8_t>(host ? 0x10 : 0x20), 0x57}); // D = our move.
+    loadA(0xA033);
+    rom.bytes({0xC6, static_cast<uint8_t>(host ? 0x20 : 0x10), 0x4F}); // C = peer move.
+    rom.bytes({0x7A, 0xE0, 0x01, 0x3E, static_cast<uint8_t>(host ? 0x81 : 0x80),
+               0xE0, 0x02});
+    const std::string actionWait = host ? "battle_action_host_wait" : "battle_action_client_wait";
+    const std::string actionValid = host ? "battle_action_host_valid" : "battle_action_client_valid";
+    rom.label(actionWait);
+    rom.bytes({0xF0, 0x02, 0xCB, 0x7F});
+    rom.jr(0x20, actionWait);
+    rom.bytes({0xF0, 0x01, 0x77, 0x23, 0xB9}); // Record and compare peer action.
+    rom.jr(0x28, actionValid);
+    rom.bytes({0x3E, 0x01});
+    storeA(0xA03A);
+    rom.label(actionValid);
+
+    rom.bytes({0x11, 0x32, 0xA0}); // Player 1 attacks player 2.
+    rom.call("battle_attack");
+    loadA(0xA032);
+    rom.bytes({0xA7});
+    rom.jr(0x28, "battle_skip_player_two_move");
+    rom.bytes({0x11, 0x31, 0xA0}); // Player 2 attacks player 1 if still alive.
+    rom.call("battle_attack");
+    rom.label("battle_skip_player_two_move");
+    loadA(0xA033);
+    rom.bytes({0x3C});
+    storeA(0xA033);
+    rom.bytes({0x05});
+    rom.jr(0x20, "battle_turn");
+
+    rom.label("battle_finish");
+    loadA(0xA03A);
+    rom.bytes({0xA7});
+    rom.jr(0x20, "battle_failed");
+    rom.bytes({0x3E, 0x55});
+    rom.jr(0x18, "battle_store_result");
+    rom.label("battle_failed");
+    rom.bytes({0x3E, 0xEE});
+    rom.label("battle_store_result");
+    storeA(0xA012);
+    rom.label("battle_stop");
+    rom.jr(0x18, "battle_stop");
+
+    rom.label("battle_attack");
+    rom.bytes({0x1A, 0xA7}); // Skip attacks against a fainted target.
+    rom.jr(0x28, "battle_attack_done");
+    rom.call("battle_random");
+    rom.bytes({0xFE, 0xC0}); // Hit threshold.
+    rom.jr(0x30, "battle_attack_miss");
+    loadA(0xA034);
+    rom.bytes({0x3C});
+    storeA(0xA034);
+    rom.call("battle_random");
+    rom.bytes({0xFE, 0xE0});
+    rom.jr(0x30, "battle_attack_critical");
+    rom.call("battle_random");
+    rom.bytes({0xE6, 0x03, 0xC6, 0x04}); // Damage = 4 + (random & 3).
+    rom.jr(0x18, "battle_apply_damage");
+    rom.label("battle_attack_critical");
+    loadA(0xA035);
+    rom.bytes({0x3C});
+    storeA(0xA035);
+    rom.bytes({0x3E, 0x0C}); // Critical hit damage = 12.
+    rom.label("battle_apply_damage");
+    rom.bytes({0x4F}); // C = damage.
+    loadA(0xA036);
+    rom.bytes({0x81});
+    storeA(0xA036);
+    rom.bytes({0x1A, 0x91}); // Target HP -= damage.
+    rom.jr(0x30, "battle_store_hp");
+    rom.bytes({0xAF}); // Clamp HP to zero on a knockout.
+    rom.label("battle_store_hp");
+    rom.bytes({0x12, 0xC9});
+    rom.label("battle_attack_done");
+    rom.bytes({0xC9});
+    rom.label("battle_attack_miss");
+    loadA(0xA038);
+    rom.bytes({0x3C});
+    storeA(0xA038);
+    rom.bytes({0xC9});
+
+    rom.label("battle_random");
+    rom.bytes({0xC5, 0xD5, 0xE5}); // Preserve BC, DE and HL; A returns the draw.
+    loadA(0xA030);
+    rom.bytes({0x4F, 0x06, 0x00, 0x21, 0x20, 0xA0, 0x09, 0x7E, 0x57});
+    loadA(POKEMON_TEST_TRACE_COUNT);
+    rom.bytes({0x4F, 0x06, 0x00, 0x21,
+               static_cast<uint8_t>(POKEMON_TEST_TRACE & 0xFF),
+               static_cast<uint8_t>(POKEMON_TEST_TRACE >> 8), 0x09, 0x72});
+    loadA(POKEMON_TEST_TRACE_COUNT);
+    rom.bytes({0x3C});
+    storeA(POKEMON_TEST_TRACE_COUNT);
+    loadA(0xA030);
+    rom.bytes({0x3C});
+    storeA(0xA030);
+    rom.bytes({0xFE, 0x09});
+    rom.jr(0x20, "battle_random_return");
+    rom.bytes({0xAF});
+    storeA(0xA030);
+    rom.bytes({0x21, 0x20, 0xA0, 0x06, 0x09});
+    rom.label("battle_random_refresh");
+    rom.bytes({0x7E, 0x4F, 0x87, 0x87, 0x81, 0x3C, 0x22, 0x05});
+    rom.jr(0x20, "battle_random_refresh");
+    rom.label("battle_random_return");
+    rom.bytes({0x7A, 0xE1, 0xD1, 0xC1, 0xC9});
+
+    return rom.makeMbc1BatteryRom(host ? "LGB RNG HOST" : "LGB RNG CLIENT");
+}
+
+struct PokemonBattleReference {
+    std::array<uint8_t, 10> initialSeeds{};
+    std::array<uint8_t, 10> seeds{};
+    std::vector<uint8_t> trace;
+    uint8_t rngIndex = 0;
+    uint8_t playerOneHp = 120;
+    uint8_t playerTwoHp = 120;
+    uint8_t turns = 0;
+    uint8_t hits = 0;
+    uint8_t criticalHits = 0;
+    uint8_t misses = 0;
+    uint8_t totalDamage = 0;
+    std::vector<uint8_t> actionsReceivedByHost;
+    std::vector<uint8_t> actionsReceivedByClient;
+};
+
+struct PokemonBattlePairRun {
+    std::array<uint8_t, 0x2000> hostSram{};
+    std::array<uint8_t, 0x2000> clientSram{};
+    unsigned serialEdges = 0;
+};
+
+PokemonBattleReference simulatePokemonBattleReference() {
+    PokemonBattleReference result;
+    result.seeds = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x22, 0x44};
+    result.initialSeeds = result.seeds;
+    const auto battleRandom = [&result]() {
+        const uint8_t value = result.seeds[result.rngIndex];
+        result.trace.push_back(value);
+        ++result.rngIndex;
+        if (result.rngIndex == 9) {
+            result.rngIndex = 0;
+            for (size_t seed = 0; seed < 9; ++seed)
+                result.seeds[seed] = static_cast<uint8_t>(5 * result.seeds[seed] + 1);
+        }
+        return value;
+    };
+    const auto attack = [&result, &battleRandom](uint8_t &targetHp) {
+        if (targetHp == 0)
+            return;
+        if (battleRandom() >= 0xC0) {
+            ++result.misses;
+            return;
+        }
+        ++result.hits;
+        uint8_t damage = 0;
+        if (battleRandom() >= 0xE0) {
+            ++result.criticalHits;
+            damage = 12;
+        } else {
+            damage = static_cast<uint8_t>(4 + (battleRandom() & 0x03));
+        }
+        result.totalDamage = static_cast<uint8_t>(result.totalDamage + damage);
+        targetHp = targetHp > damage ? static_cast<uint8_t>(targetHp - damage) : 0;
+    };
+
+    for (uint8_t turn = 0; turn < 8; ++turn) {
+        if (result.playerOneHp == 0 || result.playerTwoHp == 0)
+            break;
+        result.actionsReceivedByHost.push_back(static_cast<uint8_t>(0x20 + turn));
+        result.actionsReceivedByClient.push_back(static_cast<uint8_t>(0x10 + turn));
+        attack(result.playerTwoHp);
+        if (result.playerTwoHp != 0)
+            attack(result.playerOneHp);
+        ++result.turns;
+    }
+    return result;
+}
+
+void testPokemonBattleProbeRomSynchronizesSeedsAndBattleState() {
+    const auto runPair = [](bool driftBeforeBattle, bool corruptSeed, bool includeLongPayload,
+                            unsigned maxCycles, bool stopAfterSeedExchange = false) {
+        const auto hostRom = makePokemonBattleProbeRom(true, false, includeLongPayload);
+        const auto clientRom = makePokemonBattleProbeRom(false, driftBeforeBattle,
+                                                         includeLongPayload, corruptSeed);
+        GameBoySystem host(hostRom, HardwareModel::Dmg);
+        GameBoySystem client(clientRom, HardwareModel::Dmg);
+        auto *hostRam = host.getSaveRamData();
+        auto *clientRam = client.getSaveRamData();
+        unsigned serialEdges = 0;
+        host.setSerialClockCallback([&](bool outgoing) {
+            const bool incoming = client.getSerialOutgoingBit();
+            client.clockSerialExternalBit(outgoing);
+            ++serialEdges;
+            return incoming;
+        });
+        const auto completed = [&] {
+            if (stopAfterSeedExchange)
+                return hostRam[0x11] == 0x22 && clientRam[0x11] == 0x22;
+            if (driftBeforeBattle && hostRam[0x13] == 0x33 && clientRam[0x13] == 0x33 &&
+                hostRam[0x33] != clientRam[0x33])
+                return true;
+            return hostRam[0x12] == 0x55 && clientRam[0x12] == 0x55;
+        };
+        for (unsigned cycle = 0; cycle < maxCycles && !completed(); ++cycle) {
+            expect(client.stepOneCycle().success && host.stepOneCycle().success,
+                   "synthetic Pokémon battle peers execute successfully");
+        }
+        PokemonBattlePairRun run;
+        std::copy_n(hostRam, run.hostSram.size(), run.hostSram.begin());
+        std::copy_n(clientRam, run.clientSram.size(), run.clientSram.begin());
+        run.serialEdges = serialEdges;
+        return run;
+    };
+
+    const auto expected = simulatePokemonBattleReference();
+    const auto normalRun = runPair(false, false, true, 700'000);
+    const auto *hostRam = normalRun.hostSram.data();
+    const auto *clientRam = normalRun.clientSram.data();
+    if (hostRam[0x10] != 0x11 || clientRam[0x10] != 0x11 ||
+        hostRam[0x11] != 0x22 || clientRam[0x11] != 0x22)
+        std::cerr << "long probe markers=" << static_cast<unsigned>(hostRam[0x10]) << ","
+                  << static_cast<unsigned>(clientRam[0x10]) << ","
+                  << static_cast<unsigned>(hostRam[0x11]) << ","
+                  << static_cast<unsigned>(clientRam[0x11]) << " edges="
+                  << normalRun.serialEdges << '\n';
+    expect(hostRam[0x10] == 0x11 && clientRam[0x10] == 0x11 &&
+               hostRam[0x11] == 0x22 && clientRam[0x11] == 0x22,
+           "both synthetic ROMs initialize and exchange the ten-byte seed block");
+    expect(hostRam[0x13] == 0x33 && clientRam[0x13] == 0x33,
+           "both peers finish the complete 512-byte party-like payload");
+    expect(hostRam[0x12] == 0x55 && clientRam[0x12] == 0x55,
+           "both synthetic ROMs finish the battle without action protocol errors");
+    expect(normalRun.serialEdges == (10u + 512u + expected.turns) * 8u,
+           "seed block, 512-byte payload and per-turn move bytes retain serial order");
+    for (size_t index = 0; index < 512; ++index) {
+        const uint8_t expectedHostPayload =
+            static_cast<uint8_t>(37 * (index & 0xFF) + 0x51);
+        const uint8_t expectedClientPayload =
+            static_cast<uint8_t>(37 * (index & 0xFF) + 0x93);
+        expect(hostRam[0x300 + index] == expectedHostPayload &&
+                   clientRam[0x300 + index] == expectedClientPayload,
+               "host and client prepare distinct 512-byte payloads");
+        expect(hostRam[0x500 + index] == expectedClientPayload &&
+                   clientRam[0x500 + index] == expectedHostPayload,
+               "both peers save all 512 received bytes intact and in order");
+    }
+
+    const auto checkPeer = [&](const uint8_t *ram, const std::vector<uint8_t> &receivedActions) {
+        expect(std::equal(expected.initialSeeds.begin(), expected.initialSeeds.end(), ram + 0x80),
+               "SRAM preserves the exact ten-byte RNG table immediately after link exchange");
+        expect(std::equal(expected.seeds.begin(), expected.seeds.end(), ram + 0x20),
+               "SRAM contains the nine evolving shared seeds and unused tenth seed");
+        expect(ram[0x30] == expected.rngIndex && ram[0x31] == expected.playerOneHp &&
+                   ram[0x32] == expected.playerTwoHp && ram[0x33] == expected.turns &&
+                   ram[0x34] == expected.hits && ram[0x35] == expected.criticalHits &&
+                   ram[0x36] == expected.totalDamage && ram[0x38] == expected.misses &&
+                   ram[0x3A] == 0,
+               "SRAM battle HP, turns, hit, critical and damage counters match the reference");
+        const size_t traceCountOffset = POKEMON_TEST_TRACE_COUNT - 0xA000;
+        if (ram[traceCountOffset] != expected.trace.size())
+            std::cerr << "synthetic battle RNG count: ROM="
+                      << static_cast<unsigned>(ram[traceCountOffset])
+                      << " reference=" << expected.trace.size() << '\n';
+        expect(ram[traceCountOffset] == expected.trace.size(),
+               "SRAM random-call count matches the shared PRNG reference");
+        expect(std::equal(expected.trace.begin(), expected.trace.end(), ram + POKEMON_TEST_TRACE - 0xA000),
+               "SRAM random trace follows the nine-value shared PRNG table");
+        expect(std::equal(receivedActions.begin(), receivedActions.end(), ram + POKEMON_TEST_ACTION_LOG - 0xA000),
+               "SRAM action transcript matches the received peer move bytes");
+    };
+    checkPeer(hostRam, expected.actionsReceivedByHost);
+    checkPeer(clientRam, expected.actionsReceivedByClient);
+
+    const auto driftRun = runPair(true, false, false, 100'000);
+    const auto *driftHostRam = driftRun.hostSram.data();
+    const auto *driftClientRam = driftRun.clientSram.data();
+    const size_t traceCountOffset = POKEMON_TEST_TRACE_COUNT - 0xA000;
+    const size_t traceOffset = POKEMON_TEST_TRACE - 0xA000;
+    const bool driftTraceDiffers =
+        driftHostRam[traceCountOffset] != driftClientRam[traceCountOffset] ||
+        !std::equal(driftHostRam + traceOffset,
+                    driftHostRam + traceOffset + driftHostRam[traceCountOffset],
+                    driftClientRam + traceOffset);
+    expect(driftHostRam[0x12] != 0x55 || driftClientRam[0x12] != 0x55 ||
+               driftHostRam[0x31] != driftClientRam[0x31] ||
+               driftHostRam[0x32] != driftClientRam[0x32] ||
+               driftHostRam[0x33] != driftClientRam[0x33] || driftTraceDiffers,
+           "SRAM checkpoints expose battle divergence after one peer consumes an extra RNG value");
+
+    const auto corruptRun = runPair(false, true, false, 20'000, true);
+    if (corruptRun.hostSram[0x11] != 0x22 || corruptRun.clientSram[0x11] != 0x22 ||
+        std::equal(corruptRun.hostSram.begin() + 0x80,
+                   corruptRun.hostSram.begin() + 0x8A,
+                   corruptRun.clientSram.begin() + 0x80))
+        std::cerr << "corrupt snapshot markers=" << static_cast<unsigned>(corruptRun.hostSram[0x11])
+                  << "," << static_cast<unsigned>(corruptRun.clientSram[0x11])
+                  << " seed[3]=" << static_cast<unsigned>(corruptRun.hostSram[0x83])
+                  << "," << static_cast<unsigned>(corruptRun.clientSram[0x83]) << '\n';
+    expect(corruptRun.hostSram[0x11] == 0x22 && corruptRun.clientSram[0x11] == 0x22 &&
+               !std::equal(corruptRun.hostSram.begin() + 0x80,
+                           corruptRun.hostSram.begin() + 0x8A,
+                           corruptRun.clientSram.begin() + 0x80),
+           "post-exchange SRAM snapshots detect a single corrupted shared seed byte");
+}
+
 void testMbc1MulticartCpuAndSnapshots() {
     auto rom = Test::makeMbc1MulticartRom();
     std::vector<uint8_t> program;
@@ -1064,7 +1574,49 @@ void testCpuIduCorruptsOamAndReplays() {
 
 }
 
-int main() {
+int main(int argc, char **argv) {
+    if (argc != 1) {
+        if (argc != 3 || std::string(argv[1]) != "--generate-pokemon-link-probes") {
+            std::cerr << "Usage: game_boy_system_test [--generate-pokemon-link-probes OUTPUT_DIR]\n";
+            return EXIT_FAILURE;
+        }
+        const std::filesystem::path outputDirectory(argv[2]);
+        try {
+            std::filesystem::create_directories(outputDirectory);
+            const auto writeBinary = [](const std::filesystem::path &path,
+                                        const std::vector<uint8_t> &contents) {
+                std::ofstream output(path, std::ios::binary);
+                if (!output)
+                    throw std::runtime_error("cannot open output file: " + path.string());
+                output.write(reinterpret_cast<const char *>(contents.data()),
+                             static_cast<std::streamsize>(contents.size()));
+                if (!output)
+                    throw std::runtime_error("failed to write output file: " + path.string());
+            };
+            writeBinary(outputDirectory / "host.gb", makePokemonBattleProbeRom(true));
+            writeBinary(outputDirectory / "client.gb", makePokemonBattleProbeRom(false));
+            std::ofstream notes(outputDirectory / "README.txt");
+            if (!notes)
+                throw std::runtime_error("cannot open generated ROM notes file");
+            notes << "Original LotusGB serial test ROMs; no commercial code, art, or game data.\n"
+                     "Load host.gb on the internal-clock side and client.gb on the external-clock side.\n"
+                     "The ROMs exchange a fixed 10-byte seed block, then a 512-byte patterned payload,\n"
+                     "then up to eight per-turn move bytes before running a small deterministic battle.\n"
+                     "SRAM checkpoints: A010=start, A011=post-seed snapshot, A013=payload complete,\n"
+                     "A012=55 means the battle completed; A080-A089=seed snapshot;\n"
+                     "A100 onward=BattleRandom trace (count at A0F0); A200 onward=received actions;\n"
+                     "A300-A4FF=outgoing payload; A500-A6FF=received peer payload. SRAM is saved by the frontend when the content closes.\n"
+                     "This synthetic battle models shared-table consumption and is not a full game ROM.\n";
+            if (!notes)
+                throw std::runtime_error("failed to write generated ROM notes file");
+        } catch (const std::exception &error) {
+            std::cerr << "Could not generate synthetic link ROMs: " << error.what() << '\n';
+            return EXIT_FAILURE;
+        }
+        std::cout << "Generated original serial test ROM pair in " << outputDirectory << '\n';
+        return EXIT_SUCCESS;
+    }
+
     testPpuAccessWindowsSupportSafeCpuUpdates();
     testLycZeroHandlerRunsBeforeVblankEnds();
     testVblankInterruptWakesHaltAndRunsHandler();
@@ -1092,6 +1644,7 @@ int main() {
     testSelectedJoypadLineWakesStopWithoutInterruptAcceptance();
     testStopRequiresFreshFallingJoypadEdgeWhenLineWasAlreadyLow();
     testTwoSystemsSerialExchangeAndPairedRestore();
+    testPokemonBattleProbeRomSynchronizesSeedsAndBattleState();
     testMbc1MulticartCpuAndSnapshots();
     testCpuIduCorruptsOamAndReplays();
     std::cout << "Headless system tests passed\n";
