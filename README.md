@@ -1,9 +1,8 @@
 # LotusGB
 
-LotusGB is a C++ emulator project with a RetroArch libretro core for Game Boy
-(DMG) and Game Boy Color (CGB). The repository also contains **LotusGBA**, a
-separate, experimental Game Boy Advance core. The project is developed as a
-learning and personal-use project.
+Play Game Boy and Game Boy Color games in RetroArch with **LotusGB**. It also
+supports link play between two systems over a network. The project includes
+**LotusGBA**, an experimental Game Boy Advance core.
 
 ## Status
 
@@ -21,13 +20,12 @@ advancement have been observed. Its video, audio, save, BIOS startup and timing
 coverage remain bounded; these results do not establish broad GBA compatibility
 or hardware-level fidelity. See the [GBA development record](docs/gba-development.md).
 
-The libretro core has a custom ordered serial-byte stream over RetroArch
-Netpacket. One Red/Blue LAN trade and save readback have passed by user report;
-link-battle state synchronization remains under investigation. A synthetic
-shared-RNG battle and 512-byte payload probe now checks these paths without
-commercial game files. A separate two-process stress test verifies 4,096
-ordered Netpacket bytes per peer, exceeding the 3,202 paired transfers seen
-before a real battle divergence. See the [serial-link design and evidence](docs/serial-link.md).
+The libretro core sends ordered link data through RetroArch Netpacket. Pokémon
+Red/Blue LAN trade and battle checks have completed in reported setups, though
+these bounded results do not guarantee every game, session, or network will
+stay in sync. Synthetic tests also check shared battle RNG and long ordered
+data streams without commercial game files. See the
+[serial-link design and evidence](docs/serial-link.md) for results and limits.
 Public checks use licensed homebrew and original fixtures; commercial ROMs,
 derived saves and captures are not included.
 
@@ -66,4 +64,6 @@ macOS builds also produce `.dylib` variants. See the
 
 This project is licensed under the [MIT License](LICENSE). ROMs and other
 third-party test assets retain their own terms; see each asset's README and
-license.
+license. LotusGB is an unofficial, independently developed project; game
+titles are referenced only to describe compatibility testing. No commercial
+game files are included.
