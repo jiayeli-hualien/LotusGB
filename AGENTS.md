@@ -2,7 +2,7 @@
 
 ## Project scope
 
-LotusGB is a C++ DMG/CGB emulator with a RetroArch libretro core. The repository also contains LotusGBA, a separate experimental Game Boy Advance core with its own CPU, system and libretro adapter. Keep hardware behavior testable through public component, system and frontend interfaces. Do not conflate passing focused tests or bounded game checkpoints with complete hardware accuracy or broad game compatibility; use the roadmap and per-system evidence documents for current scope.
+LotusGB is a C++ DMG/CGB emulator with a RetroArch libretro core. The repository also contains LotusGBA, a separate experimental Game Boy Advance core with its own CPU, system and libretro adapter. The project prioritizes useful game ROM compatibility and a good play experience on modern hosts and networks, while leaving the game ROM itself untouched whenever possible. Hardware behavior remains an important reference and should be tested through public component, system and frontend interfaces, but exact hardware fidelity is not an absolute requirement when a documented emulator-side compatibility behavior better serves supported games. Any intentional divergence must be explained in a nearby code comment and in the relevant design/evidence document, with tests for its guest-visible behavior. Do not conflate focused tests or bounded game checkpoints with broad game compatibility; use the roadmap and per-system evidence documents for current scope.
 
 ## Build and checks
 
@@ -65,6 +65,6 @@ Commit the generated header together with the CSV or generator change so builds 
 ## CPU changes
 
 - Add focused unit tests in `src/unit_test/` for externally observable CPU behavior, such as registers, flags, cycle count, memory access, and interrupt state.
-- Treat hardware documentation and targeted tests as the source of truth for Game Boy behavior. GBIT is a useful integration check, but investigate disagreements instead of adding compatibility workarounds without evidence.
+- Use hardware documentation and targeted tests to understand Game Boy behavior. GBIT is a useful integration check. When evidence shows a difference is needed for ROM compatibility or playability, a deliberate compatibility behavior is acceptable; explain the guest-visible difference and preserve it with a focused regression test.
 - Model CPU progress in M-cycle steps unless a demonstrated observable timing requirement needs finer clock detail.
 - Preserve the distinction between STOP and HALT state and test their wake-up behavior when changing those paths.

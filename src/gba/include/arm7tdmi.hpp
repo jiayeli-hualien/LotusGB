@@ -3,7 +3,9 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace LOTUSGBA {
 
@@ -62,6 +64,13 @@ private:
         bool carry = false;
     };
 
+    struct HleIrqFrame {
+        std::array<uint32_t, 5> registers;
+        uint32_t returnPc;
+        uint32_t returnStatus;
+        std::optional<uint16_t> suspendedWaitMask;
+    };
+
     uint32_t readRegister(unsigned index, uint32_t instructionAddress) const;
     Operand decodeOperand2(uint32_t instruction, uint32_t instructionAddress) const;
     bool conditionPassed(unsigned condition) const;
@@ -101,12 +110,9 @@ private:
     std::array<uint32_t, 7> fiqBank_{};
     std::array<std::array<uint32_t, 2>, 4> exceptionRegisterBanks_{};
     std::array<uint32_t, 5> savedStatusBanks_{};
-    std::array<uint32_t, 5> irqSavedRegisters_{};
+    std::vector<HleIrqFrame> hleIrqFrames_;
     uint32_t pc_ = 0x08000000;
     uint32_t cpsr_ = 0x1F;
-    uint32_t irqReturnProgramCounter_ = 0;
-    uint32_t irqReturnStatus_ = 0;
-    bool irqActive_ = false;
     bool halted_ = false;
     bool haltOnAnyEnabledInterrupt_ = false;
     uint16_t haltInterruptMask_ = 0;

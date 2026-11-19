@@ -4,9 +4,12 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +20,7 @@
 namespace {
 
 bool videoReceived = false;
+unsigned videoRefreshCount = 0;
 unsigned receivedWidth = 0;
 unsigned receivedHeight = 0;
 std::vector<uint32_t> receivedPixels;
@@ -24,6 +28,10 @@ std::vector<int16_t> receivedAudio;
 enum retro_pixel_format selectedFormat = RETRO_PIXEL_FORMAT_0RGB1555;
 bool acceptXrgb8888 = true;
 uint16_t pressedJoypad = 0;
+uint16_t secondJoypad = 0;
+const retro_subsystem_info *linkSubsystem = nullptr;
+const retro_netpacket_callback *netpacket = nullptr;
+std::vector<std::vector<uint8_t>> sentNetpackets;
 std::string systemDirectoryPath;
 std::string biosStartupMode = "Automatic";
 bool biosOptionRegistered = false;
@@ -39,9 +47,9 @@ size_t audioBatch(const int16_t *samples, size_t frames) {
 }
 
 int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
-    if (port != 0 || device != RETRO_DEVICE_JOYPAD || index != 0 || id >= 16)
+    if (port > 1 || device != RETRO_DEVICE_JOYPAD || index != 0 || id >= 16)
         return 0;
-    return (pressedJoypad & (1u << id)) != 0 ? 1 : 0;
+    return ((port == 0 ? pressedJoypad : secondJoypad) & (1u << id)) != 0 ? 1 : 0;
 }
 
 std::vector<uint8_t> readFile(const std::string &path) {
@@ -69,6 +77,14 @@ std::vector<uint8_t> makeSaveMarkerMode3Rom(const char *marker) {
 }
 
 bool environment(unsigned command, void *data) {
+    if (command == RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE) {
+        netpacket = static_cast<const retro_netpacket_callback *>(data);
+        return true;
+    }
+    if (command == RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO) {
+        linkSubsystem = static_cast<const retro_subsystem_info *>(data);
+        return true;
+    }
     if (command == RETRO_ENVIRONMENT_SET_VARIABLES) {
         const auto *options = static_cast<const retro_variable *>(data);
         for (size_t index = 0; options[index].key; ++index)
@@ -97,6 +113,1154 @@ bool environment(unsigned command, void *data) {
                    : selectedFormat == RETRO_PIXEL_FORMAT_0RGB1555;
     }
     return false;
+}
+
+// Original ARM entry and Thumb payload. Each endpoint waits for its own
+// controller, polls serial IF, then records both words and its role in SRAM.
+std::vector<uint8_t> makeMultiplayerProbe(uint16_t color, uint16_t button,
+                                          uint16_t outgoing, uint16_t control) {
+    std::vector<uint8_t> rom(0xC0, 0);
+    rom[0] = 0x2E;
+    rom[3] = 0xEA; // B $080000C0
+    const auto emit16 = [&rom](uint16_t word) {
+        rom.push_back(static_cast<uint8_t>(word));
+        rom.push_back(static_cast<uint8_t>(word >> 8));
+    };
+    const auto emit32 = [&emit16](uint32_t word) {
+        emit16(static_cast<uint16_t>(word));
+        emit16(static_cast<uint16_t>(word >> 16));
+    };
+    emit32(0xE59F0000); // LDR r0, [pc]
+    emit32(0xE12FFF10); // BX r0
+    emit32(0x080000CD); // Thumb entry
+    const uint16_t code[] = {
+        0x4818, 0x4919, 0x4A19, 0x800A, 0x2200, 0x8002, // Set backdrop color.
+        0x4818, 0x4919, 0x4A19, 0x880B, 0x4213, 0xD1FC, // Wait for key.
+        0x4A18, 0x8142, 0x2200, 0x8282, 0x4A17, 0x8102, // SEND, RCNT, SIOCNT.
+        0x4D17, 0x4E18, 0x2702, // IF, save output and two rounds.
+        0x8903, 0x2404, 0x4223, 0xD105, // Child skips START.
+        0x2408, 0x4223, 0xD0F8, 0x2480, 0x4323, 0x8103, // Parent awaits SD.
+        0x882B, 0x2480, 0x4223, 0xD0FB, 0x802C, // Poll and acknowledge IF.
+        0x8803, 0x7033, 0x0A1B, 0x7073, // Store parent word as bytes.
+        0x8843, 0x70B3, 0x0A1B, 0x70F3, // Store child word as bytes.
+        0x8903, 0x7133, 0x3605, 0x3F01, 0xD1E3, 0xE7FE, // Role, next round.
+    };
+    for (uint16_t word : code)
+        emit16(word);
+    const uint32_t literals[] = {0x04000000, 0x05000000, color, 0x04000120,
+        0x04000130, button, outgoing, control, 0x04000202, 0x0E000000};
+    for (uint32_t word : literals)
+        emit32(word);
+    constexpr char saveMarker[] = "SRAM_V";
+    rom.insert(rom.end(), saveMarker, saveMarker + sizeof(saveMarker));
+    return rom;
+}
+
+void runMultiplayerBusCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint32_t rcnt = 0x04000134;
+    constexpr uint32_t irq = 0x04000202;
+    GbaSystem parent(makeGbaMode3BootRom());
+    {
+        GbaSystem child(makeGbaMode3BootRom());
+        parent.connectLinkChild(child);
+        parent.write16(control, 0x6000);
+        assert((parent.read16(control) & 8) == 0);
+        parent.write8(control, 0x80); // Unready peer.
+        assert((parent.read16(control) & 0xC0) == 0x40);
+        assert((parent.read16(irq) & 0x80) == 0);
+
+        child.write16(rcnt, 0x8000);
+        child.write16(control, 0x2000);
+        assert((parent.read16(control) & 8) == 0);
+        child.write16(rcnt, 0);
+        assert((parent.read16(control) & 0x3C) == 0x08);
+        assert((child.read16(control) & 0x3C) == 0x1C);
+        child.write8(control, 0xFC); // Status bits and child START are read-only.
+        assert((child.read16(control) & 0xFC) == 0x1C);
+
+        parent.write16(send, 0x4321);
+        child.write16(send, 0xABCD);
+        parent.write32(control, 0x43216080);
+        assert((parent.read16(control) & 0xC0) == 0x80);
+        assert((child.read16(control) & 0x80) == 0x80);
+        assert((parent.read16(rcnt) & 1) == 0);
+        assert(parent.read32(multi0) == 0xFFFFFFFF);
+        assert(child.read32(multi0) == 0xFFFFFFFF);
+        assert((parent.read16(irq) & 0x80) == 0);
+        child.write16(send, 0x9876); // Next round's word.
+        assert(parent.runLinkedFrame().success);
+        for (GbaSystem *endpoint : {&parent, &child}) {
+            assert(endpoint->read32(multi0) == 0xABCD4321);
+            assert(endpoint->read32(multi0 + 4) == 0xFFFFFFFF);
+            assert((endpoint->read16(control) & 0xC0) == 0);
+            assert((endpoint->read16(rcnt) & 1) == 1);
+        }
+        assert((parent.read16(irq) & 0x80) != 0);
+        assert((child.read16(irq) & 0x80) == 0);
+        parent.write16(irq, 0x80);
+
+        parent.write8(control, 0x80);
+        child.write16(rcnt, 0x8000);
+        assert((parent.read16(control) & 0xC8) == 0x40);
+        assert(parent.runLinkedFrame().success);
+        assert((parent.read16(irq) & 0x80) == 0);
+
+        child.write16(rcnt, 0);
+        parent.write8(control, 0x80);
+        child.reset();
+        assert((parent.read16(control) & 0xC8) == 0x40);
+        child.write16(control, 0x2000);
+        parent.write8(control, 0x80);
+        assert(parent.runLinkedFrame().success);
+        assert((parent.read16(control) & 0xC8) == 8);
+        parent.write8(control, 0x80); // Destruction cancels an in-flight round.
+    }
+    assert((parent.read16(control) & 0xC8) == 0x40);
+    assert(parent.runFrame().success);
+}
+
+void runMultiplayerTimingCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t expectedCycles[] = {62915, 15729, 10486, 5243};
+    for (unsigned baud = 0; baud < 4; ++baud) {
+        std::vector<uint8_t> rom(0xC0, 0);
+        rom[0] = 0x2E;
+        rom[3] = 0xEA; // ARM cartridge entry.
+        const uint32_t code[] = {
+            0xE59F0038, 0xE59F1030, 0xE1C010B0, // Select multiplayer.
+            0xE59F2030, 0xE3A03502, 0xE5823000, // Run Timer 3 at CPU clock.
+            0xE3811080, 0xE1C010B0, // Start the round.
+            0xE1D010B0, 0xE3110080, 0x1AFFFFFC, // Poll SIOCNT busy.
+            0xE1D230B0, 0xE3A00402, 0xE1C030B0, // Store Timer 3 in EWRAM.
+            0xEAFFFFFE, 0x6000 | baud, 0x04000128, 0x0400010C,
+        };
+        for (uint32_t word : code)
+            for (unsigned byte = 0; byte < 4; ++byte)
+                rom.push_back(static_cast<uint8_t>(word >> (8 * byte)));
+        GbaSystem parent(std::move(rom));
+        GbaSystem child(makeGbaMode3BootRom());
+        parent.connectLinkChild(child);
+        child.write16(0x04000128, 0x2000);
+        assert(parent.runLinkedFrame().success);
+        const uint16_t measured = parent.read16(0x02000000);
+        // Includes the instructions before START and after the last busy read.
+        assert(measured >= expectedCycles[baud] && measured < expectedCycles[baud] + 64);
+    }
+}
+
+void runRemoteMultiplayerLinkCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint32_t irq = 0x04000202;
+    GbaSystem parent(makeGbaMode3BootRom());
+    GbaSystem child(makeGbaMode3BootRom());
+    parent.configureRemoteMultiplayerLink(
+        false, true,
+        [&child](uint32_t sequence, uint16_t word, uint8_t baudIndex, uint64_t) {
+            assert(baudIndex == 3);
+            assert(child.receiveRemoteMultiplayerStart(sequence, word,
+                                                       baudIndex));
+        },
+        {},
+        [&child](bool ready) { child.setRemoteMultiplayerReady(ready); });
+    child.configureRemoteMultiplayerLink(
+        true, true, {},
+        [&parent](uint32_t sequence, uint16_t word) {
+            assert(parent.receiveRemoteMultiplayerWord(sequence, word));
+        },
+        [&parent](bool ready) { parent.setRemoteMultiplayerReady(ready); });
+
+    parent.write16(control, 0x2000);
+    child.write16(control, 0x2001);
+    assert((parent.read16(control) & 0x08) != 0);
+    assert((child.read16(control) & 0x08) != 0);
+    assert((parent.read16(control) & 0x10) == 0);
+    assert((child.read16(control) & 0x10) != 0);
+    // Emerald's CheckMasterOrSlave tests SI/SD in SIOCNT and requires ID 0
+    // with SD high to recognize the master.
+    constexpr uint16_t sioMultiSiSd = 0x000C;
+    constexpr uint16_t sioMultiSd = 0x0008;
+    constexpr uint16_t sioMultiId = 0x0030;
+    const auto isEmeraldMaster = [](uint16_t status) {
+        return (status & sioMultiSiSd) == sioMultiSd &&
+            (status & sioMultiId) == 0;
+    };
+    assert(isEmeraldMaster(parent.read16(control)));
+    assert(!isEmeraldMaster(child.read16(control)));
+    assert((child.read16(control) & 0x0004) != 0); // SI identifies the slave.
+
+    parent.write16(send, 0x1234);
+    child.write16(send, 0xABCD);
+    parent.write16(control, 0x6083);
+    assert((parent.read16(control) & 0x80) != 0);
+    assert((child.read16(control) & 0x80) == 0);
+    assert(parent.runFrame().success);
+    assert(child.runFrame().success);
+    assert(parent.read32(multi0) == 0xABCD1234);
+    assert(child.read32(multi0) == 0xABCD1234);
+    assert((parent.read16(control) & 0x80) == 0);
+    assert((child.read16(control) & 0x80) == 0);
+    assert((parent.read16(irq) & 0x80) != 0);
+    assert((child.read16(irq) & 0x80) == 0);
+
+    // The Pokémon link protocol repeatedly elects and checks the same parent.
+    // Keep the simulated role/ready lines stable after one completed round,
+    // then prove the next SIO start can complete on independently advanced
+    // endpoint clocks too.
+    const auto assertRolesReadyAndIdle = [&] {
+        assert((parent.read16(control) & 0x3C) == 0x08);
+        assert((child.read16(control) & 0x3C) == 0x1C);
+        assert((parent.read16(0x04000134) & 0x0F) == 0x0B);
+        assert((child.read16(0x04000134) & 0x0F) == 0x0F);
+    };
+    assertRolesReadyAndIdle();
+    parent.write16(send, 0x5678);
+    child.write16(send, 0xDCBA);
+    parent.write16(control, 0x6083);
+    assert(parent.runFrame().success);
+    assert(child.runFrame().success);
+    assert(parent.read32(multi0) == 0xDCBA5678);
+    assert(child.read32(multi0) == 0xDCBA5678);
+    assert((parent.read16(control) & 0x80) == 0);
+    assert((child.read16(control) & 0x80) == 0);
+    assertRolesReadyAndIdle();
+
+    assert(!child.receiveRemoteMultiplayerStart(4, 0xFFFF, 3));
+    assert((child.read16(control) & 0x40) != 0);
+}
+
+void runLocalMultiplayerProbeRomCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr size_t saveSize = 32 * 1024;
+    const auto parentSave = std::make_shared<std::vector<uint8_t>>(saveSize, 0);
+    const auto childSave = std::make_shared<std::vector<uint8_t>>(saveSize, 0);
+    GbaSystem parent(makeMultiplayerProbe(0x001F, 1, 0x1234, 0x6003), {},
+                     parentSave);
+    GbaSystem child(makeMultiplayerProbe(0x7C00, 2, 0xABCD, 0x6003), {},
+                    childSave);
+    parent.connectLinkChild(child);
+
+    parent.setPressedButtons(1);
+    child.setPressedButtons(2);
+    for (unsigned frame = 0; frame < 120; ++frame) {
+        if (frame != 0) {
+            parent.setPressedButtons(0);
+            child.setPressedButtons(0);
+        }
+        if (!parent.runLinkedFrame().success)
+            throw std::runtime_error(parent.fault().empty() ? child.fault()
+                                                            : parent.fault());
+    }
+
+    // The homebrew probe waits for each local controller, performs two
+    // multiplayer transfers, and writes both received words plus its role to
+    // SRAM. This exercises guest SIO writes, completion, and IRQ handling.
+    const uint8_t parentResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x0B};
+    const uint8_t childResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x1F};
+    assert(std::equal(std::begin(parentResult), std::end(parentResult),
+                      parentSave->begin()));
+    assert(std::equal(std::begin(childResult), std::end(childResult),
+                      childSave->begin()));
+    assert((parent.read16(0x04000128) & 0x3C) == 0x08);
+    assert((child.read16(0x04000128) & 0x3C) == 0x1C);
+}
+
+void runRemoteMultiplayerProbeRomLatencyCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t control = 0x04000128;
+    constexpr size_t saveSize = 32 * 1024;
+    constexpr uint8_t parentResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x0B};
+    constexpr uint8_t childResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x1F};
+
+    struct Event {
+        enum class Type { Ready, Start, Word, Frame } type;
+        unsigned dueFrame;
+        bool ready = false;
+        bool toParent = false;
+        uint32_t sequence = 0;
+        uint16_t word = 0;
+        uint8_t baud = 0;
+        uint64_t frame = 0;
+        uint64_t startCycle = 0;
+    };
+
+    // Three frames each way is about 100 ms RTT; six is about 200 ms RTT.
+    for (const unsigned oneWayDelayFrames : {0u, 3u, 6u}) {
+        const auto parentSave =
+            std::make_shared<std::vector<uint8_t>>(saveSize, 0);
+        const auto childSave =
+            std::make_shared<std::vector<uint8_t>>(saveSize, 0);
+        GbaSystem parent(
+            makeMultiplayerProbe(0x001F, 1, 0x1234, 0x6003), {}, parentSave);
+        GbaSystem child(
+            makeMultiplayerProbe(0x7C00, 2, 0xABCD, 0x6003), {}, childSave);
+
+        unsigned frame = 0;
+        unsigned starts = 0;
+        unsigned replies = 0;
+        std::deque<Event> packets;
+        const auto queuePacket = [&](Event event) {
+            event.dueFrame = frame + oneWayDelayFrames;
+            packets.push_back(event);
+        };
+        parent.configureRemoteMultiplayerLink(
+            false, true,
+            [&](uint32_t sequence, uint16_t word, uint8_t baud,
+                uint64_t elapsedCycles) {
+                ++starts;
+                Event event{Event::Type::Start, 0, false, false,
+                            sequence, word, baud};
+                event.startCycle = elapsedCycles;
+                queuePacket(event);
+            }, {},
+            [&](bool ready) {
+                Event event{Event::Type::Ready, 0, ready, false};
+                event.frame = parent.remoteFrameCount();
+                queuePacket(event);
+            },
+            [&](uint64_t progress) {
+                Event event{Event::Type::Frame, 0, false, false};
+                event.frame = progress;
+                queuePacket(event);
+            });
+        child.configureRemoteMultiplayerLink(
+            true, true, {},
+            [&](uint32_t sequence, uint16_t word) {
+                ++replies;
+                queuePacket({Event::Type::Word, 0, false, false,
+                             sequence, word});
+            },
+            [&](bool ready) {
+                Event event{Event::Type::Ready, 0, ready, true};
+                event.frame = child.remoteFrameCount();
+                queuePacket(event);
+            },
+            [&](uint64_t progress) {
+                Event event{Event::Type::Frame, 0, false, true};
+                event.frame = progress;
+                queuePacket(event);
+            });
+
+        const auto deliver = [&](bool toChild) {
+            for (auto packet = packets.begin(); packet != packets.end();) {
+                const bool packetToChild =
+                    packet->type == Event::Type::Start ||
+                    ((packet->type == Event::Type::Ready ||
+                      packet->type == Event::Type::Frame) &&
+                     !packet->toParent);
+                if (packet->dueFrame > frame || packetToChild != toChild) {
+                    ++packet;
+                    continue;
+                }
+                const Event event = *packet;
+                packet = packets.erase(packet);
+                switch (event.type) {
+                case Event::Type::Ready:
+                    (event.toParent ? parent : child)
+                        .setRemoteMultiplayerReady(event.ready, event.frame);
+                    break;
+                case Event::Type::Start:
+                    assert(child.receiveRemoteMultiplayerStart(
+                        event.sequence, event.word, event.baud,
+                        event.startCycle));
+                    break;
+                case Event::Type::Word:
+                    assert(parent.receiveRemoteMultiplayerWord(
+                        event.sequence, event.word));
+                    break;
+                case Event::Type::Frame:
+                    assert((toChild ? child : parent)
+                               .receiveRemoteMultiplayerFrame(event.frame));
+                    break;
+                }
+            }
+        };
+
+        bool completed = false;
+        for (frame = 1; frame <= 1200 && !completed; ++frame) {
+            parent.setPressedButtons(frame == 1 ? 1 : 0);
+            child.setPressedButtons(frame == 1 ? 2 : 0);
+            assert(parent.runFrame().success);
+            deliver(true);
+            assert(child.runFrame().success);
+            deliver(false);
+            completed = starts == 2 && replies == 2 &&
+                std::equal(std::begin(parentResult), std::end(parentResult),
+                           parentSave->begin()) &&
+                std::equal(std::begin(childResult), std::end(childResult),
+                           childSave->begin());
+        }
+
+        if (!completed) {
+            std::cerr << "remote latency probe stalled: delay="
+                      << oneWayDelayFrames << " frame=" << frame
+                      << " starts=" << starts << " replies=" << replies
+                      << " parentFrames=" << parent.remoteFrameCount()
+                      << " childFrames=" << child.remoteFrameCount()
+                      << " parentCycles=" << parent.emulatedCycles()
+                      << " childCycles=" << child.emulatedCycles()
+                      << " queued=" << packets.size() << '\n';
+        }
+        assert(completed);
+        assert(starts == 2 && replies == 2);
+        assert((parent.read16(control) & 0x40) == 0);
+        assert((child.read16(control) & 0x40) == 0);
+    }
+}
+
+void runRemoteMultiplayerLatencyCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    for (const unsigned oneWayDelayFrames : {6u, 12u}) {
+        GbaSystem parent(makeGbaMode3BootRom());
+        GbaSystem child(makeGbaMode3BootRom());
+        uint32_t starts = 0;
+        uint32_t words = 0;
+        uint32_t parentSequence = 0;
+        uint16_t parentWord = 0;
+        uint16_t childWord = 0;
+        uint8_t baudIndex = 0;
+        uint64_t parentStartCycle = 0;
+        parent.configureRemoteMultiplayerLink(
+            false, true,
+            [&](uint32_t sequence, uint16_t word, uint8_t baud,
+                uint64_t elapsedCycles) {
+                ++starts;
+                parentSequence = sequence;
+                parentWord = word;
+                baudIndex = baud;
+                parentStartCycle = elapsedCycles;
+            },
+            {},
+            [&child](bool ready) { child.setRemoteMultiplayerReady(ready); });
+        child.configureRemoteMultiplayerLink(
+            true, true, {},
+            [&](uint32_t sequence, uint16_t word) {
+                ++words;
+                assert(sequence == words);
+                childWord = word;
+            },
+            [&parent](bool ready) { parent.setRemoteMultiplayerReady(ready); });
+
+        parent.write16(control, 0x2000);
+        child.write16(control, 0x2001);
+        parent.write16(send, 0x1234);
+        child.write16(send, 0xABCD);
+        parent.write16(control, 0x6083);
+        assert(starts == 1 && parentSequence == 1 && parentWord == 0x1234);
+        assert(baudIndex == 3);
+
+        // The parent stops at the end of the local SIO duration while the
+        // transfer packet is in transit. Let the child's independent clock
+        // advance several frames before delivering the start event.
+        for (unsigned frame = 0; frame < oneWayDelayFrames; ++frame)
+            assert(parent.runFrame().success);
+        assert((parent.read16(control) & 0x80) != 0);
+        const uint64_t childBeforeStart = child.emulatedCycles();
+        for (unsigned frame = 0; frame < oneWayDelayFrames; ++frame)
+            assert(child.runFrame().success);
+        assert(child.emulatedCycles() > childBeforeStart);
+        assert(child.receiveRemoteMultiplayerStart(parentSequence, parentWord,
+                                                  baudIndex, parentStartCycle));
+        assert(words == 0);
+        assert(child.runFrame().success);
+        assert(words == 1 && childWord == 0xABCD);
+        assert((child.read16(control) & 0x80) == 0);
+
+        // The parent has reached its transfer boundary and waits for the
+        // child's reply; receiving it lets the same frame continue.
+        assert((parent.read16(control) & 0x80) != 0);
+        assert(parent.receiveRemoteMultiplayerWord(parentSequence, childWord));
+        assert((parent.read16(control) & 0x80) == 0);
+        assert(parent.read32(multi0) == 0xABCD1234);
+        assert(child.read32(multi0) == 0xABCD1234);
+        assert(child.emulatedCycles() > parent.emulatedCycles());
+
+    }
+}
+
+void runRemoteMultiplayerWaitCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint32_t keyInput = 0x04000130;
+
+    GbaSystem parent(makeGbaMode3BootRom());
+    uint32_t sequence = 0;
+    parent.configureRemoteMultiplayerLink(
+        false, true,
+        [&sequence](uint32_t nextSequence, uint16_t, uint8_t, uint64_t) {
+            sequence = nextSequence;
+        }, {}, {});
+    parent.write16(control, 0x2000);
+    parent.setRemoteMultiplayerReady(true);
+    parent.write16(send, 0x1234);
+    parent.write16(control, 0x6083);
+    assert(sequence == 1);
+
+    for (unsigned frame = 0; frame < 3; ++frame) {
+        const auto pendingFrame = parent.runFrame();
+        assert(pendingFrame.success &&
+               pendingFrame.cycles >= GbaSystem::CYCLES_PER_FRAME);
+    }
+    const uint64_t stalledCycles = parent.emulatedCycles();
+    const auto stalledFrame = parent.runFrame();
+    assert(stalledFrame.success);
+    assert(stalledFrame.cycles == 0);
+    assert(parent.emulatedCycles() == stalledCycles);
+    parent.setPressedButtons(1);
+    assert((parent.read16(keyInput) & 1) == 0);
+    parent.setPressedButtons(0);
+    assert((parent.read16(keyInput) & 1) == 0);
+
+    assert(parent.receiveRemoteMultiplayerWord(sequence, 0xABCD));
+    assert(parent.receiveRemoteMultiplayerFrame(1));
+    const auto resumedFrame = parent.runFrame();
+    assert(resumedFrame.success);
+    assert(resumedFrame.cycles >= GbaSystem::CYCLES_PER_FRAME);
+    assert(parent.read32(multi0) == 0xABCD1234);
+    assert((parent.read16(keyInput) & 1) == 1);
+}
+
+void runRemoteFramePacingCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint32_t multi0 = 0x04000120;
+    GbaSystem parent(makeGbaMode3BootRom());
+    GbaSystem child(makeGbaMode3BootRom());
+    uint32_t sequence = 0;
+    uint16_t parentWord = 0;
+    uint8_t baud = 0;
+    uint16_t childWord = 0;
+    uint64_t parentStartCycle = 0;
+    parent.configureRemoteMultiplayerLink(
+        false, true,
+        [&](uint32_t next, uint16_t word, uint8_t baudIndex,
+            uint64_t elapsedCycles) {
+            sequence = next;
+            parentWord = word;
+            baud = baudIndex;
+            parentStartCycle = elapsedCycles;
+        }, {},
+        [&](bool ready) {
+            child.setRemoteMultiplayerReady(ready, parent.remoteFrameCount());
+        },
+        [&](uint64_t frame) {
+            assert(child.receiveRemoteMultiplayerFrame(frame));
+        });
+    child.configureRemoteMultiplayerLink(
+        true, true, {},
+        [&](uint32_t, uint16_t word) { childWord = word; },
+        [&](bool ready) {
+            parent.setRemoteMultiplayerReady(ready, child.remoteFrameCount());
+        },
+        [&](uint64_t frame) {
+            assert(parent.receiveRemoteMultiplayerFrame(frame));
+        });
+
+    parent.write16(control, 0x2000);
+    child.write16(control, 0x2001);
+    for (unsigned frame = 0; frame < 6; ++frame)
+        assert(parent.runFrame().cycles != 0);
+    assert(parent.remoteFrameCount() == 6);
+    assert(child.remoteFrameCount() == 0);
+
+    // The remote master may be several frames ahead while no SIO transfer is
+    // active. The virtual cable only paces the pair after link traffic starts.
+    parent.write16(send, 0x1234);
+    parent.write16(control, 0x6083);
+    assert(sequence == 1 && parentWord == 0x1234 && baud == 3);
+    for (unsigned frame = 0; frame < 3; ++frame) {
+        const auto pendingFrame = parent.runFrame();
+        assert(pendingFrame.success &&
+               pendingFrame.cycles >= GbaSystem::CYCLES_PER_FRAME);
+    }
+    assert(parent.remoteFrameCount() == 9);
+    const uint64_t parentCycles = parent.emulatedCycles();
+    const auto pacedParent = parent.runFrame();
+    assert(pacedParent.success && pacedParent.cycles == 0);
+    assert(parent.emulatedCycles() == parentCycles);
+
+    parent.setPressedButtons(1);
+    assert((parent.read16(0x04000130) & 1) == 0);
+    parent.setPressedButtons(0);
+    assert((parent.read16(0x04000130) & 1) == 0);
+
+    assert(child.receiveRemoteMultiplayerStart(sequence, parentWord, baud,
+                                               parentStartCycle));
+    child.write16(send, 0xABCD);
+    for (unsigned frame = 0; frame < 8 && childWord == 0; ++frame)
+        assert(child.runFrame().cycles != 0);
+    assert(childWord == 0xABCD);
+    assert(child.remoteFrameCount() >= 1);
+
+    assert(parent.receiveRemoteMultiplayerWord(sequence, childWord));
+    assert(parent.runFrame().success);
+    assert(parent.remoteFrameCount() == 10);
+    assert((parent.read16(0x04000130) & 1) == 1);
+    // The child may have advanced its independent clock to the timestamped
+    // start while the parent was waiting for the reply, so the parent is
+    // allowed to resume here if it is now behind the bounded frame window.
+    assert(parent.runFrame().success);
+    assert(parent.read32(multi0) == 0xABCD1234);
+    assert(child.read32(multi0) == 0xABCD1234);
+    assert((parent.read16(control) & 0x40) == 0);
+    assert((child.read16(control) & 0x40) == 0);
+}
+
+void runRemoteSioPredictionCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint32_t irq = 0x04000202;
+
+    GbaSystem system(makeGbaMode3BootRom());
+    uint32_t sequence = 0;
+    system.configureRemoteMultiplayerLink(
+        false, true,
+        [&](uint32_t next, uint16_t, uint8_t, uint64_t) {
+            sequence = next;
+        }, {}, {}, {},
+        [](uint32_t, uint16_t localWord) -> std::optional<uint16_t> {
+            if (localWord == 0xB9A0)
+                return 0xB9A0;
+            return std::nullopt;
+        });
+    system.write16(control, 0x2000);
+    system.setRemoteMultiplayerReady(true, 0);
+    assert(system.receiveRemoteMultiplayerFrame(0));
+    system.write16(send, 0xB9A0);
+    system.write16(control, 0x6083);
+    assert(sequence == 1);
+    assert(system.runFrame().success);
+    assert((system.read16(control) & 0x80) == 0);
+    assert(system.read32(multi0) == 0xB9A0B9A0);
+    assert((system.read16(irq) & 0x80) != 0);
+    for (unsigned frame = 0; frame < 4; ++frame) {
+        const auto nextFrame = system.runFrame();
+        assert(nextFrame.success && nextFrame.cycles != 0);
+    }
+    assert(system.remoteFrameCount() == 5);
+
+    // The late network word is only discarded after it confirms the exact
+    // predicted value. A different peer word is surfaced as an SIO error.
+    assert(system.receiveRemoteMultiplayerWord(sequence, 0xB9A0));
+    system.write16(send, 0xB9A0);
+    system.write16(control, 0x6083);
+    assert(system.runFrame().success);
+    assert(!system.receiveRemoteMultiplayerWord(sequence, 0x2222));
+    assert((system.read16(control) & 0x40) != 0);
+}
+
+void runRemoteSioEventPumpCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+
+    GbaSystem system(makeGbaMode3BootRom());
+    uint32_t sequence = 0;
+    unsigned polls = 0;
+    system.configureRemoteMultiplayerLink(
+        false, true,
+        [&sequence](uint32_t next, uint16_t, uint8_t, uint64_t) {
+            sequence = next;
+        }, {}, {}, {});
+    system.setRemoteMultiplayerEventPump([&] {
+        ++polls;
+        assert((system.read16(control) & 0x80) != 0);
+        assert(system.receiveRemoteMultiplayerWord(sequence, 0xABCD));
+    });
+    system.write16(control, 0x2000);
+    system.setRemoteMultiplayerReady(true, 0);
+    assert(system.receiveRemoteMultiplayerFrame(0));
+    system.write16(send, 0x1234);
+    system.write16(control, 0x6083);
+    assert(sequence == 1);
+
+    const auto completedFrame = system.runFrame();
+    assert(completedFrame.success);
+    assert(completedFrame.cycles >= GbaSystem::CYCLES_PER_FRAME);
+    assert(polls == 1);
+    assert(system.remoteFrameCount() == 1);
+    assert((system.read16(control) & 0x80) == 0);
+    assert(system.read32(multi0) == 0xABCD1234);
+
+    GbaSystem waiting(makeGbaMode3BootRom());
+    uint32_t waitingSequence = 0;
+    unsigned waitingPolls = 0;
+    waiting.configureRemoteMultiplayerLink(
+        false, true,
+        [&waitingSequence](uint32_t next, uint16_t, uint8_t, uint64_t) {
+            waitingSequence = next;
+        }, {}, {}, {});
+    waiting.setRemoteMultiplayerEventPump([&] { ++waitingPolls; });
+    waiting.write16(control, 0x2000);
+    waiting.setRemoteMultiplayerReady(true, 0);
+    assert(waiting.receiveRemoteMultiplayerFrame(0));
+    waiting.write16(send, 0x1234);
+    waiting.write16(control, 0x6083);
+
+    const auto stalledFrame = waiting.runFrame();
+    assert(stalledFrame.success);
+    assert(stalledFrame.cycles > 0 &&
+           stalledFrame.cycles < GbaSystem::CYCLES_PER_FRAME);
+    assert(waitingPolls == 1);
+    assert(waiting.remoteFrameCount() == 0);
+    assert((waiting.read16(control) & 0x80) != 0);
+    assert(waiting.receiveRemoteMultiplayerWord(waitingSequence, 0xABCD));
+    assert(waiting.runFrame().success);
+    assert(waiting.remoteFrameCount() == 1);
+    assert((waiting.read16(control) & 0x80) == 0);
+    assert(waiting.read32(multi0) == 0xABCD1234);
+}
+
+void runRemoteSioQueuedWordCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+
+    GbaSystem system(makeGbaMode3BootRom());
+    uint32_t sequence = 0;
+    unsigned polls = 0;
+    system.configureRemoteMultiplayerLink(
+        false, true,
+        [&sequence](uint32_t next, uint16_t, uint8_t, uint64_t) {
+            sequence = next;
+        }, {}, {}, {});
+    system.setRemoteMultiplayerEventPump([&] {
+        ++polls;
+        assert((system.read16(control) & 0x80) != 0);
+        assert(system.receiveRemoteMultiplayerWord(sequence, 0xABCD));
+        // A frontend packet poll may drain the next reliable reply before the
+        // guest has started its matching SIO transfer.
+        assert(system.receiveRemoteMultiplayerWord(sequence + 1, 0xDCBA));
+    });
+    system.write16(control, 0x2000);
+    system.setRemoteMultiplayerReady(true, 0);
+    assert(system.receiveRemoteMultiplayerFrame(0));
+
+    system.write16(send, 0x1234);
+    system.write16(control, 0x6083);
+    assert(sequence == 1);
+    assert(system.runFrame().success);
+    assert(system.read32(multi0) == 0xABCD1234);
+    assert((system.read16(control) & 0x80) == 0);
+
+    system.write16(send, 0x5678);
+    system.write16(control, 0x6083);
+    assert(sequence == 2);
+    assert(system.runFrame().success);
+    assert(polls == 1);
+    assert(system.read32(multi0) == 0xDCBA5678);
+    assert((system.read16(control) & 0x40) == 0);
+}
+
+void runRemoteMultiplayerQueuedStartsCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t multi0 = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint64_t interTransferCycles = 18'528;
+
+    GbaSystem child(makeGbaMode3BootRom());
+    struct Reply {
+        uint32_t sequence;
+        uint16_t word;
+        uint64_t cycle;
+    };
+    std::vector<Reply> replies;
+    child.configureRemoteMultiplayerLink(
+        true, true, {},
+        [&](uint32_t sequence, uint16_t word) {
+            replies.push_back({sequence, word, child.emulatedCycles()});
+        }, {}, {});
+    child.setRemoteMultiplayerReady(true, 0);
+    child.write16(send, 0xABCD);
+    child.write16(control, 0x2001);
+    for (unsigned frame = 0; frame < 5; ++frame)
+        assert(child.runFrame().success);
+
+    // Both reliable start packets can arrive in one frontend poll. They must
+    // remain ordered and keep their cycle spacing even if their original
+    // timestamps are already behind the independently advancing client.
+    assert(child.receiveRemoteMultiplayerStart(1, 0x1234, 3, 0));
+    assert(child.receiveRemoteMultiplayerStart(2, 0x5678, 3,
+                                                interTransferCycles));
+    assert(child.runFrame().success);
+    assert(replies.size() == 2);
+    assert(replies[0].sequence == 1 && replies[0].word == 0xABCD);
+    assert(replies[1].sequence == 2 && replies[1].word == 0xABCD);
+    assert(replies[1].cycle > replies[0].cycle);
+    const uint64_t observedGap = replies[1].cycle - replies[0].cycle;
+    assert(observedGap >= interTransferCycles - 64 &&
+           observedGap <= interTransferCycles + 64);
+    assert(child.read32(multi0) == 0xABCD5678);
+    assert((child.read16(control) & 0x40) == 0);
+}
+
+void runUnconnectedNormalSioCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t data = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t irq = 0x04000202;
+
+    for (const uint16_t mode : {uint16_t{0x4081}, uint16_t{0x5081}}) {
+        GbaSystem system(makeGbaMode3BootRom());
+        system.write32(data, 0x12345678);
+        system.write16(control, mode);
+        assert((system.read16(control) & 0x80) != 0);
+        assert(system.runFrame().success);
+        assert((system.read16(control) & 0x80) == 0);
+        if (mode & 0x1000)
+            assert(system.read32(data) == 0xFFFFFFFF);
+        else
+            assert(system.read8(0x0400012A) == 0xFF);
+        assert((system.read16(irq) & (1u << 7)) != 0);
+    }
+
+    GbaSystem externalClock(makeGbaMode3BootRom());
+    externalClock.write32(data, 0x12345678);
+    externalClock.write16(control, 0x5080);
+    assert(externalClock.runFrame().success);
+    assert((externalClock.read16(control) & 0x80) != 0);
+    assert(externalClock.read32(data) == 0x12345678);
+    assert((externalClock.read16(irq) & (1u << 7)) == 0);
+    externalClock.write16(0x04000134, 0x8000);
+    assert((externalClock.read16(control) & 0x80) == 0);
+}
+
+void runHleVBlankWaitDuringSerialInterruptCheck() {
+    using LOTUSGBA::GbaSystem;
+    // The serial IRQ occurs on the first few scanlines. The IRQ handler
+    // records its source and acknowledges IF. SWI 05 must wait until line 160.
+    std::vector<uint8_t> rom(0xC0, 0);
+    rom[0] = 0x2E;
+    rom[3] = 0xEA;
+    constexpr uint32_t code[] = {
+        0xE59F0058, 0xE59F1058, 0xE5801000, // Install IRQ handler.
+        0xE59F0054, 0xE3A01081, 0xE1C010B0, 0xE321F01F, // Enable VBlank and serial IRQ.
+        0xE59F0048, 0xE59F1048, 0xE1C010B0, // Start a cable round.
+        0xEF000005, // HLE VBlankIntrWait.
+        0xE59F0040, 0xE1D010B0, 0xE3A02402, 0xE1C210B0, // Record VCOUNT.
+        0xEAFFFFFE,
+        0xE59F0030, 0xE1D010B0, 0xE1C010B0, // IRQ handler: read and clear IF.
+        0xE3A02402, 0xE1D200B2, 0xE1800001, 0xE1C200B2, // Record the interrupt sources.
+        0xE12FFF1E, // BX LR.
+        0x03007FFC, 0x08000100, 0x04000200, 0x04000128, 0x6083, 0x04000006, 0x04000202,
+    };
+    for (uint32_t word : code)
+        for (unsigned byte = 0; byte < 4; ++byte)
+            rom.push_back(static_cast<uint8_t>(word >> (8 * byte)));
+    GbaSystem parent(std::move(rom));
+    GbaSystem child(makeGbaMode3BootRom());
+    parent.connectLinkChild(child);
+    parent.write16(0x04000004, 8); // DISPSTAT VBlank IRQ enable.
+    parent.write16(0x03007FF8, 0x81); // Stale VBlank and unrelated serial flags.
+    child.write16(0x04000128, 0x2000);
+    if (!parent.runLinkedFrame().success)
+        throw std::runtime_error(parent.fault().empty() ? child.fault() : parent.fault());
+    assert(parent.read16(0x02000000) == 160);
+    assert(parent.read16(0x02000002) == 0x81);
+    assert(parent.read16(0x03007FF8) == 0x80);
+}
+
+void runHleNestedSerialInterruptCheck() {
+    using LOTUSGBA::GbaSystem;
+    std::vector<uint8_t> rom(0xC0, 0);
+    rom[0] = 0x2E;
+    rom[3] = 0xEA;
+    constexpr uint32_t code[] = {
+        // Install the handler, enable IRQs, wait for VBlank and record r12.
+        0xE59F001C, 0xE59F101C, 0xE5801000, 0xE321F01F, 0xE3A0C033, 0xEF000005,
+        0xE3A02402, 0xE5C2C002, 0xEAFFFFFE, 0x03007FFC, 0x08000100,
+        0, 0, 0, 0, 0,
+        // Dispatch by IF; acknowledge VBlank, save SPSR/LR and enable IRQs in System mode.
+        0xE3A00301, 0xE2801C02, 0xE1D120B2, 0xE3120080, 0x1A000015,
+        0xE3A02001, 0xE1C120B2, 0xE14F1000, 0xE92D4002, 0xE321F01F,
+        // Set phase 1, start a transfer, and wait until SIOCNT is no longer busy.
+        0xE3A0C055, 0xE3A02402, 0xE3A03001, 0xE5C23000, 0xE2801F4A,
+        0xE59F304C, 0xE1C130B0, 0xE1D130B0, 0xE3130080, 0x1AFFFFFC,
+        // Record the restored r12, set phase 2, then return from the outer IRQ.
+        0xE5C2C001, 0xE3A03002, 0xE5C23000, 0xE321F092,
+        0xE8BD4002, 0xE16FF001, 0xE12FFF1E,
+        // Serial handler: acknowledge IF, capture the current phase and both
+        // received words, and clobber r12 before returning.
+        0xE3A02080, 0xE1C120B2, 0xE3A02402, 0xE5D21000, 0xE5C21003,
+        0xE5903120, 0xE5823004, 0xE3A0C099, 0xE12FFF1E, 0x00006083,
+    };
+    for (uint32_t word : code)
+        for (unsigned byte = 0; byte < 4; ++byte)
+            rom.push_back(static_cast<uint8_t>(word >> (8 * byte)));
+    GbaSystem parent(std::move(rom));
+    GbaSystem child(makeGbaMode3BootRom());
+    parent.connectLinkChild(child);
+    parent.write16(0x04000004, 8); // DISPSTAT VBlank IRQ enable.
+    parent.write16(0x04000200, 0x81); // IE: VBlank and serial.
+    child.write16(0x04000128, 0x2000);
+    parent.write16(0x0400012A, 0x1234);
+    child.write16(0x0400012A, 0xABCD);
+    if (!parent.runLinkedFrame().success)
+        throw std::runtime_error(parent.fault().empty() ? child.fault() : parent.fault());
+    assert(parent.read8(0x02000003) == 1); // Serial ran inside VBlank.
+    assert(parent.read8(0x02000000) == 2); // VBlank resumed.
+    assert(parent.read8(0x02000001) == 0x55);
+    assert(parent.read8(0x02000002) == 0x33); // The interrupted program resumed.
+    assert(parent.read32(0x02000004) == 0xABCD1234);
+}
+
+void runLocalLinkSubsystemCheck() {
+    assert(linkSubsystem && std::string(linkSubsystem->ident) == "gba_link_2p");
+    const auto parent = makeMultiplayerProbe(0x001F, 1, 0x1234, 0x6003);
+    auto child = makeMultiplayerProbe(0x7C00, 2, 0xABCD, 0x6003);
+    constexpr char rtcMarker[] = "SIIRTC_V001";
+    child.insert(child.end(), rtcMarker, rtcMarker + sizeof(rtcMarker));
+    const retro_game_info games[] = {
+        {"same.gba", parent.data(), parent.size(), nullptr},
+        {"same.gba", child.data(), child.size(), nullptr},
+    };
+    biosStartupMode = "Skip BIOS";
+    assert(!retro_load_game_special(linkSubsystem->id, games, 1));
+    assert(retro_load_game_special(linkSubsystem->id, games, 2));
+    assert(!retro_load_game_special(linkSubsystem->id, games, 1));
+    retro_system_av_info info{};
+    retro_get_system_av_info(&info);
+    assert(info.geometry.base_width == 480 && info.geometry.base_height == 160);
+    const auto &firstMemory = linkSubsystem->roms[0].memory[0];
+    const auto &secondMemory = linkSubsystem->roms[1].memory[0];
+    assert(std::string(firstMemory.extension) != secondMemory.extension);
+    auto *first = static_cast<uint8_t *>(retro_get_memory_data(firstMemory.type));
+    auto *second = static_cast<uint8_t *>(retro_get_memory_data(secondMemory.type));
+    assert(first && second && first != second);
+    assert(retro_get_memory_size(firstMemory.type) == 32768);
+    assert(retro_get_memory_size(secondMemory.type) == 32768);
+    assert(!retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    const auto &firstRtc = linkSubsystem->roms[0].memory[1];
+    const auto &secondRtc = linkSubsystem->roms[1].memory[1];
+    assert(!retro_get_memory_data(firstRtc.type));
+    const auto *rtc = retro_get_memory_data(secondRtc.type);
+    assert(rtc && retro_get_memory_size(secondRtc.type) != 0);
+
+    pressedJoypad = 1u << RETRO_DEVICE_ID_JOYPAD_A;
+    secondJoypad = 0;
+    retro_run();
+    assert(first[0] == 0xFF && second[0] == 0xFF);
+    secondJoypad = 1u << RETRO_DEVICE_ID_JOYPAD_B;
+    retro_run();
+    assert(receivedWidth == 480 && receivedHeight == 160);
+    const bool xrgb = selectedFormat == RETRO_PIXEL_FORMAT_XRGB8888;
+    for (unsigned y = 0; y < 160; ++y) {
+        for (unsigned x = 0; x < 240; ++x) {
+            assert(receivedPixels[y * 480 + x] == (xrgb ? 0xFF0000u : 0x7C00u));
+            assert(receivedPixels[y * 480 + x + 240] == (xrgb ? 0x0000FFu : 0x001Fu));
+        }
+    }
+    const uint8_t parentResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x0B};
+    const uint8_t childResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x1F};
+    for (unsigned round = 0; round < 2; ++round) {
+        assert(std::equal(std::begin(parentResult), std::end(parentResult), first + round * 5));
+        assert(std::equal(std::begin(childResult), std::end(childResult), second + round * 5));
+    }
+    retro_reset();
+    assert(retro_get_memory_data(firstMemory.type) == first && first[0] == 0x34);
+    assert(retro_get_memory_data(secondMemory.type) == second && second[0] == 0x34);
+    assert(retro_get_memory_data(secondRtc.type) == rtc);
+    std::fill_n(first, 10, 0);
+    std::fill_n(second, 10, 0);
+    retro_run();
+    assert(std::equal(std::begin(parentResult), std::end(parentResult), first));
+    assert(std::equal(std::begin(childResult), std::end(childResult), second));
+    retro_unload_game();
+    assert(!retro_get_memory_data(firstMemory.type));
+    assert(!retro_get_memory_data(secondMemory.type));
+    assert(!retro_get_memory_data(secondRtc.type));
+    pressedJoypad = secondJoypad = 0;
+    biosStartupMode = "Automatic";
+}
+
+void runRemoteNetplaySioCheck() {
+    using LOTUSGBA::GbaSystem;
+    assert(netpacket);
+    const auto rom = makeMultiplayerProbe(0x001F, 1, 0x1234, 0x6003);
+    const retro_game_info game{"netplay-link.gba", rom.data(), rom.size(), nullptr};
+    biosStartupMode = "Skip BIOS";
+    assert(retro_load_game(&game));
+    auto *save = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    assert(save && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 32768);
+    sentNetpackets.clear();
+    netpacket->start(0, [](int flags, const void *data, size_t len, uint16_t id) {
+        assert(id == 1 && (flags & RETRO_NETPACKET_RELIABLE));
+        const auto *bytes = static_cast<const uint8_t *>(data);
+        sentNetpackets.emplace_back(bytes, bytes + len);
+    }, nullptr);
+    assert(netpacket->connected(1));
+    retro_run();
+    assert(sentNetpackets.size() == 1); // Startup shares metadata, not SRAM.
+    assert(sentNetpackets.front().size() == 26);
+    assert(sentNetpackets.front()[4] == 0);
+    auto startup = sentNetpackets.front();
+    netpacket->receive(startup.data(), startup.size(), 1);
+    retro_run(); // Install the remote SIO endpoint after startup agreement.
+    assert(videoReceived && receivedWidth == 240 && receivedHeight == 160);
+
+    const auto makePacket = [](uint8_t type) {
+        return std::vector<uint8_t>{'L', 'G', 'B', 'A', type};
+    };
+    const auto read32 = [](const uint8_t *data) {
+        return static_cast<uint32_t>(data[0]) |
+            (static_cast<uint32_t>(data[1]) << 8) |
+            (static_cast<uint32_t>(data[2]) << 16) |
+            (static_cast<uint32_t>(data[3]) << 24);
+    };
+    const auto add32 = [](std::vector<uint8_t> &packet, uint32_t value) {
+        for (unsigned byte = 0; byte < 4; ++byte)
+            packet.push_back(static_cast<uint8_t>(value >> (byte * 8)));
+    };
+    const auto add16 = [](std::vector<uint8_t> &packet, uint16_t value) {
+        packet.push_back(static_cast<uint8_t>(value));
+        packet.push_back(static_cast<uint8_t>(value >> 8));
+    };
+    const auto add64 = [](std::vector<uint8_t> &packet, uint64_t value) {
+        for (unsigned byte = 0; byte < 8; ++byte)
+            packet.push_back(static_cast<uint8_t>(value >> (byte * 8)));
+    };
+    uint64_t peerFrame = 0;
+    uint16_t peerId = 1;
+    const auto runPeerProgressFrame = [&] {
+        auto progress = makePacket(4);
+        add64(progress, ++peerFrame);
+        netpacket->receive(progress.data(), progress.size(), peerId);
+        retro_run();
+    };
+    auto ready = makePacket(1);
+    ready.push_back(1);
+    add64(ready, peerFrame);
+    netpacket->receive(ready.data(), ready.size(), 1);
+    const unsigned beforeUnpairedFrames = videoRefreshCount;
+    for (unsigned frame = 0; frame < 4; ++frame)
+        runPeerProgressFrame();
+    assert(videoRefreshCount == beforeUnpairedFrames + 4);
+    const auto takeTransferStart = [&]() {
+        for (const auto &packet : sentNetpackets) {
+            if (packet.size() == 20 && packet[4] == 2)
+                return packet;
+        }
+        return std::vector<uint8_t>{};
+    };
+    const auto replyToStart = [&](const std::vector<uint8_t> &start,
+                                  uint16_t childWord) {
+        assert(start.size() == 20 && start[4] == 2);
+        const uint32_t sequence = read32(start.data() + 5);
+        assert(read32(start.data() + 5) != 0);
+        assert(start[9] == 0x34 && start[10] == 0x12);
+        assert(start[11] == 3);
+        auto word = makePacket(3);
+        add32(word, sequence);
+        add16(word, childWord);
+        netpacket->receive(word.data(), word.size(), 1);
+    };
+
+    pressedJoypad = 1u << RETRO_DEVICE_ID_JOYPAD_A;
+    for (unsigned frame = 0; frame < 120 && takeTransferStart().empty(); ++frame)
+        runPeerProgressFrame();
+    auto firstStart = takeTransferStart();
+    assert(!firstStart.empty());
+    assert(read32(firstStart.data() + 5) == 1);
+    replyToStart(firstStart, 0xABCD);
+    sentNetpackets.clear();
+
+    for (unsigned frame = 0; frame < 120 && takeTransferStart().empty(); ++frame)
+        runPeerProgressFrame();
+    auto secondStart = takeTransferStart();
+    assert(!secondStart.empty());
+    assert(read32(secondStart.data() + 5) == 2);
+    replyToStart(secondStart, 0xABCD);
+    for (unsigned frame = 0; frame < 8; ++frame)
+        runPeerProgressFrame();
+    const uint8_t parentResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x0B};
+    assert(std::equal(std::begin(parentResult), std::end(parentResult), save));
+    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == save);
+    pressedJoypad = 0;
+    netpacket->stop();
+    retro_unload_game();
+
+    sentNetpackets.clear();
+    assert(retro_load_game(&game));
+    save = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    assert(save && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 32768);
+    netpacket->start(1, [](int flags, const void *data, size_t len, uint16_t id) {
+        assert(id == 0 && (flags & RETRO_NETPACKET_RELIABLE));
+        const auto *bytes = static_cast<const uint8_t *>(data);
+        sentNetpackets.emplace_back(bytes, bytes + len);
+    }, nullptr);
+    peerId = 0;
+    peerFrame = 0;
+    netpacket->receive(startup.data(), startup.size(), 0);
+    retro_run();
+    assert(sentNetpackets.size() == 1 && sentNetpackets.front()[4] == 0);
+    sentNetpackets.clear();
+
+    ready = makePacket(1);
+    ready.push_back(1);
+    add64(ready, peerFrame);
+    netpacket->receive(ready.data(), ready.size(), 0);
+    pressedJoypad = 1u << RETRO_DEVICE_ID_JOYPAD_A;
+    const auto takeReadyPacket = [&]() {
+        for (auto packet = sentNetpackets.rbegin();
+             packet != sentNetpackets.rend(); ++packet) {
+            if (packet->size() == 14 && (*packet)[4] == 1 &&
+                (*packet)[5] == 1)
+                return *packet;
+        }
+        return std::vector<uint8_t>{};
+    };
+    for (unsigned frame = 0;
+         frame < 120 && takeReadyPacket().empty(); ++frame) {
+        runPeerProgressFrame();
+    }
+    const auto childReady = takeReadyPacket();
+    assert(childReady.size() == 14 && childReady[5] == 1);
+
+    auto remoteStart = makePacket(2);
+    add32(remoteStart, 1);
+    add16(remoteStart, 0x5678);
+    remoteStart.push_back(3);
+    add64(remoteStart, 0);
+    netpacket->receive(remoteStart.data(), remoteStart.size(), 0);
+    const auto findChildWord = [&]() {
+        for (auto packet = sentNetpackets.rbegin();
+             packet != sentNetpackets.rend(); ++packet) {
+            if (packet->size() == 11 && (*packet)[4] == 3)
+                return *packet;
+        }
+        return std::vector<uint8_t>{};
+    };
+    for (unsigned frame = 0; frame < 8 && findChildWord().empty(); ++frame)
+        runPeerProgressFrame();
+    const auto childWord = findChildWord();
+    assert(childWord.size() == 11 && childWord[4] == 3);
+    assert(read32(childWord.data() + 5) == 1);
+    assert(childWord[9] == 0x34 && childWord[10] == 0x12);
+    for (unsigned frame = 0; frame < 8; ++frame)
+        runPeerProgressFrame();
+    const uint8_t childResult[] = {0x78, 0x56, 0x34, 0x12, 0x1F};
+    assert(std::equal(std::begin(childResult), std::end(childResult), save));
+    pressedJoypad = 0;
+    netpacket->stop();
+    retro_unload_game();
+    biosStartupMode = "Automatic";
 }
 
 void runOptionalBiosCheck() {
@@ -330,6 +1494,7 @@ void runSkipBiosOptionCheck() {
 void videoRefresh(const void *data, unsigned width, unsigned height, size_t pitch) {
     assert(data != nullptr);
     videoReceived = true;
+    ++videoRefreshCount;
     receivedWidth = width;
     receivedHeight = height;
     receivedPixels.clear();
@@ -553,11 +1718,13 @@ void runPongGameplayAndCheck() {
 int main() {
     retro_set_environment(environment);
     assert(biosOptionRegistered);
+    assert(!netpacket);
     retro_set_video_refresh(videoRefresh);
     retro_set_audio_sample_batch(audioBatch);
     retro_set_input_poll(inputPoll);
     retro_set_input_state(inputState);
     retro_init();
+    assert(netpacket);
 
     retro_system_info systemInfo{};
     retro_get_system_info(&systemInfo);
@@ -658,6 +1825,23 @@ int main() {
     runOptionalBiosCheck();
     runSkipBiosOptionCheck();
     runRequiredBiosMissingCheck();
+    runMultiplayerBusCheck();
+    runMultiplayerTimingCheck();
+    runLocalMultiplayerProbeRomCheck();
+    runRemoteMultiplayerProbeRomLatencyCheck();
+    runRemoteMultiplayerLinkCheck();
+    runRemoteMultiplayerLatencyCheck();
+    runRemoteMultiplayerWaitCheck();
+    runRemoteFramePacingCheck();
+    runRemoteSioPredictionCheck();
+    runRemoteSioEventPumpCheck();
+    runRemoteSioQueuedWordCheck();
+    runRemoteMultiplayerQueuedStartsCheck();
+    runUnconnectedNormalSioCheck();
+    runHleVBlankWaitDuringSerialInterruptCheck();
+    runHleNestedSerialInterruptCheck();
+    runLocalLinkSubsystemCheck();
+    runRemoteNetplaySioCheck();
 
     retro_deinit();
 
@@ -667,5 +1851,6 @@ int main() {
     runAndCheck(makeGbaThumbMode3BootRom(testColor), testColor);
     retro_unload_game();
     runMode0TileSpriteHomebrewAndCheck();
+    runLocalLinkSubsystemCheck();
     retro_deinit();
 }

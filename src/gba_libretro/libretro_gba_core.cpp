@@ -1,8 +1,10 @@
 #include "libretro.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +12,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gba_system.hpp"
@@ -24,6 +27,21 @@ constexpr double GBA_FPS = static_cast<double>(GBA_CLOCK_HZ) /
 constexpr unsigned WIDTH = GbaSystem::SCREEN_WIDTH;
 constexpr unsigned HEIGHT = GbaSystem::SCREEN_HEIGHT;
 constexpr size_t PIXELS = GbaSystem::PIXEL_COUNT;
+constexpr unsigned LINK_SUBSYSTEM = 0x100;
+constexpr unsigned LINK_SRAM[] = {0x100, 0x102};
+constexpr unsigned LINK_RTC[] = {0x101, 0x103};
+const retro_subsystem_memory_info LINK_MEMORY[][2] = {
+    {{"srm", LINK_SRAM[0]}, {"rtc", LINK_RTC[0]}},
+    {{"srm.2", LINK_SRAM[1]}, {"rtc.2", LINK_RTC[1]}},
+};
+const retro_subsystem_rom_info LINK_ROMS[] = {
+    {"Player 1 GBA ROM", "gba", false, false, true, LINK_MEMORY[0], 2},
+    {"Player 2 GBA ROM", "gba", false, false, true, LINK_MEMORY[1], 2},
+};
+const retro_subsystem_info SUBSYSTEMS[] = {
+    {"Game Boy Advance Link (2 Players)", "gba_link_2p", LINK_ROMS, 2, LINK_SUBSYSTEM},
+    {},
+};
 
 retro_environment_t environmentCallback = nullptr;
 retro_log_printf_t logCallback = nullptr;
@@ -32,11 +50,11 @@ retro_audio_sample_t audioCallback = nullptr;
 retro_audio_sample_batch_t audioBatchCallback = nullptr;
 retro_input_poll_t inputPollCallback = nullptr;
 retro_input_state_t inputStateCallback = nullptr;
-
 std::unique_ptr<GbaSystem> gbaSystem;
+std::unique_ptr<GbaSystem> linkChild;
 std::vector<uint8_t> loadedRom;
-std::array<uint32_t, PIXELS> xrgbFrame{};
-std::array<uint16_t, PIXELS> rgb1555Frame{};
+std::array<uint32_t, 2 * PIXELS> xrgbFrame{};
+std::array<uint16_t, 2 * PIXELS> rgb1555Frame{};
 bool useXrgb8888 = false;
 bool coreFaulted = false;
 
@@ -158,31 +176,43 @@ uint32_t expand5(uint32_t value) {
 void submitVideo() {
     if (!videoCallback || !gbaSystem)
         return;
-    const auto &source = gbaSystem->frameBuffer();
-    if (useXrgb8888) {
-        for (size_t i = 0; i < PIXELS; ++i) {
-            const uint16_t color = source[i];
-            const uint32_t red = expand5(color);
-            const uint32_t green = expand5(color >> 5);
-            const uint32_t blue = expand5(color >> 10);
-            xrgbFrame[i] = (red << 16) | (green << 8) | blue;
+    const unsigned width = linkChild ? 2 * WIDTH : WIDTH;
+    const auto draw = [width](const GbaSystem &source, unsigned screenOffset) {
+        const auto &pixels = source.frameBuffer();
+        for (unsigned y = 0; y < HEIGHT; ++y) {
+            for (unsigned x = 0; x < WIDTH; ++x) {
+                const uint16_t color = pixels[y * WIDTH + x];
+                const size_t destination = y * width + x + screenOffset;
+                if (useXrgb8888) {
+                    const uint32_t red = expand5(color);
+                    const uint32_t green = expand5(color >> 5);
+                    const uint32_t blue = expand5(color >> 10);
+                    xrgbFrame[destination] = (red << 16) | (green << 8) | blue;
+                } else {
+                    const uint16_t red = color & 0x1F;
+                    const uint16_t green = (color >> 5) & 0x1F;
+                    const uint16_t blue = (color >> 10) & 0x1F;
+                    rgb1555Frame[destination] =
+                        static_cast<uint16_t>((red << 10) | (green << 5) | blue);
+                }
+            }
         }
-        videoCallback(xrgbFrame.data(), WIDTH, HEIGHT, WIDTH * sizeof(uint32_t));
-        return;
-    }
-    for (size_t i = 0; i < PIXELS; ++i) {
-        const uint16_t color = source[i];
-        const uint16_t red = color & 0x1F;
-        const uint16_t green = (color >> 5) & 0x1F;
-        const uint16_t blue = (color >> 10) & 0x1F;
-        rgb1555Frame[i] = static_cast<uint16_t>((red << 10) | (green << 5) | blue);
-    }
-    videoCallback(rgb1555Frame.data(), WIDTH, HEIGHT, WIDTH * sizeof(uint16_t));
+    };
+    draw(*gbaSystem, 0);
+    if (linkChild)
+        draw(*linkChild, WIDTH);
+    if (useXrgb8888)
+        videoCallback(xrgbFrame.data(), width, HEIGHT, width * sizeof(uint32_t));
+    else
+        videoCallback(rgb1555Frame.data(), width, HEIGHT, width * sizeof(uint16_t));
 }
 
 void submitAudio() {
     if (!gbaSystem)
         return;
+    // Keep player 1 audible and drain player 2's queue each frame.
+    if (linkChild)
+        linkChild->takeAudioSamples();
     const std::vector<int16_t> samples = gbaSystem->takeAudioSamples();
     const size_t frames = samples.size() / 2;
     if (audioBatchCallback) {
@@ -193,7 +223,7 @@ void submitAudio() {
     }
 }
 
-uint16_t readPressedButtons() {
+uint16_t readPressedButtons(unsigned port) {
     if (!inputStateCallback)
         return 0;
     struct Binding {
@@ -214,11 +244,374 @@ uint16_t readPressedButtons() {
     };
     uint16_t pressed = 0;
     for (const Binding &binding : bindings) {
-        if (inputStateCallback(0, RETRO_DEVICE_JOYPAD, 0, binding.retroId))
+        if (inputStateCallback(port, RETRO_DEVICE_JOYPAD, 0, binding.retroId))
             pressed |= binding.gbaMask;
     }
     return pressed;
 }
+
+constexpr char NETPACKET_PROTOCOL_VERSION[] = "LotusGBA-remote-sio-v7";
+constexpr uint8_t PACKET_MAGIC[] = {'L', 'G', 'B', 'A'};
+enum class PacketType : uint8_t {
+    Startup, Ready, TransferStart, TransferWord, FrameProgress
+};
+
+void netpacketPoll();
+
+struct RemoteNetplay {
+    retro_netpacket_send_t send = nullptr;
+    retro_netpacket_poll_receive_t pollReceive = nullptr;
+    uint16_t localId = 0;
+    uint16_t peerId = 0;
+    bool connected = false;
+    bool failed = false;
+    bool sentStartup = false;
+    bool receivedStartup = false;
+    bool linkConfigured = false;
+    bool peerReadyKnown = false;
+    bool peerReady = false;
+    bool localReadyKnown = false;
+    bool localReady = false;
+    int64_t epoch = 0;
+    size_t peerSaveSize = 0;
+    size_t peerRtcSize = 0;
+    uint64_t peerReadyFrame = 0;
+    uint64_t peerFrame = 0;
+    bool sioStateKnown = false;
+    uint16_t lastSioControl = 0;
+    uint16_t lastSioRc = 0;
+    unsigned sioStateLogCount = 0;
+
+    bool host() const { return localId == 0; }
+};
+
+RemoteNetplay net;
+
+void logRemoteSioState() {
+    if (!net.linkConfigured || !gbaSystem)
+        return;
+    constexpr uint32_t SIOCNT = 0x04000128;
+    constexpr uint32_t RCNT = 0x04000134;
+    const uint16_t control = gbaSystem->read16(SIOCNT);
+    const uint16_t rc = gbaSystem->read16(RCNT);
+    if (net.sioStateKnown && control == net.lastSioControl &&
+        rc == net.lastSioRc)
+        return;
+    net.sioStateKnown = true;
+    net.lastSioControl = control;
+    net.lastSioRc = rc;
+    if (net.sioStateLogCount++ >= 128)
+        return;
+    char message[160];
+    std::snprintf(message, sizeof(message),
+                  "GBA Netplay SIO state: mode=%u SIOCNT=%04X RCNT=%04X data=%08X send=%04X",
+                  (control >> 12) & 3, control, rc,
+                  gbaSystem->read32(0x04000120),
+                  gbaSystem->read16(0x0400012A));
+    logMessage(RETRO_LOG_INFO, message);
+}
+
+uint64_t romFingerprint() {
+    uint64_t hash = 14695981039346656037ull;
+    for (uint8_t byte : loadedRom)
+        hash = (hash ^ byte) * 1099511628211ull;
+    return hash;
+}
+
+void appendInteger(std::vector<uint8_t> &packet, uint64_t value, unsigned bytes) {
+    for (unsigned i = 0; i < bytes; ++i)
+        packet.push_back(static_cast<uint8_t>(value >> (i * 8)));
+}
+
+uint64_t readInteger(const uint8_t *data, unsigned bytes) {
+    uint64_t value = 0;
+    for (unsigned i = 0; i < bytes; ++i)
+        value |= uint64_t{data[i]} << (i * 8);
+    return value;
+}
+
+std::vector<uint8_t> makePacket(PacketType type) {
+    return {PACKET_MAGIC[0], PACKET_MAGIC[1], PACKET_MAGIC[2],
+            PACKET_MAGIC[3], static_cast<uint8_t>(type)};
+}
+
+void sendPacket(const std::vector<uint8_t> &packet) {
+    if (!net.send || !net.connected)
+        throw std::runtime_error("GBA Netplay packet sender is not connected");
+    net.send(RETRO_NETPACKET_RELIABLE | RETRO_NETPACKET_FLUSH_HINT,
+             packet.data(), packet.size(), net.peerId);
+}
+
+void failNetplay(const char *reason) {
+    if (net.failed)
+        return;
+    net.failed = true;
+    logMessage(RETRO_LOG_ERROR, reason);
+    if (net.linkConfigured && gbaSystem)
+        gbaSystem->setRemoteMultiplayerConnected(false);
+}
+
+void sendStartup() {
+    const auto save = gbaSystem->getSaveRamStorage();
+    const auto rtc = gbaSystem->getRtcStorage();
+    auto packet = makePacket(PacketType::Startup);
+    appendInteger(packet, romFingerprint(), 8);
+    appendInteger(packet, static_cast<uint64_t>(net.epoch), 8);
+    appendInteger(packet, save ? save->size() : 0, 4);
+    appendInteger(packet, rtc ? rtc->size() : 0, 1);
+    sendPacket(packet);
+    net.sentStartup = true;
+}
+
+void receiveStartup(const uint8_t *data, size_t size) {
+    if (size != 21 || net.receivedStartup ||
+        readInteger(data, 8) != romFingerprint())
+        throw std::runtime_error("GBA Netplay requires the same GBA ROM on both peers");
+    const uint64_t epoch = readInteger(data + 8, 8);
+    // Restrict the shared startup timestamp to the cartridge's supported era.
+    if (epoch < 946684800 || epoch >= 4102444800 ||
+        (net.host() && epoch != static_cast<uint64_t>(net.epoch)))
+        throw std::runtime_error("Invalid GBA Netplay session clock");
+    net.epoch = static_cast<int64_t>(epoch);
+    net.peerSaveSize = static_cast<size_t>(readInteger(data + 16, 4));
+    net.peerRtcSize = data[20];
+    const size_t localSaveSize = gbaSystem->getSaveRamSize();
+    const auto isEepromSize = [](size_t size) {
+        return size == GbaSystem::EEPROM512_SIZE || size == GbaSystem::EEPROM_SIZE;
+    };
+    if ((net.peerSaveSize != localSaveSize &&
+         !(isEepromSize(net.peerSaveSize) && isEepromSize(localSaveSize))) ||
+        net.peerRtcSize != gbaSystem->getRtcSize())
+        throw std::runtime_error("Invalid GBA Netplay cartridge storage size");
+    net.receivedStartup = true;
+}
+
+void sendRemoteReady(bool ready) {
+    if (!net.localReadyKnown || net.localReady != ready) {
+        logMessage(RETRO_LOG_INFO,
+                   ready ? "GBA Netplay local SIO entered multiplayer mode"
+                         : "GBA Netplay local SIO left multiplayer mode");
+        net.localReadyKnown = true;
+        net.localReady = ready;
+    }
+    auto packet = makePacket(PacketType::Ready);
+    packet.push_back(ready ? 1 : 0);
+    appendInteger(packet, gbaSystem ? gbaSystem->remoteFrameCount() : 0, 8);
+    sendPacket(packet);
+}
+
+void sendRemoteFrameProgress(uint64_t frame) {
+    auto packet = makePacket(PacketType::FrameProgress);
+    appendInteger(packet, frame, 8);
+    sendPacket(packet);
+}
+
+void sendRemoteTransferStart(uint32_t sequence, uint16_t parentWord,
+                             uint8_t baudIndex, uint64_t elapsedCycles) {
+    if (sequence <= 32 || sequence % 256 == 0) {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "GBA Netplay SIO start sent: seq=%u word=%04X baud=%u",
+                      sequence, parentWord, baudIndex);
+        logMessage(RETRO_LOG_INFO, message);
+    }
+    auto packet = makePacket(PacketType::TransferStart);
+    appendInteger(packet, sequence, 4);
+    appendInteger(packet, parentWord, 2);
+    packet.push_back(baudIndex);
+    appendInteger(packet, elapsedCycles, 8);
+    sendPacket(packet);
+}
+
+void sendRemoteTransferWord(uint32_t sequence, uint16_t childWord) {
+    if (sequence <= 32 || sequence % 256 == 0) {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "GBA Netplay SIO reply sent: seq=%u word=%04X",
+                      sequence, childWord);
+        logMessage(RETRO_LOG_INFO, message);
+    }
+    auto packet = makePacket(PacketType::TransferWord);
+    appendInteger(packet, sequence, 4);
+    appendInteger(packet, childWord, 2);
+    sendPacket(packet);
+}
+
+void startRemoteEmulation() {
+    auto local = std::make_unique<GbaSystem>(
+        loadedRom, std::vector<uint8_t>{}, gbaSystem->getSaveRamStorage(),
+        gbaSystem->getRtcStorage(), net.epoch);
+    gbaSystem = std::move(local);
+    gbaSystem->configureRemoteMultiplayerLink(
+        !net.host(), true, sendRemoteTransferStart, sendRemoteTransferWord,
+        sendRemoteReady, sendRemoteFrameProgress);
+    gbaSystem->setRemoteMultiplayerEventPump(netpacketPoll);
+    net.linkConfigured = true;
+    if (net.peerReadyKnown)
+        gbaSystem->setRemoteMultiplayerReady(net.peerReady,
+                                             net.peerReadyFrame);
+    if (net.peerFrame != 0 &&
+        !gbaSystem->receiveRemoteMultiplayerFrame(net.peerFrame))
+        throw std::runtime_error("Invalid initial GBA Netplay frame watermark");
+    logMessage(RETRO_LOG_INFO,
+               "GBA Netplay started one-system HLE SIO link");
+}
+
+void receiveReady(const uint8_t *data, size_t size) {
+    if (size != 9 || data[0] > 1)
+        throw std::runtime_error("Invalid GBA Netplay readiness packet");
+    const bool ready = data[0] != 0;
+    const uint64_t peerFrame = readInteger(data + 1, 8);
+    if (!net.peerReadyKnown || net.peerReady != ready)
+        logMessage(RETRO_LOG_INFO,
+                   ready ? "GBA Netplay peer SIO entered multiplayer mode"
+                         : "GBA Netplay peer SIO left multiplayer mode");
+    net.peerReadyKnown = true;
+    net.peerReady = ready;
+    net.peerReadyFrame = peerFrame;
+    net.peerFrame = std::max(net.peerFrame, peerFrame);
+    if (net.linkConfigured)
+        gbaSystem->setRemoteMultiplayerReady(net.peerReady, peerFrame);
+    if (net.linkConfigured &&
+        !gbaSystem->receiveRemoteMultiplayerFrame(net.peerFrame))
+        throw std::runtime_error("Invalid GBA Netplay readiness watermark");
+}
+
+void receiveFrameProgress(const uint8_t *data, size_t size) {
+    if (size != 8)
+        throw std::runtime_error("Invalid GBA Netplay frame watermark");
+    const uint64_t frame = readInteger(data, 8);
+    if (frame < net.peerFrame)
+        throw std::runtime_error("GBA Netplay frame watermark moved backwards");
+    net.peerFrame = frame;
+    if (net.linkConfigured &&
+        !gbaSystem->receiveRemoteMultiplayerFrame(frame))
+        throw std::runtime_error("GBA rejected remote frame watermark");
+}
+
+void receiveTransferStart(const uint8_t *data, size_t size) {
+    if (size != 15 || net.host() || !net.linkConfigured)
+        throw std::runtime_error("Unexpected GBA Netplay transfer start");
+    const uint32_t sequence = static_cast<uint32_t>(readInteger(data, 4));
+    const uint16_t parentWord = static_cast<uint16_t>(readInteger(data + 4, 2));
+    const uint8_t baudIndex = data[6];
+    const uint64_t elapsedCycles = readInteger(data + 7, 8);
+    if (!gbaSystem->receiveRemoteMultiplayerStart(sequence, parentWord,
+                                                  baudIndex, elapsedCycles))
+        throw std::runtime_error("GBA rejected remote SIO transfer start");
+    if (sequence <= 32 || sequence % 256 == 0) {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "GBA Netplay SIO start received: seq=%u word=%04X baud=%u",
+                      sequence, parentWord, baudIndex);
+        logMessage(RETRO_LOG_INFO, message);
+    }
+}
+
+void receiveTransferWord(const uint8_t *data, size_t size) {
+    if (size != 6 || !net.host() || !net.linkConfigured)
+        throw std::runtime_error("Unexpected GBA Netplay transfer word");
+    const uint32_t sequence = static_cast<uint32_t>(readInteger(data, 4));
+    const uint16_t childWord = static_cast<uint16_t>(readInteger(data + 4, 2));
+    if (!gbaSystem->receiveRemoteMultiplayerWord(sequence, childWord))
+        throw std::runtime_error("GBA rejected remote SIO transfer word");
+    if (sequence <= 32 || sequence % 256 == 0) {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "GBA Netplay SIO reply received: seq=%u word=%04X",
+                      sequence, childWord);
+        logMessage(RETRO_LOG_INFO, message);
+    }
+}
+
+void netpacketStart(uint16_t clientId, retro_netpacket_send_t send,
+                    retro_netpacket_poll_receive_t pollReceive) try {
+    if (net.send && net.localId == clientId) {
+        net.send = send;
+        net.pollReceive = pollReceive;
+        return;
+    }
+    net = {};
+    net.localId = clientId;
+    net.send = send;
+    net.pollReceive = pollReceive;
+    net.connected = !net.host();
+    logMessage(RETRO_LOG_INFO,
+               net.host() ? "GBA Netplay packet transport started as host"
+                          : "GBA Netplay packet transport started as client");
+    if (linkChild)
+        failNetplay("Start GBA Netplay with one ROM per device");
+} catch (...) {
+    failNetplay("Could not start GBA Netplay");
+}
+
+void netpacketStop() {
+    if (net.linkConfigured && gbaSystem)
+        gbaSystem->disconnectRemoteMultiplayerLink();
+    net = {};
+}
+
+void netpacketReceive(const void *data, size_t size, uint16_t clientId) try {
+    if (!net.send || !net.connected || net.failed || !gbaSystem || clientId != net.peerId)
+        return;
+    const auto *bytes = static_cast<const uint8_t *>(data);
+    if (!bytes || size < 5 || !std::equal(std::begin(PACKET_MAGIC),
+                                         std::end(PACKET_MAGIC), bytes))
+        throw std::runtime_error("Invalid GBA Netplay packet");
+    switch (static_cast<PacketType>(bytes[4])) {
+    case PacketType::Startup: receiveStartup(bytes + 5, size - 5); break;
+    case PacketType::Ready: receiveReady(bytes + 5, size - 5); break;
+    case PacketType::TransferStart:
+        receiveTransferStart(bytes + 5, size - 5);
+        break;
+    case PacketType::TransferWord:
+        receiveTransferWord(bytes + 5, size - 5);
+        break;
+    case PacketType::FrameProgress:
+        receiveFrameProgress(bytes + 5, size - 5);
+        break;
+    default: throw std::runtime_error("Unknown GBA Netplay packet");
+    }
+} catch (const std::exception &error) {
+    failNetplay(error.what());
+} catch (...) {
+    failNetplay("Could not process GBA Netplay packet");
+}
+
+void netpacketPoll() try {
+    if (net.send && net.pollReceive && net.connected && !net.failed)
+        net.pollReceive();
+    if (net.send && net.connected && !net.failed) {
+        if (!net.sentStartup && (net.host() || net.receivedStartup))
+            sendStartup();
+        if (net.sentStartup && net.receivedStartup && !net.linkConfigured)
+            startRemoteEmulation();
+    }
+} catch (...) {
+    failNetplay("Could not poll GBA Netplay");
+}
+
+bool netpacketConnected(uint16_t clientId) {
+    if (!net.send || !net.host() || !gbaSystem || linkChild ||
+        net.connected || net.failed)
+        return false;
+    net.peerId = clientId;
+    net.epoch = static_cast<int64_t>(std::time(nullptr));
+    net.connected = true;
+    return true;
+}
+
+void netpacketDisconnected(uint16_t clientId) {
+    if (net.connected && clientId == net.peerId) {
+        failNetplay("GBA Netplay peer disconnected");
+        if (net.linkConfigured && gbaSystem)
+            gbaSystem->setRemoteMultiplayerConnected(false);
+    }
+}
+
+const retro_netpacket_callback NETPACKET_CALLBACKS = {
+    netpacketStart, netpacketReceive, netpacketStop, netpacketPoll,
+    netpacketConnected, netpacketDisconnected, NETPACKET_PROTOCOL_VERSION};
 
 } // namespace
 
@@ -232,6 +625,8 @@ void retro_set_environment(retro_environment_t callback) {
         bool noGame = false;
         environmentCallback(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &noGame);
         registerCoreOptions();
+        environmentCallback(RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO,
+                            const_cast<retro_subsystem_info *>(SUBSYSTEMS));
     }
 }
 
@@ -244,6 +639,11 @@ void retro_set_input_state(retro_input_state_t callback) { inputStateCallback = 
 void retro_init(void) {
     coreFaulted = false;
     if (environmentCallback) {
+        if (!environmentCallback(
+                RETRO_ENVIRONMENT_SET_NETPACKET_INTERFACE,
+                const_cast<retro_netpacket_callback *>(&NETPACKET_CALLBACKS)))
+            logMessage(RETRO_LOG_INFO,
+                       "Frontend does not provide the GBA Netpacket interface");
         retro_log_callback logging{};
         if (environmentCallback(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
             logCallback = logging.log;
@@ -257,8 +657,7 @@ void retro_init(void) {
 }
 
 void retro_deinit(void) {
-    gbaSystem.reset();
-    loadedRom.clear();
+    retro_unload_game();
     logCallback = nullptr;
     coreFaulted = false;
 }
@@ -276,11 +675,11 @@ void retro_get_system_info(retro_system_info *info) {
 void retro_get_system_av_info(retro_system_av_info *info) {
     if (!info)
         return;
-    info->geometry.base_width = WIDTH;
+    info->geometry.base_width = linkChild ? 2 * WIDTH : WIDTH;
     info->geometry.base_height = HEIGHT;
-    info->geometry.max_width = WIDTH;
+    info->geometry.max_width = info->geometry.base_width;
     info->geometry.max_height = HEIGHT;
-    info->geometry.aspect_ratio = 3.0f / 2.0f;
+    info->geometry.aspect_ratio = static_cast<float>(info->geometry.base_width) / HEIGHT;
     info->timing.fps = GBA_FPS;
     info->timing.sample_rate = GbaSystem::AUDIO_SAMPLE_RATE;
 }
@@ -290,20 +689,48 @@ void retro_set_controller_port_device(unsigned, unsigned) {}
 void retro_reset(void) {
     if (!gbaSystem)
         return;
-    gbaSystem->reset();
-    coreFaulted = false;
+    if (net.send) {
+        logMessage(RETRO_LOG_WARN, "End GBA Netplay before resetting");
+        return;
+    }
+    try {
+        gbaSystem->reset();
+        if (linkChild)
+            linkChild->reset();
+        coreFaulted = false;
+    } catch (const std::exception &error) {
+        logMessage(RETRO_LOG_ERROR, error.what());
+        coreFaulted = true;
+    } catch (...) {
+        logMessage(RETRO_LOG_ERROR, "Unexpected exception resetting LotusGBA");
+        coreFaulted = true;
+    }
 }
 
 void retro_run(void) {
     if (!gbaSystem || coreFaulted)
         return;
     try {
+        netpacketPoll();
         if (inputPollCallback)
             inputPollCallback();
-        gbaSystem->setPressedButtons(readPressedButtons());
-        const auto result = gbaSystem->runFrame();
+        if (net.send && net.connected && !net.linkConfigured && !net.failed) {
+            submitVideo();
+            return;
+        }
+        const auto result = [&]() {
+            gbaSystem->setPressedButtons(readPressedButtons(0));
+            if (linkChild) {
+                linkChild->setPressedButtons(readPressedButtons(1));
+                return gbaSystem->runLinkedFrame();
+            }
+            return gbaSystem->runFrame();
+        }();
+        logRemoteSioState();
         if (!result.success) {
-            logMessage(RETRO_LOG_ERROR, gbaSystem->fault().c_str());
+            const auto &fault = linkChild && gbaSystem->fault().empty()
+                ? linkChild->fault() : gbaSystem->fault();
+            logMessage(RETRO_LOG_ERROR, fault.c_str());
             coreFaulted = true;
             return;
         }
@@ -324,14 +751,24 @@ bool retro_unserialize(const void *, size_t) { return false; }
 void retro_cheat_reset(void) {}
 void retro_cheat_set(unsigned, bool, const char *) {}
 
-bool retro_load_game(const retro_game_info *game) {
+static bool validGame(const retro_game_info *game) {
     if (!game || !game->data || game->size < 0xC4 || game->size > 32 * 1024 * 1024) {
         logMessage(RETRO_LOG_ERROR, "GBA content must contain at least 0xC4 bytes and be at most 32 MiB");
         return false;
     }
+    return true;
+}
+
+static std::vector<uint8_t> copyRom(const retro_game_info &game) {
+    const auto *begin = static_cast<const uint8_t *>(game.data);
+    return {begin, begin + game.size};
+}
+
+bool retro_load_game(const retro_game_info *game) {
+    if (!validGame(game))
+        return false;
     try {
-        const auto *begin = static_cast<const uint8_t *>(game->data);
-        std::vector<uint8_t> candidate(begin, begin + game->size);
+        auto candidate = copyRom(*game);
         auto candidateBios = loadBios(readBiosStartupMode());
         std::shared_ptr<std::vector<uint8_t>> candidateSaveFlash;
         std::shared_ptr<std::vector<uint8_t>> candidateRtc;
@@ -342,9 +779,12 @@ bool retro_load_game(const retro_game_info *game) {
         auto candidateSystem = std::make_unique<GbaSystem>(
             candidate, std::move(candidateBios), std::move(candidateSaveFlash),
             std::move(candidateRtc));
+        linkChild.reset();
         loadedRom = std::move(candidate);
         gbaSystem = std::move(candidateSystem);
         coreFaulted = false;
+        if (net.sentStartup || net.receivedStartup)
+            failNetplay("GBA content changed during Netplay. Restart the session.");
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());
         return false;
@@ -355,27 +795,64 @@ bool retro_load_game(const retro_game_info *game) {
     return true;
 }
 
-bool retro_load_game_special(unsigned, const retro_game_info *, size_t) { return false; }
-void retro_unload_game(void) { gbaSystem.reset(); loadedRom.clear(); coreFaulted = false; }
+bool retro_load_game_special(unsigned type, const retro_game_info *games, size_t count) {
+    if (type != LINK_SUBSYSTEM || !games || count != 2) {
+        logMessage(RETRO_LOG_ERROR, "GBA Link requires two ROMs");
+        return false;
+    }
+    if (!validGame(&games[0]) || !validGame(&games[1]))
+        return false;
+    try {
+        const auto bios = loadBios(readBiosStartupMode());
+        auto parent = std::make_unique<GbaSystem>(copyRom(games[0]), bios);
+        auto child = std::make_unique<GbaSystem>(copyRom(games[1]), bios);
+        parent->connectLinkChild(*child);
+        retro_unload_game();
+        gbaSystem = std::move(parent);
+        linkChild = std::move(child);
+        return true;
+    } catch (const std::exception &error) {
+        logMessage(RETRO_LOG_ERROR, error.what());
+    } catch (...) {
+        logMessage(RETRO_LOG_ERROR, "Unexpected error loading the GBA Link subsystem");
+    }
+    return false;
+}
+
+void retro_unload_game(void) {
+    netpacketStop();
+    linkChild.reset();
+    gbaSystem.reset();
+    loadedRom.clear();
+    coreFaulted = false;
+}
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
-void *retro_get_memory_data(unsigned id) {
-    if (!gbaSystem)
+static GbaSystem *systemForMemory(unsigned id) {
+    if (id == RETRO_MEMORY_SAVE_RAM || id == RETRO_MEMORY_RTC)
+        return linkChild ? nullptr : gbaSystem.get();
+    if (!linkChild)
         return nullptr;
-    if (id == RETRO_MEMORY_SAVE_RAM)
-        return gbaSystem->getSaveRamData();
-    if (id == RETRO_MEMORY_RTC)
-        return gbaSystem->getRtcData();
+    if (id == LINK_SRAM[0] || id == LINK_RTC[0])
+        return gbaSystem.get();
+    if (id == LINK_SRAM[1] || id == LINK_RTC[1])
+        return linkChild.get();
     return nullptr;
 }
 
+void *retro_get_memory_data(unsigned id) {
+    auto *system = systemForMemory(id);
+    if (!system)
+        return nullptr;
+    return id == RETRO_MEMORY_RTC || id == LINK_RTC[0] || id == LINK_RTC[1]
+        ? system->getRtcData() : system->getSaveRamData();
+}
+
 size_t retro_get_memory_size(unsigned id) {
-    if (!gbaSystem)
+    auto *system = systemForMemory(id);
+    if (!system)
         return 0;
-    if (id == RETRO_MEMORY_SAVE_RAM)
-        return gbaSystem->getSaveRamSize();
-    if (id == RETRO_MEMORY_RTC)
-        return gbaSystem->getRtcSize();
-    return 0;
+    return id == RETRO_MEMORY_RTC || id == LINK_RTC[0] || id == LINK_RTC[1]
+        ? system->getRtcSize() : system->getSaveRamSize();
 }
 
 } // extern "C"

@@ -1,5 +1,19 @@
 # Development roadmap
 
+## Project objective and fidelity policy
+
+LotusGB prioritizes compatibility with useful game ROMs and a smooth, reliable
+play experience. The goal is to reproduce the intended play experience on
+modern hosts and network links while leaving the game ROM itself untouched
+whenever possible. Hardware behavior is a guide, not an end in itself: when
+evidence shows that emulator-side compatibility behavior better serves the
+game, LotusGB may intentionally differ from original hardware, including in
+timing or peripheral behavior. Such a deviation must state what guest-visible
+behavior it addresses, what hardware behavior it approximates, and its known
+tradeoffs in both a nearby source comment and the relevant design/evidence
+document; a focused test should protect the chosen behavior. Compatibility
+claims remain bounded by the ROMs and scenarios actually tested.
+
 ## Next project goals — recommended working order (2026-11-12)
 
 The public-release milestone is complete. The next goals are:
@@ -37,7 +51,7 @@ update. The release preflight reviewed documentation, test-asset provenance,
 reachable history, and repository metadata. The private-use game checks remain
 separate from public ROM assets.
 
-## Current route — GBA single-player playability and fidelity (2026-11-09)
+## Current route — GBA cross-device link play (2026-11-19)
 
 The bounded Emerald checkpoint is passed: the game reached Route 102, accepted
 directional play, and resumed its in-game save after closing and reopening the
@@ -53,8 +67,33 @@ target-specific rendering or PCM defect is currently recorded. Continue
 implementation when a concrete Emerald or licensed homebrew discrepancy is
 reproduced, rather than adding speculative timing changes.
 
-Link Cable, RFU and GBA save states remain deferred. See the [GBA status and
-evidence](gba-development.md) for implementation limits and test details.
+The [local GBA multiplayer SIO subsystem](gba-development.md#sio-and-rubysapphire-link)
+has original-ROM test coverage, and private Emerald trade/battle acceptance
+passed with both external BIOS and HLE startup. The paired RetroArch Netpacket
+implementation simulated both consoles on each peer and synchronized whole
+frames; it made the linked game run but caused visible stalls. The current
+direction gives each peer one GBA and sends HLE SIO readiness/start/word
+events. Protocol v6 keeps frontend presentation running independently and
+loosely bounds guest-frame lead only during recent SIO activity; timestamped
+starts retain their intended position on the guest clock. Synthetic tests
+pass. A private Japanese Emerald replay at zero simulated network delay kept
+the two guest cycle counters within 261 cycles at frame 7,323, but the game
+still left the expected multiplayer state, so this timing split is not yet a
+game-level pass. Remote Cable Club entry, trade/reload, battle, and
+separate-device LAN validation remain gates. Reverse engineering corrected
+the repeated-PC trace: the observed loop polls the ordinary VBlank bit in
+`gMain.intrCheck`, not a link wait. Public Emerald link code starts master
+transfers from VBlank and marks the non-master lagging after more than ten
+VBlanks without a serial interrupt. This makes direct word forwarding
+sensitive to RTT, but the lag marker is not itself proof of a disconnect: a
+200 ms private replay completed 338 SIO exchanges without an error screen,
+while both games remained at the communication-wait messages and the child
+advanced far ahead of the host. The next investigation must inspect the guest
+link status and Cable Club handshake, then compare direct event forwarding
+with local cable replication and synchronized inputs, and assess an RFU
+packet/slot backend as a separate latency path; see the [remote Emerald
+investigation](gba-development.md#japanese-pokemon-emerald). RFU and GBA save
+states remain deferred.
 
 The bounded gameplay and Steam Deck checkpoints are complete. The intermittent
 Deck tearing report is closed for now: it did not recur in the latest Deck
@@ -345,11 +384,11 @@ PSG oscillator clocks. Other systems remain deferred.
 GBA priorities are: first, make recommended single-player games playable
 without emulator-introduced bugs (Emerald has now passed an early-game
 Route 102 movement and in-game save/reload checkpoint); second, improve
-graphics and sound fidelity against hardware behavior; third, defer Link Cable
-and RFU. Refine timing when it blocks gameplay or explains a visual/audio
-mismatch. For a suspected bug, check documentation, targeted tests or real
-hardware before deciding whether it is an emulator defect or behavior to
-reproduce.
+graphics and sound fidelity against hardware behavior. Ruby/Sapphire
+connectivity has a local multiplayer SIO path. Refine timing when it blocks
+gameplay or explains a visual/audio mismatch. For a suspected bug, check
+documentation, targeted tests or real hardware before deciding whether it
+is an emulator defect or behavior to reproduce.
 
 ### Current scope decision — personal-use DMG/libretro baseline complete
 

@@ -35,15 +35,12 @@ void Arm7Tdmi::reset(uint32_t entryPoint, uint32_t stackPointer,
     exceptionRegisterBanks_[0][0] = irqStackPointer;
     exceptionRegisterBanks_[1][0] = supervisorStackPointer;
     savedStatusBanks_.fill(0);
-    irqSavedRegisters_.fill(0);
+    hleIrqFrames_.clear();
     registers_[13] = stackPointer;
     registers_[14] = 0;
     userBank_[5] = stackPointer;
     pc_ = entryPoint & ~uint32_t{3};
     cpsr_ = initialCpsr;
-    irqReturnProgramCounter_ = 0;
-    irqReturnStatus_ = 0;
-    irqActive_ = false;
     halted_ = false;
     haltOnAnyEnabledInterrupt_ = false;
     haltInterruptMask_ = 0;
@@ -187,6 +184,10 @@ uint32_t *Arm7Tdmi::savedStatusForMode(uint32_t mode) {
 }
 
 void Arm7Tdmi::wakeFromInterrupts(uint16_t flags, uint16_t enable) {
+    for (auto &frame : hleIrqFrames_) {
+        if (frame.suspendedWaitMask && (flags & *frame.suspendedWaitMask) != 0)
+            frame.suspendedWaitMask.reset();
+    }
     if (!halted_)
         return;
     if (haltOnAnyEnabledInterrupt_ ? (flags & enable) != 0
@@ -198,16 +199,19 @@ void Arm7Tdmi::wakeFromInterrupts(uint16_t flags, uint16_t enable) {
 }
 
 bool Arm7Tdmi::enterIrq(uint32_t handlerAddress) {
-    if (irqDisabled() || irqActive_)
+    if (irqDisabled())
         return false;
     uint32_t *savedStatus = savedStatusForMode(0x12);
     if (!savedStatus)
         return false;
+    HleIrqFrame frame{{registers_[0], registers_[1], registers_[2],
+                       registers_[3], registers_[12]}, pc_, cpsr_, std::nullopt};
+    // IntrWait continues after an unrelated IRQ unless its requested IRQ
+    // arrives while the cartridge handler is running.
+    if (halted_ && !haltOnAnyEnabledInterrupt_)
+        frame.suspendedWaitMask = haltInterruptMask_;
+    hleIrqFrames_.push_back(frame);
     *savedStatus = cpsr_;
-    irqSavedRegisters_ = {registers_[0], registers_[1], registers_[2],
-                          registers_[3], registers_[12]};
-    irqReturnProgramCounter_ = pc_;
-    irqReturnStatus_ = cpsr_;
     switchMode(0x12);
     // The HLE BIOS vector saves the caller context, invokes the pointer at
     // 0x03007FFC, then restores that context and returns from the exception.
@@ -216,7 +220,6 @@ bool Arm7Tdmi::enterIrq(uint32_t handlerAddress) {
     cpsr_ &= ~CPSR_T;
     pc_ = handlerAddress == 0 ? IRQ_RETURN_SENTINEL
                               : handlerAddress & ~uint32_t{3};
-    irqActive_ = true;
     halted_ = false;
     haltOnAnyEnabledInterrupt_ = false;
     haltInterruptMask_ = 0;
@@ -224,7 +227,7 @@ bool Arm7Tdmi::enterIrq(uint32_t handlerAddress) {
 }
 
 bool Arm7Tdmi::enterIrqVector() {
-    if (irqDisabled() || irqActive_)
+    if (irqDisabled())
         return false;
     uint32_t *savedStatus = savedStatusForMode(0x12);
     if (!savedStatus)
@@ -258,17 +261,19 @@ bool Arm7Tdmi::enterSwiVector(uint32_t returnAddress) {
 }
 
 void Arm7Tdmi::finishIrqReturn() {
-    if (!irqActive_ || (cpsr_ & 0x1F) != 0x12)
-        return;
-    switchMode(irqReturnStatus_ & 0x1F);
-    registers_[0] = irqSavedRegisters_[0];
-    registers_[1] = irqSavedRegisters_[1];
-    registers_[2] = irqSavedRegisters_[2];
-    registers_[3] = irqSavedRegisters_[3];
-    registers_[12] = irqSavedRegisters_[4];
-    cpsr_ = irqReturnStatus_;
-    pc_ = irqReturnProgramCounter_;
-    irqActive_ = false;
+    const auto frame = hleIrqFrames_.back();
+    hleIrqFrames_.pop_back();
+    switchMode(frame.returnStatus & 0x1F);
+    for (unsigned index = 0; index < 4; ++index)
+        registers_[index] = frame.registers[index];
+    registers_[12] = frame.registers[4];
+    cpsr_ = frame.returnStatus;
+    pc_ = frame.returnPc;
+    if (frame.suspendedWaitMask) {
+        halted_ = true;
+        haltOnAnyEnabledInterrupt_ = false;
+        haltInterruptMask_ = *frame.suspendedWaitMask;
+    }
 }
 
 uint32_t Arm7Tdmi::readUserRegister(unsigned index) const {
@@ -555,7 +560,8 @@ bool Arm7Tdmi::executeSoftwareInterrupt(uint32_t service, GbaBus &bus,
         bus.write16(0x04000208, 1); // BIOS wait services force IME on.
         if (discard) {
             bus.write16(0x04000202, mask);
-            bus.write16(0x03007FF8, mask);
+            bus.write16(0x03007FF8,
+                        static_cast<uint16_t>(bus.read16(0x03007FF8) & ~mask));
         } else {
             const uint16_t pending = static_cast<uint16_t>(
                 (bus.read16(0x04000202) | bus.read16(0x03007FF8)) & mask);
@@ -1537,7 +1543,8 @@ bool Arm7Tdmi::executeThumb(uint16_t instruction, GbaBus &bus,
 Arm7Tdmi::StepResult Arm7Tdmi::step(GbaBus &bus) {
     if (!fault_.empty())
         return {};
-    if (irqActive_ && pc_ == IRQ_RETURN_SENTINEL) {
+    if (!hleIrqFrames_.empty() && pc_ == IRQ_RETURN_SENTINEL &&
+        currentMode() == 0x12) {
         finishIrqReturn();
         return {true, 1};
     }

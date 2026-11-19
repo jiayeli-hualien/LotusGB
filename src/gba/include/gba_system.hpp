@@ -4,8 +4,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "arm7tdmi.hpp"
@@ -35,10 +39,48 @@ public:
     explicit GbaSystem(std::vector<uint8_t> rom,
                        std::vector<uint8_t> bios = {},
                        std::shared_ptr<std::vector<uint8_t>> saveData = nullptr,
-                       std::shared_ptr<std::vector<uint8_t>> rtcData = nullptr);
+                       std::shared_ptr<std::vector<uint8_t>> rtcData = nullptr,
+                       std::optional<int64_t> rtcSessionEpoch = std::nullopt);
+    ~GbaSystem() override;
+    GbaSystem(const GbaSystem &) = delete;
+    GbaSystem &operator=(const GbaSystem &) = delete;
 
     void reset();
     FrameResult runFrame();
+    // The calling system is the parent and schedules both CPUs.
+    void connectLinkChild(GbaSystem &child);
+    void disconnectLink();
+    using MultiplayerStartSender =
+        std::function<void(uint32_t sequence, uint16_t word,
+                           uint8_t baudIndex, uint64_t elapsedCycles)>;
+    using MultiplayerWordSender =
+        std::function<void(uint32_t sequence, uint16_t word)>;
+    using MultiplayerReadinessSender = std::function<void(bool ready)>;
+    using MultiplayerFrameSender = std::function<void(uint64_t frame)>;
+    using RemoteMultiplayerEventPump = std::function<void()>;
+    using MultiplayerWordPredictor =
+        std::function<std::optional<uint16_t>(uint32_t sequence,
+                                              uint16_t localWord)>;
+    void configureRemoteMultiplayerLink(bool child, bool connected,
+                                        MultiplayerStartSender sendStart,
+                                        MultiplayerWordSender sendWord,
+                                        MultiplayerReadinessSender sendReady,
+                                        MultiplayerFrameSender sendFrame = {},
+                                        MultiplayerWordPredictor predictWord = {});
+    void setRemoteMultiplayerEventPump(RemoteMultiplayerEventPump pump);
+    void setRemoteMultiplayerConnected(bool connected);
+    void setRemoteMultiplayerReady(bool ready, uint64_t peerFrame = 0);
+    bool receiveRemoteMultiplayerFrame(uint64_t peerFrame);
+    uint64_t remoteFrameCount() const { return remoteFrameCount_; }
+    uint64_t remoteElapsedCycles() const {
+        return emulatedCycles_ - remoteLocalReadyCycle_;
+    }
+    bool receiveRemoteMultiplayerStart(uint32_t sequence, uint16_t parentWord,
+                                       uint8_t baudIndex,
+                                       uint64_t elapsedCycles = 0);
+    bool receiveRemoteMultiplayerWord(uint32_t sequence, uint16_t childWord);
+    void disconnectRemoteMultiplayerLink();
+    FrameResult runLinkedFrame();
     void setPressedButtons(uint16_t activeHighMask);
 
     const std::array<uint16_t, PIXEL_COUNT> &frameBuffer() const {
@@ -62,6 +104,7 @@ public:
     void write32(uint32_t address, uint32_t value) override;
     void registerRamReset(uint8_t flags) override;
     bool hasBios() const override { return !bios_.empty(); }
+    uint64_t emulatedCycles() const { return emulatedCycles_; }
     void beginCpuStep() override;
     uint32_t endCpuStep(uint32_t baseCycles) override;
 
@@ -110,6 +153,18 @@ private:
     using ObjectWindowBuffer = std::array<uint8_t, SCREEN_WIDTH>;
     using WindowBuffer = std::array<WindowPixel, SCREEN_WIDTH>;
 
+    struct RemoteMultiplayerStart {
+        uint32_t sequence = 0;
+        uint16_t parentWord = 0;
+        uint8_t baudIndex = 0;
+        uint64_t startCycle = 0;
+    };
+
+    struct RemoteMultiplayerWord {
+        uint32_t sequence = 0;
+        uint16_t word = 0;
+    };
+
     static uint32_t videoRamOffset(uint32_t address);
     uint16_t readOamForRendering(uint32_t address) const;
     static SaveType detectSaveType(const std::vector<uint8_t> &rom);
@@ -119,6 +174,23 @@ private:
     uint16_t read16Impl(uint32_t address) const;
     void write8Impl(uint32_t address, uint8_t value);
     void write16Impl(uint32_t address, uint16_t value);
+    uint16_t loadIo16(uint32_t address) const;
+    void storeIo16(uint32_t address, uint16_t value);
+    bool inMultiplayerMode() const;
+    bool multiplayerReady() const;
+    bool multiplayerChild() const;
+    void writeSerialControl(uint32_t address, uint16_t value);
+    void tickNormalSerial(uint32_t cycles);
+    void abortMultiplayerTransfer();
+    void beginRemoteMultiplayerTransfer();
+    void applyPendingRemoteWord();
+    void completeMultiplayerTransfer();
+    void tickMultiplayer(uint32_t cycles);
+    Arm7Tdmi::StepResult stepCpu();
+    void initializeScanlineOam();
+    void notifyRemoteReadiness(bool ready);
+    void markRemoteLinkActivity();
+    bool shouldPaceRemoteFrame();
     void recordCpuBusAccess(uint32_t address, unsigned width) const;
     uint32_t gamePakAccessCycles(unsigned region, bool sequential) const;
     uint8_t readFlash(uint32_t address) const;
@@ -179,6 +251,47 @@ private:
     std::array<uint8_t, 256 * 1024> externalWorkRam_{};
     std::array<uint8_t, 32 * 1024> internalWorkRam_{};
     std::array<uint8_t, 0x400> io_{};
+    GbaSystem *linkPeer_ = nullptr;
+    bool linkChild_ = false;
+    bool remoteLinkEnabled_ = false;
+    bool remoteLinkChild_ = false;
+    bool remoteLinkConnected_ = false;
+    bool remotePeerReady_ = false;
+    bool remotePeerWordReady_ = false;
+    bool remoteReplySent_ = false;
+    std::deque<RemoteMultiplayerStart> remotePendingStarts_;
+    std::deque<RemoteMultiplayerWord> remotePendingWords_;
+    uint32_t remoteTransferSequence_ = 0;
+    uint32_t remoteActiveSequence_ = 0;
+    MultiplayerStartSender sendRemoteStart_;
+    MultiplayerWordSender sendRemoteWord_;
+    MultiplayerReadinessSender sendRemoteReady_;
+    MultiplayerFrameSender sendRemoteFrame_;
+    RemoteMultiplayerEventPump remoteEventPump_;
+    MultiplayerWordPredictor predictRemoteWord_;
+    std::unordered_map<uint32_t, uint16_t> remotePredictedWords_;
+    bool multiplayerBusy_ = false;
+    bool multiplayerError_ = false;
+    uint32_t multiplayerCycles_ = 0;
+    uint32_t remoteFrameCycles_ = 0;
+    uint64_t remoteFrameCount_ = 0;
+    uint64_t remoteLocalReadyCycle_ = 0;
+    uint64_t remotePeerCycleOffset_ = 0;
+    uint64_t remotePeerFrameCount_ = 0;
+    uint64_t remoteLocalReadyFrame_ = 0;
+    uint64_t remotePeerReadyFrame_ = 0;
+    uint64_t remoteHotLocalBase_ = 0;
+    uint64_t remoteHotPeerBase_ = 0;
+    uint64_t remoteLastActivityFrame_ = 0;
+    bool remotePeerFrameKnown_ = false;
+    bool remoteLocalReady_ = false;
+    bool remoteLinkHot_ = false;
+    bool remotePredictionUsed_ = false;
+    uint64_t emulatedCycles_ = 0;
+    bool normalSerialBusy_ = false;
+    uint32_t normalSerialCycles_ = 0;
+    uint32_t linkedFrameCarry_ = 0;
+    std::array<uint16_t, 2> multiplayerWords_{};
     std::array<uint8_t, 1024> paletteRam_{};
     std::array<uint8_t, 96 * 1024> videoRam_{};
     std::array<uint8_t, 1024> oam_{};
@@ -201,6 +314,8 @@ private:
     std::array<uint16_t, PIXEL_COUNT> frameBuffer_{};
     Arm7Tdmi cpu_;
     uint16_t pressedButtons_ = 0;
+    uint16_t remoteInputLatch_ = 0;
+    bool remoteFrameStalled_ = false;
     uint32_t frameCycle_ = 0;
     bool renderedOamInitialized_ = false;
     uint16_t renderedScanline_ = 0xFFFF;

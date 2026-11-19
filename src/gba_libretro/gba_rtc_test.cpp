@@ -148,9 +148,36 @@ void testRtcSetReadAdvanceAndRestore() {
     assert(flash[0x1234] == 0x5A);
 }
 
+void testLinkedRtcUsesEmulatedTime() {
+    constexpr int64_t sessionEpoch = 946684799; // 1999-12-31 23:59:59 UTC.
+    GbaSystem parent(makeRtcRom(), {}, nullptr, nullptr, sessionEpoch);
+    GbaSystem child(makeRtcRom(), {}, nullptr, nullptr, sessionEpoch);
+    parent.connectLinkChild(child);
+    parent.write16(GPIO_CONTROL, 1);
+    child.write16(GPIO_CONTROL, 1);
+    const std::vector<uint8_t> beforeMidnight = {0x99, 0x12, 0x31, 5, 0x23, 0x59, 0x59};
+    assert(readCommand(parent, 0x65, 7) == beforeMidnight);
+    assert(readCommand(child, 0x65, 7) == beforeMidnight);
+
+    for (unsigned frame = 0; frame < 60; ++frame)
+        assert(parent.runLinkedFrame().success);
+    const std::vector<uint8_t> midnight = {0, 1, 1, 6, 0, 0, 0};
+    assert(readCommand(parent, 0x65, 7) == midnight);
+    assert(readCommand(child, 0x65, 7) == midnight);
+
+    const std::array<uint8_t, 7> changedDate = {0, 1, 2, 0, 0x13, 0, 0};
+    writeCommand(parent, 0x64, changedDate.data(), changedDate.size());
+    writeCommand(child, 0x64, changedDate.data(), changedDate.size());
+    const std::vector<uint8_t> expected(changedDate.begin(), changedDate.end());
+    assert(readCommand(parent, 0x65, 7) == expected);
+    assert(readCommand(child, 0x65, 7) == expected);
+    assert(*parent.getRtcStorage() == *child.getRtcStorage());
+}
+
 } // namespace
 
 int main() {
     testRtcMarkerAndReadEnable();
     testRtcSetReadAdvanceAndRestore();
+    testLinkedRtcUsesEmulatedTime();
 }

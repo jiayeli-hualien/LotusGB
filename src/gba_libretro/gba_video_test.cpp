@@ -422,11 +422,11 @@ std::vector<uint8_t> irqRegisterBankRom() {
     }
     const uint32_t irqHandler[] = {
         0xE3A0C02A, // mov r12, #0x2A
-        0xE321F01F, // msr cpsr_c, #System mode
+        0xE321F0DF, // msr cpsr_c, #System mode, keep unacknowledged IRQ masked
         0xE1A0000C, // mov r0, r12
         0xE59F100C, // ldr r1, [pc, #0x0C]
         0xE5810000, // str r0, [r1]
-        0xE321F012, // msr cpsr_c, #IRQ mode
+        0xE321F0D2, // msr cpsr_c, #IRQ mode, IRQ still masked
         0xE12FFF1E, // bx lr
     };
     for (unsigned index = 0; index < 7; ++index) {

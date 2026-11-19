@@ -4,6 +4,12 @@ Play Game Boy and Game Boy Color games in RetroArch with **LotusGB**. It also
 supports link play between two systems over a network. The project includes
 **LotusGBA**, an experimental Game Boy Advance core.
 
+The project prioritizes game compatibility and a smooth play experience.
+Hardware behavior guides the implementation, but a tested, documented
+compatibility behavior may intentionally differ from the original hardware.
+See the [development roadmap](docs/roadmap.md#project-objective-and-fidelity-policy)
+for this policy and the evidence behind current support claims.
+
 ## Status
 
 The bounded single-player target for Pokémon Crystal on CGB-E has passed user

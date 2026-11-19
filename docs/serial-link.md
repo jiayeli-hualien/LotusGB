@@ -72,6 +72,25 @@ The unit and delayed-process tests establish this contract for synthetic ROMs.
 They do not establish cycle-level cable accuracy, RetroArch GUI smoothness,
 Pokémon trade compatibility, or save persistence for stream-v2.
 
+## Pokémon Gold and Silver on CGB
+
+The cartridge link routines in the [Gold/Silver disassembly](https://github.com/pret/pokegold/blob/master/home/serial.asm)
+select normal-rate internal or external clock and use the serial interrupt
+to deliver received bytes. The serial fast-clock selector is additional CGB
+coverage. The original CGB-only ROMs in the delayed two-process test exercise
+both rates: the host supplies the normal clock in one run and the client
+supplies the fast clock in the other. Each run checks the initial external
+wait, role bytes, SC readback, serial interrupt request and 64 ordered payload
+bytes in both directions through Netpacket.
+
+The Gold/Silver cartridge pair still needs a private RetroArch LAN
+acceptance run. Use separate saves and identify each frontend and ROM
+revision in the result. Check Cable Club entry, one trade with both games
+reopened to verify the received Pokémon, and one battle with matching
+battle state and complementary outcomes. Repeat with the network roles
+reversed if evaluating both role arrangements. Keep game files, saves and
+captures outside the repository and CI.
+
 ## RetroArch input Netplay and link-cable transport
 
 RetroArch's standard input Netplay is replay-based: each player sends controller
@@ -449,7 +468,7 @@ remaining 56 pairs repeat 50/150/250 ms per-packet delays (up to 400 ms
 round-trip equivalent). A separate two-process stress test stores and compares all 4,096
 received bytes per endpoint, beyond the 3,202 paired transfers seen before the
 real battle divergence; it applies bounded 100/200/300 μs packet delay jitter
-and runs the frontend loop without artificial frame pacing. Both use a local
+and runs the frontend loop without artificial frame pacing. These tests use a local
 socket relay and the Netpacket core interface, not RetroArch frontends or
 physical networks. They do not establish broad game compatibility.
 
@@ -879,3 +898,190 @@ cross-device synthetic LAN result, not a Pokémon gameplay test. At the user's
 request, the current phase stays on direct LAN; no cross-network relay
 transfer was attempted in this run. Generated ROMs, saves, and logs remain
 outside the repository.
+
+
+A private Japanese Pokémon Emerald single-host replay on 2026-11-19 used the
+previously successful local two-system run as its reference. Both clients
+received the same scripted confirmation input on the same guest frame, and
+both guest clocks free-ran independently; at the confirmation checkpoint they
+were within 83 emulated cycles. The remote second-layer probe provisionally
+answered repeated `0xB9A0` handshake words, then waited for the actual peer word
+when the host changed its outgoing word to `0x8FFF`. This did not reach the
+communication lobby: after the transition, the host emitted two SIO starts in
+one frontend frame (`0xB9A0`, then `0x0000`), while the simulated client could
+only consume one queued start per frame. Letting the client run an extra hidden
+frame to consume a queued start did not prevent the in-game communication
+error. The successful local reference reached connected state on both clients;
+the remote probe reset its link state. This rules out missing simultaneous
+confirmation input and shows that predicting handshake values alone is
+insufficient. The predictor remains an opt-in experiment and is not enabled by
+the libretro frontend. Next work should schedule SIO events against each
+guest's emulated progress rather than using frontend-frame queue limits. ROMs,
+saves, screenshots and traces remain outside the repository.
+
+A follow-up private replay on 2026-11-19 recorded the complete SIO word stream
+from the successful local two-system run through guest frame 7323 (5,402
+transfers), then used it as an oracle for the independently free-running remote
+second-layer probe with a simulated 100 ms round-trip delay. The probe completed
+the same input script with zero local-word/reference mismatches; the sampled
+parent and child frames at the lobby transition were byte-identical to the
+local run. This extends the earlier short-trace result: the previous apparent
+failure came after that trace ended, and is not evidence of a game-level
+failure. Because the peer replies were supplied from a successful local trace,
+this verifies event cadence and replay handling, not two-endpoint networking or
+unassisted Pokémon compatibility. The 100 ms delay is simulated inside one
+process, not measured LAN traffic. All game-derived files remain outside the
+repository.
+
+The full-trace replay was checked at its final scripted checkpoint on
+2026-11-19: both endpoint images match the successful local two-system run and
+show the connected lobby. That reference run uses two distinct 128 KiB SRAM
+files (`.srm` and `.srm.2`), so different save files are already covered for
+local linking. Their hashes and contents remain private.
+
+Before the wait-point event pump was added, follow-up replays with live peer
+responses and a narrow, trace-confirmed handshake predictor did not reproduce
+the connected lobby image. This
+held for no added delay and simulated round-trip delays of approximately 16.7,
+33, 50, 67, and 100 ms. Some runs displayed the Japanese communication-error
+screen; the 50 ms run ended on a different non-lobby frame. The narrow predictor
+advanced through the recorded handshake and several data words, and the late
+real replies did not contradict the predictions it made. The 100 ms no-predictor
+run raised SIO error earlier, during the repeated handshake. The full-trace
+oracle replay succeeds because it supplies the complete known reply stream, so
+it does not demonstrate that a new peer with a different party or save can be
+predicted. The harness advances frontends in 60 Hz frames: 50 ms is represented
+by a 2-frame delay in one direction and 1 frame in the other, while 10 ms is
+below its timing resolution and was approximated by one 16.7 ms one-way frame.
+This shows that exact recorded data can reproduce the successful exchange, but
+a small handshake whitelist is not sufficient; the live SIO/game-state
+divergence remains unresolved. All ROMs, saves, screenshots and traces remain
+outside the repository.
+
+Before the wait-point event pump, follow-up instrumentation on 2026-11-19
+narrowed the live failure point. In the initial frame-order harness, both
+approximately 16.7 ms and 50 ms runs
+match the successful reference's SIO words and guest-cycle timestamps for the
+first 83 transfers after the `0x8FFF` handshake transition. At the end of that
+matching window, the reference starts `0x8888` 18,537 CPU cycles (about 1.1 ms)
+after `0x9C5A`; the remote host is still waiting for the peer's actual
+`0x9C5A` reply. A private trace-seeded prediction of that one reply allowed
+`0x8888` and `0x00FF` to proceed, then the host stalled on the next unpredicted
+reply and still reached the communication-error screen. This confirms that
+predicting a few known words only moves the stall; it does not solve live
+exchange.
+
+In the frame-order harness, before adding the wait-point event pump, due
+replies were delivered before the
+receiving host's next guest-frame step. Full 7,323-frame reruns still failed to
+reach the lobby: the approximately 16.7 ms run stopped in the link room, while
+both endpoints showed the communication-error screen at 50 ms. The lower-delay
+run completed two more SIO starts than the 50 ms run, but did not establish a
+link. These remain frame-quantized single-process simulations, not exact 10 ms
+or measured LAN tests. The trace points to sub-frame SIO cadence as the next
+boundary to model: incoming data must be applied while the emulated master is
+waiting, without fabricating a word. ROMs, saves and captures remain private.
+
+The remote SIO wait now pumps pending network events without advancing the
+waiting guest past its transfer. This is covered by the GBA libretro test for
+both a real incoming word and a deferred word followed by a resumed frame.
+After this change, a private replay with approximately 16.7 ms simulated RTT
+(the nearest available setting to a 10 ms target in this 60 Hz frame-quantized
+harness) ran the full input script and ended in the link room with no SIO error
+flag. Both endpoint screenshots are byte-identical to frame 47 of the successful
+local-link reference, which is the connected-lobby checkpoint. It did not
+verify a completed trade or battle. At approximately 50 ms simulated
+RTT, the first run ended with a transfer still busy (`SIOCNT=0x608b`; bit 7 is
+busy, while the error bit is clear), so that terminal sample alone did not
+prove failure. Continuing for 600 neutral frontend frames produced 540 more
+SIO starts; the transfer stream was still active. Both endpoint screenshots
+are byte-identical to frame 47 of the successful local-link reference. This
+verifies the remote simulation can reach that connected-lobby checkpoint at
+50 ms, but not complete a trade or battle or establish a stable long-duration
+session. The tests are single-process simulations, not direct-LAN runs. ROMs,
+saves, screenshots and traces remain private.
+
+The same harness was extended by 600 neutral frontend frames at approximately
+100 ms and 200 ms simulated RTT. Neither run set the SIO error bit; both ended
+with a transfer busy (`SIOCNT=0x608b`) and continued to generate SIO starts
+during the added interval. At 100 ms the counters advanced from 7,206 starts /
+7,205 replies to 7,493 / 7,492. At 200 ms they advanced from 6,263 / 6,164 to
+7,294 / 7,287. Both endpoint screenshots at 100 ms and 200 ms are also
+byte-identical to the successful local-link reference's connected-lobby
+checkpoint. This extends the visual checkpoint to 200 ms, while still not
+demonstrating a completed trade or battle. At 200 ms the larger start/reply gap
+shows backlog or endpoint progress skew that needs follow-up. Scripted input
+changes remain frontend-frame timed, so these runs are not a controlled
+gameplay comparison.
+
+A local continuation from that checkpoint moved both players to opposite sides
+of the central machine, faced them inward, and confirmed twice; the final
+screen showed the other trainer's trade card. Replaying those inputs by
+frontend-frame count in remote mode did not reach that card: at the same
+frame-8,335 checkpoint, the 16.7 ms run had advanced 2,071,335,955 / 2,072,178,690
+cycles, and the 50 ms run 2,017,354,436 / 2,018,738,702, versus
+2,341,268,161 / 2,341,268,160 locally. The remote screenshots remained in the
+room, with no SIO error flag. The endpoint progress skew made guest-time lag a
+plausible barrier, so the next comparison schedules inputs by guest progress.
+
+The manual test is tracked as two gates. **Gate 1: enter the connected lobby.**
+The remote runs at simulated 16.7, 50, 100, and 200 ms RTT reached screenshots
+identical to the local-link lobby reference, with no SIO error bit. **Gate 2:
+walk from the spawn position to the chairs and talk to the table.** The local
+pair reached the other trainer's card; remote runs at 16.7 and 50 ms did not.
+
+The first phase-two replay used one shared target based on the faster endpoint's
+frame count. At a four-frame guest-progress skew, this held the lagging
+endpoint's buttons for four extra frames. Its apparent first word difference
+(`0x0013` versus `0x0011` at sequence 14,937) is therefore not a valid game
+compatibility finding. The corrected replay gives each endpoint the requested
+number of completed guest frames and lets the faster side continue with neutral
+input while the other catches up. At both 16.7 and 50 ms, the remote run still
+did not open the card. After aligning at `0x8FFF`, the first 11,082 transfer
+replies match the local trace; reply sequence 15,216 is the first difference
+(`0x0013` local, `0x0011` remote), followed by a host word difference at
+sequence 15,223 (`0x9622` local, `0x9620` remote). Neither run sets the SIO error
+bit.
+
+Screenshots confirm the input path reaches the two seats beside the central
+machine and turns both players inward before pressing A, matching the local
+reference position. Adding 120 neutral frames before this interaction did not
+open the card. At the pre-interaction checkpoint, the host's captured `gLink`
+bytes match the local host. The child instead has `serialIntrCounter=0x34`,
+`sendCmdIndex=0x02`, and `recvCmdIndex=0x01`, versus local child values
+`0x37`, `0x05`, and `0x04`; these offsets follow the `struct Link` layout in
+[`pret/pokeemerald`'s link.h](https://github.com/pret/pokeemerald/blob/master/include/link.h).
+After the extra neutral interval, the child's serial-interrupt counter advances
+to `0x6C`, but its send and receive command indices remain `0x02` and `0x01`.
+The child's error flags, including `badChecksum`, are clear. This is evidence of
+game-level link-state skew before the table interaction, despite matching
+positions and no reported SIO or in-game checksum error. Gate 2 remains
+unverified remotely. All delayed runs are single-process simulations, not
+direct-LAN acceptance.
+
+#### Corrected second-layer result (2026-11-19)
+
+The preceding Gate 2 conclusion is superseded. The earlier movement ended one
+tile below the chair positions, and the delayed replay also used a static reply
+predictor. The corrected input moves one more tile up after moving to opposite
+sides, turns both players toward their red/blue desks, and talks to the green
+terminal. After acknowledging the communication prompt and allowing the game to
+continue, both endpoints reach the Pokémon selection screen.
+
+This result reproduces at zero added delay and approximately 16.7 ms simulated
+RTT. Each run exchanges 108,257 real child SIO replies for 108,257 host starts,
+with no prediction and no rejected SIO words, then remains at the selection
+screen through 10,000 additional guest frames. The 16.7 ms run ends with guest
+frame counts 18,350 / 18,356. These are frame-quantized, single-process delayed
+simulations, not socket or LAN tests, and they stop at Pokémon selection rather
+than completing a trade or battle.
+
+The earlier `parent rejected SIO word` was caused by the test harness's
+predictor: for host word `0x0000` it supplied a guessed `0x0000` reply, while
+the actual child reply at sequence 18,028 was `0xBBBB`. Removing predictions
+allowed the peer's real word to drive the transfer. A second issue relevant to
+the real frontend packet poll was that it can deliver several reliable words
+in one poll while the guest has started only the first matching transfer. The
+GBA core now queues up to 64 future-sequence replies and applies each when its
+matching transfer becomes active; `runRemoteSioQueuedWordCheck` covers this
+case. `gba_libretro_core_test` passed after the change.

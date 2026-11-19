@@ -1,6 +1,7 @@
 #include "gba_system.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 namespace LOTUSGBA {
@@ -16,6 +17,26 @@ constexpr uint32_t REG_IF = 0x04000202;
 constexpr uint32_t REG_WAITCNT = 0x04000204;
 constexpr uint32_t REG_IME = 0x04000208;
 constexpr uint32_t TIMER_BASE = 0x04000100;
+constexpr uint32_t REG_SIOMULTI0 = 0x04000120;
+constexpr uint32_t REG_SIOCNT = 0x04000128;
+constexpr uint32_t REG_SIODATA8 = 0x0400012A;
+constexpr uint32_t REG_SIOMLT_SEND = 0x0400012A;
+constexpr uint32_t REG_RCNT = 0x04000134;
+constexpr uint16_t SIO_START = 0x0080;
+constexpr uint16_t SIO_IRQ_ENABLE = 0x4000;
+constexpr uint16_t SIO_MULTI_WRITABLE = 0x6F03;
+constexpr uint16_t IRQ_SERIAL = 1u << 7;
+constexpr uint32_t MULTIPLAYER_BAUD[] = {9600, 38400, 57600, 115200};
+constexpr uint32_t NORMAL_BAUD[] = {256'000, 2'000'000};
+constexpr uint32_t CPU_CLOCK = 16'777'216;
+// Network-mode compatibility policy: render/frontend time remains free-running,
+// while guest progress is loosely bounded only during active multiplayer SIO.
+// This is not a model of a cable synchronizing console frame clocks; it preserves
+// actual SIO words and completion behavior while limiting guest-visible drift.
+constexpr uint64_t REMOTE_LINK_MAX_FRAME_LEAD = 2;
+constexpr uint64_t REMOTE_LINK_HOT_WINDOW_FRAMES = 8;
+constexpr size_t REMOTE_LINK_MAX_QUEUED_STARTS = 64;
+constexpr size_t REMOTE_LINK_MAX_QUEUED_WORDS = 64;
 constexpr uint32_t CYCLES_PER_SCANLINE = 1232;
 constexpr uint32_t HDRAW_CYCLES = 960;
 constexpr uint16_t TOTAL_SCANLINES = 228;
@@ -68,10 +89,11 @@ constexpr unsigned OBJ_DIMENSIONS[3][4][2] = {
 GbaSystem::GbaSystem(
     std::vector<uint8_t> rom, std::vector<uint8_t> bios,
     std::shared_ptr<std::vector<uint8_t>> saveData,
-    std::shared_ptr<std::vector<uint8_t>> rtcData)
+    std::shared_ptr<std::vector<uint8_t>> rtcData,
+    std::optional<int64_t> rtcSessionEpoch)
     : rom_(std::move(rom)), bios_(std::move(bios)),
       saveType_(detectSaveType(rom_)), saveData_(std::move(saveData)),
-      rtc_(hasRtcMarker(rom_), std::move(rtcData)) {
+      rtc_(hasRtcMarker(rom_), std::move(rtcData), rtcSessionEpoch) {
     if (rom_.size() < 0xC4)
         throw std::invalid_argument("GBA ROM must contain a cartridge entry point");
     if (!bios_.empty() && bios_.size() != 0x4000)
@@ -241,9 +263,26 @@ void GbaSystem::recordCpuBusAccess(uint32_t address, unsigned width) const {
 }
 
 void GbaSystem::reset() {
+    const bool wasMultiplayer = inMultiplayerMode();
+    abortMultiplayerTransfer();
+    multiplayerError_ = false;
+    linkedFrameCarry_ = 0;
+    remoteFrameCycles_ = 0;
+    emulatedCycles_ = 0;
+    remotePeerCycleOffset_ = 0;
+    remotePredictionUsed_ = false;
+    normalSerialBusy_ = false;
+    normalSerialCycles_ = 0;
     externalWorkRam_.fill(0);
     internalWorkRam_.fill(0);
     io_.fill(0);
+    if (wasMultiplayer && remoteLinkConnected_ && sendRemoteReady_)
+        notifyRemoteReadiness(false);
+    remoteLocalReady_ = false;
+    remoteLinkHot_ = false;
+    remotePredictionUsed_ = false;
+    remoteFrameStalled_ = false;
+    remotePredictedWords_.clear();
     paletteRam_.fill(0);
     videoRam_.fill(0);
     oam_.fill(0);
@@ -277,6 +316,8 @@ void GbaSystem::reset() {
         oam_[object * 8 + 1] = 0x02; // HLE BIOS leaves regular objects disabled.
     frameBuffer_.fill(0x7FFF);
     pressedButtons_ = 0;
+    remoteInputLatch_ = 0;
+    remoteFrameStalled_ = false;
     frameCycle_ = 0;
     renderedScanline_ = 0xFFFF;
     renderedPixel_ = 0;
@@ -297,7 +338,10 @@ void GbaSystem::reset() {
 }
 
 void GbaSystem::setPressedButtons(uint16_t activeHighMask) {
-    pressedButtons_ = activeHighMask & 0x03FF;
+    const uint16_t buttons = activeHighMask & 0x03FF;
+    if (remoteLinkEnabled_ || remoteFrameStalled_)
+        remoteInputLatch_ |= buttons;
+    pressedButtons_ = buttons;
 }
 
 uint32_t GbaSystem::videoRamOffset(uint32_t address) {
@@ -507,13 +551,31 @@ uint8_t GbaSystem::read8Impl(uint32_t address) const {
     if (address >= 0x03000000 && address < 0x04000000)
         return internalWorkRam_[(address - 0x03000000) & 0x7FFF];
     if (address >= 0x04000000 && address < 0x04000400) {
+        if ((address == REG_SIOCNT || address == REG_RCNT) && inMultiplayerMode()) {
+            if (address == REG_SIOCNT) {
+                const auto control = io_[address - 0x04000000] & 3;
+                const auto status = (multiplayerChild() ? 0x14 : 0) |
+                    (multiplayerReady() ? 0x08 : 0) |
+                    (multiplayerError_ ? 0x40 : 0) |
+                    (multiplayerBusy_ ? SIO_START : 0);
+                return static_cast<uint8_t>(control | status);
+            }
+            if (address == REG_RCNT) {
+                const auto reserved = io_[address - 0x04000000] & 0xF0;
+                const auto lines = (multiplayerBusy_ ? 0 : 0x09) |
+                    (multiplayerReady() ? 0x02 : 0) |
+                    (multiplayerChild() ? 0x04 : 0);
+                return static_cast<uint8_t>(reserved | lines);
+            }
+        }
         if (audio_.handlesRegister(address))
             return audio_.readRegister(address);
         if (address == REG_WAITCNT + 1)
             return static_cast<uint8_t>(
                 io_[address - 0x04000000] & 0x5F);
         if (address == REG_KEYINPUT || address == REG_KEYINPUT + 1) {
-            const uint16_t value = static_cast<uint16_t>(~pressedButtons_) & 0x03FF;
+            const uint16_t value = static_cast<uint16_t>(
+                ~(pressedButtons_ | remoteInputLatch_)) & 0x03FF;
             return static_cast<uint8_t>(value >> ((address - REG_KEYINPUT) * 8));
         }
         if (address == REG_IE + 1 || address == REG_IF + 1)
@@ -592,6 +654,17 @@ void GbaSystem::write8Impl(uint32_t address, uint8_t value) {
         return;
     }
     if (address >= 0x04000000 && address < 0x04000400) {
+        if ((address & ~1u) == REG_SIOCNT || (address & ~1u) == REG_RCNT) {
+            const uint32_t aligned = address & ~1u;
+            const unsigned shift = (address & 1u) * 8;
+            const auto offset = aligned - 0x04000000;
+            const unsigned stored = io_[offset] |
+                (static_cast<unsigned>(io_[offset + 1]) << 8);
+            const auto merged = static_cast<uint16_t>(
+                (stored & ~(0xFFu << shift)) | (static_cast<unsigned>(value) << shift));
+            writeSerialControl(aligned, merged);
+            return;
+        }
         if (address <= 0x04000056)
             flushCurrentScanline();
         if (address == REG_KEYINPUT || address == REG_KEYINPUT + 1)
@@ -715,6 +788,10 @@ void GbaSystem::write16(uint32_t address, uint16_t value) {
 }
 
 void GbaSystem::write16Impl(uint32_t address, uint16_t value) {
+    if (address == REG_SIOCNT || address == REG_RCNT) {
+        writeSerialControl(address, value);
+        return;
+    }
     if (rtc_.handlesAddress(address)) {
         rtc_.writeRegister(address, value);
         return;
@@ -771,8 +848,8 @@ void GbaSystem::registerRamReset(uint8_t flags) {
         oam_.fill(0);
 
     if ((flags & 0x20) != 0) {
-        write16(0x04000128, 0); // SIOCNT
-        write16(0x04000134, 0x8000); // RCNT initial GPIO state
+        write16(REG_SIOCNT, 0);
+        write16(REG_RCNT, 0x8000); // Initial GPIO state.
         write16(0x04000120, 0); // SIOMLT_SEND
         write16(0x04000140, 0); // JOYCNT
         write32(0x04000150, 0); // JOY_RECV_L/H
@@ -807,7 +884,529 @@ void GbaSystem::registerRamReset(uint8_t flags) {
     }
 }
 
+GbaSystem::~GbaSystem() {
+    disconnectLink();
+}
+
+void GbaSystem::connectLinkChild(GbaSystem &child) {
+    if (&child == this || linkPeer_ || child.linkPeer_)
+        throw std::invalid_argument("GBA link requires two unconnected systems");
+    linkPeer_ = &child;
+    child.linkPeer_ = this;
+    child.linkChild_ = true;
+    multiplayerError_ = child.multiplayerError_ = false;
+}
+
+void GbaSystem::disconnectLink() {
+    if (!linkPeer_)
+        return;
+    abortMultiplayerTransfer();
+    linkPeer_->linkPeer_ = nullptr;
+    linkPeer_->linkChild_ = false;
+    linkPeer_->linkedFrameCarry_ = 0;
+    linkPeer_ = nullptr;
+    linkChild_ = false;
+    linkedFrameCarry_ = 0;
+}
+
+void GbaSystem::configureRemoteMultiplayerLink(
+    bool child, bool connected, MultiplayerStartSender sendStart,
+    MultiplayerWordSender sendWord, MultiplayerReadinessSender sendReady,
+    MultiplayerFrameSender sendFrame,
+    MultiplayerWordPredictor predictWord) {
+    if (linkPeer_ || remoteLinkEnabled_)
+        throw std::logic_error("GBA already has a multiplayer link");
+    remoteLinkEnabled_ = true;
+    remoteLinkChild_ = child;
+    remoteLinkConnected_ = connected;
+    remotePeerReady_ = false;
+    sendRemoteStart_ = std::move(sendStart);
+    sendRemoteWord_ = std::move(sendWord);
+    sendRemoteReady_ = std::move(sendReady);
+    sendRemoteFrame_ = std::move(sendFrame);
+    predictRemoteWord_ = std::move(predictWord);
+    remotePredictedWords_.clear();
+    remotePendingWords_.clear();
+    remotePeerWordReady_ = false;
+    remoteReplySent_ = false;
+    remotePendingStarts_.clear();
+    remoteTransferSequence_ = 0;
+    remoteActiveSequence_ = 0;
+    remoteFrameCount_ = 0;
+    remotePeerFrameCount_ = 0;
+    remoteLocalReadyFrame_ = 0;
+    remotePeerReadyFrame_ = 0;
+    remotePeerFrameKnown_ = false;
+    remoteLocalReady_ = false;
+    remoteLinkHot_ = false;
+    remotePredictionUsed_ = false;
+    multiplayerError_ = false;
+    if (remoteLinkConnected_ && inMultiplayerMode())
+        notifyRemoteReadiness(true);
+}
+
+void GbaSystem::setRemoteMultiplayerEventPump(
+    RemoteMultiplayerEventPump pump) {
+    if (!remoteLinkEnabled_)
+        throw std::logic_error("GBA has no remote multiplayer link");
+    remoteEventPump_ = std::move(pump);
+}
+
+void GbaSystem::setRemoteMultiplayerConnected(bool connected) {
+    if (!remoteLinkEnabled_)
+        return;
+    remoteLinkConnected_ = connected;
+    if (!connected) {
+        remotePeerReady_ = false;
+        remotePeerFrameKnown_ = false;
+        remoteLinkHot_ = false;
+        remotePeerCycleOffset_ = 0;
+        remotePredictionUsed_ = false;
+    } else if (inMultiplayerMode()) {
+        notifyRemoteReadiness(true);
+    }
+    if (!connected)
+        multiplayerError_ = true;
+    if (!connected)
+        abortMultiplayerTransfer();
+}
+
+void GbaSystem::notifyRemoteReadiness(bool ready) {
+    remoteLocalReady_ = ready;
+    if (ready) {
+        remoteLocalReadyFrame_ = remoteFrameCount_;
+        remoteLocalReadyCycle_ = emulatedCycles_;
+        remotePeerCycleOffset_ = 0;
+    } else {
+        remoteLinkHot_ = false;
+    }
+    if (sendRemoteReady_)
+        sendRemoteReady_(ready);
+}
+
+void GbaSystem::setRemoteMultiplayerReady(bool ready, uint64_t peerFrame) {
+    if (!remoteLinkEnabled_ || !remoteLinkConnected_)
+        return;
+    remotePeerReady_ = ready;
+    if (ready) {
+        remotePeerReadyFrame_ = std::max(peerFrame, remotePeerFrameCount_);
+        if (!remotePeerFrameKnown_ || peerFrame > remotePeerFrameCount_)
+            remotePeerFrameCount_ = peerFrame;
+        remotePeerFrameKnown_ = true;
+    } else {
+        remoteLinkHot_ = false;
+    }
+}
+
+bool GbaSystem::receiveRemoteMultiplayerFrame(uint64_t peerFrame) {
+    if (!remoteLinkEnabled_ || !remoteLinkConnected_ ||
+        (remotePeerFrameKnown_ && peerFrame < remotePeerFrameCount_))
+        return false;
+    remotePeerFrameCount_ = peerFrame;
+    remotePeerFrameKnown_ = true;
+    return true;
+}
+
+void GbaSystem::markRemoteLinkActivity() {
+    if (!remoteLinkEnabled_ || !remoteLocalReady_ || !remotePeerReady_)
+        return;
+    if (!remoteLinkHot_) {
+        remoteHotLocalBase_ = remoteFrameCount_ - remoteLocalReadyFrame_;
+        remoteHotPeerBase_ = remotePeerFrameCount_ - remotePeerReadyFrame_;
+        remoteLinkHot_ = true;
+    }
+    remoteLastActivityFrame_ = remoteFrameCount_;
+}
+
+bool GbaSystem::shouldPaceRemoteFrame() {
+    // A pending or active transfer must be allowed to advance to its local
+    // SIO completion point. Once the local wire time has elapsed, the CPU may
+    // wait on the busy bit for a bounded number of VBlanks while the peer reply
+    // is in transit.
+    if (!remotePendingStarts_.empty() ||
+        (multiplayerBusy_ && multiplayerCycles_ != 0))
+        return false;
+    // Once a compatibility prediction has let the local guest consume a
+    // transfer before its peer packet arrives, do not then stop that guest
+    // clock on the frontend-frame watermark. The two endpoints are reconciled
+    // by the ordered SIO stream and late-word verification instead.
+    if (remotePredictionUsed_)
+        return false;
+    if (!remoteLinkEnabled_ || !remoteLinkConnected_ || !remoteLocalReady_ ||
+        !remotePeerReady_ || !remotePeerFrameKnown_ || !remoteLinkHot_)
+        return false;
+    if (remoteFrameCount_ - remoteLastActivityFrame_ >=
+        REMOTE_LINK_HOT_WINDOW_FRAMES) {
+        remoteLinkHot_ = false;
+        return false;
+    }
+    const uint64_t localProgress =
+        (remoteFrameCount_ - remoteLocalReadyFrame_) - remoteHotLocalBase_;
+    const uint64_t peerProgress =
+        (remotePeerFrameCount_ - remotePeerReadyFrame_) - remoteHotPeerBase_;
+    return localProgress > peerProgress + REMOTE_LINK_MAX_FRAME_LEAD;
+}
+
+bool GbaSystem::receiveRemoteMultiplayerStart(uint32_t sequence,
+                                              uint16_t parentWord,
+                                              uint8_t baudIndex,
+                                              uint64_t elapsedCycles) {
+    if (!remoteLinkEnabled_ || !remoteLinkChild_ || !remoteLinkConnected_ ||
+        !inMultiplayerMode() ||
+        sequence != remoteTransferSequence_ + 1 || !sendRemoteWord_ ||
+        baudIndex >= 4 ||
+        remotePendingStarts_.size() >= REMOTE_LINK_MAX_QUEUED_STARTS) {
+        multiplayerError_ = true;
+        return false;
+    }
+    remoteTransferSequence_ = sequence;
+    markRemoteLinkActivity();
+    // Transfer starts are scheduled on the child's guest clock relative to
+    // each game's entry into multiplayer mode. This retains sub-frame SIO
+    // ordering even though the packet itself is delivered between frontend
+    // frames.
+    const uint64_t maxCycle = std::numeric_limits<uint64_t>::max();
+    if (elapsedCycles > maxCycle - remoteLocalReadyCycle_ ||
+        remotePeerCycleOffset_ >
+            maxCycle - remoteLocalReadyCycle_ - elapsedCycles) {
+        multiplayerError_ = true;
+        return false;
+    }
+    uint64_t startCycle = remoteLocalReadyCycle_ + elapsedCycles +
+                          remotePeerCycleOffset_;
+    if (startCycle < emulatedCycles_) {
+        const uint64_t lateBy = emulatedCycles_ - startCycle;
+        if (lateBy > maxCycle - remotePeerCycleOffset_) {
+            multiplayerError_ = true;
+            return false;
+        }
+        // Preserve the sender's inter-transfer cycle spacing when reliable
+        // packets arrive after the client has already advanced past them.
+        // Shift this and subsequent peer events by a shared late-arrival bias
+        // instead of collapsing old transactions into zero-cycle transfers.
+        remotePeerCycleOffset_ += lateBy;
+        startCycle = emulatedCycles_;
+    }
+    remotePendingStarts_.push_back({sequence, parentWord, baudIndex, startCycle});
+    return true;
+}
+
+void GbaSystem::beginRemoteMultiplayerTransfer() {
+    if (multiplayerBusy_ || remotePendingStarts_.empty() ||
+        emulatedCycles_ < remotePendingStarts_.front().startCycle)
+        return;
+    const RemoteMultiplayerStart start = remotePendingStarts_.front();
+    remotePendingStarts_.pop_front();
+    remoteActiveSequence_ = start.sequence;
+    multiplayerWords_ = {start.parentWord,
+                         read16Impl(REG_SIOMLT_SEND)};
+    const uint32_t baud = MULTIPLAYER_BAUD[start.baudIndex];
+    const uint32_t transferCycles = (36 * CPU_CLOCK + baud - 1) / baud;
+    const uint64_t transferEndCycle =
+        start.startCycle + transferCycles;
+    multiplayerCycles_ = transferEndCycle > emulatedCycles_
+        ? static_cast<uint32_t>(transferEndCycle - emulatedCycles_) : 0;
+    multiplayerBusy_ = true;
+    multiplayerError_ = false;
+    remotePeerWordReady_ = true;
+    remoteReplySent_ = false;
+    for (uint32_t slot = 0; slot < 4; ++slot)
+        storeIo16(REG_SIOMULTI0 + 2 * slot, 0xFFFF);
+    if (remoteLinkChild_ && multiplayerCycles_ == 0) {
+        sendRemoteWord_(remoteActiveSequence_, multiplayerWords_[1]);
+        remoteReplySent_ = true;
+        completeMultiplayerTransfer();
+    }
+}
+
+bool GbaSystem::receiveRemoteMultiplayerWord(uint32_t sequence,
+                                             uint16_t childWord) {
+    const auto predicted = remotePredictedWords_.find(sequence);
+    if (predicted != remotePredictedWords_.end()) {
+        const bool matched = predicted->second == childWord;
+        remotePredictedWords_.erase(predicted);
+        if (!matched) {
+            multiplayerError_ = true;
+            return false;
+        }
+        markRemoteLinkActivity();
+        return true;
+    }
+    if (!remoteLinkEnabled_ || remoteLinkChild_ || !remoteLinkConnected_) {
+        multiplayerError_ = true;
+        return false;
+    }
+    if (sequence > remoteActiveSequence_ ||
+        (sequence == remoteActiveSequence_ && !multiplayerBusy_)) {
+        if (sequence <= remoteActiveSequence_ ||
+            sequence - remoteActiveSequence_ > REMOTE_LINK_MAX_QUEUED_WORDS) {
+            multiplayerError_ = true;
+            return false;
+        }
+        const auto pending = std::find_if(
+            remotePendingWords_.begin(), remotePendingWords_.end(),
+            [sequence](const RemoteMultiplayerWord &word) {
+                return word.sequence == sequence;
+            });
+        if (pending != remotePendingWords_.end()) {
+            if (pending->word != childWord) {
+                multiplayerError_ = true;
+                return false;
+            }
+            markRemoteLinkActivity();
+            return true;
+        }
+        if (remotePendingWords_.size() >= REMOTE_LINK_MAX_QUEUED_WORDS) {
+            multiplayerError_ = true;
+            return false;
+        }
+        remotePendingWords_.push_back({sequence, childWord});
+        markRemoteLinkActivity();
+        return true;
+    }
+    if (!multiplayerBusy_ || sequence != remoteActiveSequence_ ||
+        remotePeerWordReady_) {
+        multiplayerError_ = true;
+        return false;
+    }
+    markRemoteLinkActivity();
+    multiplayerWords_[1] = childWord;
+    remotePeerWordReady_ = true;
+    if (multiplayerCycles_ == 0)
+        completeMultiplayerTransfer();
+    return true;
+}
+
+void GbaSystem::applyPendingRemoteWord() {
+    if (!remoteLinkEnabled_ || remoteLinkChild_ || !multiplayerBusy_ ||
+        remotePeerWordReady_)
+        return;
+    const auto pending = std::find_if(
+        remotePendingWords_.begin(), remotePendingWords_.end(),
+        [this](const RemoteMultiplayerWord &word) {
+            return word.sequence == remoteActiveSequence_;
+        });
+    if (pending == remotePendingWords_.end())
+        return;
+    multiplayerWords_[1] = pending->word;
+    remotePendingWords_.erase(pending);
+    remotePeerWordReady_ = true;
+    markRemoteLinkActivity();
+    if (multiplayerCycles_ == 0)
+        completeMultiplayerTransfer();
+}
+
+void GbaSystem::disconnectRemoteMultiplayerLink() {
+    if (!remoteLinkEnabled_)
+        return;
+    abortMultiplayerTransfer();
+    remoteLinkEnabled_ = false;
+    remoteLinkChild_ = false;
+    remoteLinkConnected_ = false;
+    remotePeerReady_ = false;
+    remotePeerWordReady_ = false;
+    sendRemoteStart_ = {};
+    sendRemoteWord_ = {};
+    sendRemoteReady_ = {};
+    sendRemoteFrame_ = {};
+    remoteEventPump_ = {};
+    predictRemoteWord_ = {};
+    remotePredictedWords_.clear();
+    remoteLinkHot_ = false;
+    remotePeerCycleOffset_ = 0;
+    remotePredictionUsed_ = false;
+}
+
+uint16_t GbaSystem::loadIo16(uint32_t address) const {
+    const auto offset = address - 0x04000000;
+    return static_cast<uint16_t>(io_[offset] |
+        (static_cast<uint16_t>(io_[offset + 1]) << 8));
+}
+
+void GbaSystem::storeIo16(uint32_t address, uint16_t value) {
+    const auto offset = address - 0x04000000;
+    io_[offset] = static_cast<uint8_t>(value);
+    io_[offset + 1] = static_cast<uint8_t>(value >> 8);
+}
+
+bool GbaSystem::inMultiplayerMode() const {
+    return !(io_[REG_RCNT - 0x04000000 + 1] & 0x80) &&
+        (io_[REG_SIOCNT - 0x04000000 + 1] & 0x30) == 0x20;
+}
+
+bool GbaSystem::multiplayerReady() const {
+    return (linkPeer_ && linkPeer_->inMultiplayerMode()) ||
+        (remoteLinkEnabled_ && remoteLinkConnected_ && remotePeerReady_);
+}
+
+bool GbaSystem::multiplayerChild() const {
+    return linkChild_ || (remoteLinkEnabled_ && remoteLinkChild_);
+}
+
+void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
+    const bool wasMultiplayer = inMultiplayerMode();
+    storeIo16(address, value);
+    const bool isMultiplayer = inMultiplayerMode();
+    if (remoteLinkEnabled_ && remoteLinkConnected_ &&
+        wasMultiplayer != isMultiplayer)
+        notifyRemoteReadiness(isMultiplayer);
+    if (!isMultiplayer) {
+        if (wasMultiplayer)
+            abortMultiplayerTransfer();
+        const uint16_t control = read16Impl(REG_SIOCNT);
+        const bool normalMode = !(read16Impl(REG_RCNT) & 0x8000) &&
+            ((control >> 12) & 3) <= 1;
+        if (!normalMode) {
+            if (normalSerialBusy_)
+                storeIo16(REG_SIOCNT, control & ~SIO_START);
+            normalSerialBusy_ = false;
+            normalSerialCycles_ = 0;
+        } else if (address == REG_SIOCNT) {
+            if (!(value & SIO_START)) {
+                normalSerialBusy_ = false;
+                normalSerialCycles_ = 0;
+            } else if (!normalSerialBusy_) {
+                normalSerialBusy_ = true;
+                const uint32_t bits = (control & 0x1000) ? 32 : 8;
+                normalSerialCycles_ = (bits * CPU_CLOCK +
+                    NORMAL_BAUD[(control >> 1) & 1] - 1) /
+                    NORMAL_BAUD[(control >> 1) & 1];
+                // With no emulated Normal-mode peripheral, the SI line is
+                // pulled high and the receiver shifts in one bits.
+                if (!(control & 1))
+                    normalSerialCycles_ = 0; // External clock has not arrived.
+            }
+        }
+        return;
+    }
+    normalSerialBusy_ = false;
+    normalSerialCycles_ = 0;
+    if (!wasMultiplayer)
+        multiplayerError_ = false;
+    storeIo16(REG_SIOCNT, read16Impl(REG_SIOCNT) & SIO_MULTI_WRITABLE);
+    if (address != REG_SIOCNT || !(value & SIO_START) ||
+        multiplayerChild() || multiplayerBusy_)
+        return;
+    if (!multiplayerReady()) {
+        multiplayerError_ = true;
+        return;
+    }
+
+    multiplayerWords_ = {read16Impl(REG_SIOMLT_SEND),
+                         linkPeer_ ? linkPeer_->read16Impl(REG_SIOMLT_SEND)
+                                   : uint16_t{0xFFFF}};
+    const uint32_t baud = MULTIPLAYER_BAUD[value & 3];
+    // Two 16-bit words with one start and one stop bit each.
+    multiplayerCycles_ = (36 * CPU_CLOCK + baud - 1) / baud;
+    remotePeerWordReady_ = !remoteLinkEnabled_;
+    for (GbaSystem *endpoint : {this, linkPeer_}) {
+        if (!endpoint)
+            break;
+        endpoint->multiplayerBusy_ = true;
+        endpoint->multiplayerError_ = false;
+        for (uint32_t slot = 0; slot < 4; ++slot)
+            endpoint->storeIo16(REG_SIOMULTI0 + 2 * slot, 0xFFFF);
+    }
+    if (remoteLinkEnabled_) {
+        markRemoteLinkActivity();
+        if (!sendRemoteStart_)
+            throw std::runtime_error("GBA remote link has no start sender");
+        remoteActiveSequence_ = ++remoteTransferSequence_;
+        sendRemoteStart_(remoteActiveSequence_, multiplayerWords_[0],
+                         static_cast<uint8_t>(value & 3),
+                         remoteElapsedCycles());
+    }
+}
+
+void GbaSystem::abortMultiplayerTransfer() {
+    const bool hadPendingWork = multiplayerBusy_ ||
+        !remotePendingStarts_.empty();
+    remotePendingStarts_.clear();
+    remotePredictedWords_.clear();
+    remotePendingWords_.clear();
+    remotePeerWordReady_ = false;
+    if (!multiplayerBusy_) {
+        if (hadPendingWork)
+            multiplayerError_ = true;
+        return;
+    }
+    multiplayerBusy_ = false;
+    multiplayerError_ = true;
+    multiplayerCycles_ = 0;
+    if (linkPeer_) {
+        linkPeer_->multiplayerBusy_ = false;
+        linkPeer_->multiplayerError_ = true;
+        linkPeer_->multiplayerCycles_ = 0;
+    }
+}
+
+void GbaSystem::completeMultiplayerTransfer() {
+    multiplayerCycles_ = 0;
+    if (linkPeer_) {
+        for (GbaSystem *endpoint : {this, linkPeer_}) {
+            endpoint->storeIo16(REG_SIOMULTI0,
+                                multiplayerWords_[0]);
+            endpoint->storeIo16(REG_SIOMULTI0 + 2,
+                                multiplayerWords_[1]);
+            endpoint->multiplayerBusy_ = false;
+            if (endpoint->read16Impl(REG_SIOCNT) & SIO_IRQ_ENABLE)
+                endpoint->storeIo16(REG_IF,
+                    endpoint->read16Impl(REG_IF) | IRQ_SERIAL);
+        }
+    } else {
+        for (uint32_t slot = 0; slot < 4; ++slot)
+            storeIo16(REG_SIOMULTI0 + 2 * slot,
+                      slot < 2 ? multiplayerWords_[slot] : 0xFFFF);
+        multiplayerBusy_ = false;
+        if (read16Impl(REG_SIOCNT) & SIO_IRQ_ENABLE)
+            storeIo16(REG_IF, read16Impl(REG_IF) | IRQ_SERIAL);
+    }
+    remotePeerWordReady_ = false;
+}
+
+void GbaSystem::tickMultiplayer(uint32_t cycles) {
+    if (!multiplayerBusy_ || multiplayerCycles_ == 0)
+        return;
+    if (cycles < multiplayerCycles_) {
+        multiplayerCycles_ -= cycles;
+        return;
+    }
+    multiplayerCycles_ = 0;
+    if (remoteLinkEnabled_ && remoteLinkChild_ && !remoteReplySent_) {
+        sendRemoteWord_(remoteActiveSequence_, multiplayerWords_[1]);
+        remoteReplySent_ = true;
+    }
+    if (!remoteLinkEnabled_ || remotePeerWordReady_)
+        completeMultiplayerTransfer();
+}
+
+void GbaSystem::tickNormalSerial(uint32_t cycles) {
+    if (!normalSerialBusy_ || normalSerialCycles_ == 0)
+        return;
+    if (cycles < normalSerialCycles_) {
+        normalSerialCycles_ -= cycles;
+        return;
+    }
+    normalSerialCycles_ = 0;
+    normalSerialBusy_ = false;
+    const uint16_t control = read16Impl(REG_SIOCNT);
+    storeIo16(REG_SIOCNT, control & ~SIO_START);
+    if (control & 0x1000) {
+        storeIo16(REG_SIOMULTI0, 0xFFFF);
+        storeIo16(REG_SIOMULTI0 + 2, 0xFFFF);
+    } else {
+        storeIo16(REG_SIODATA8,
+                  static_cast<uint16_t>((read16Impl(REG_SIODATA8) & 0xFF00) |
+                                        0x00FF));
+    }
+    if (control & SIO_IRQ_ENABLE)
+        storeIo16(REG_IF, read16Impl(REG_IF) | IRQ_SERIAL);
+}
+
 void GbaSystem::tick(uint32_t cycles) {
+    rtc_.advanceCycles(cycles);
+    tickMultiplayer(cycles);
+    tickNormalSerial(cycles);
     audio_.advanceCycles(cycles);
     tickTimers(cycles);
     const auto requestInterrupt = [this](uint16_t interrupt) {
@@ -899,7 +1498,7 @@ void GbaSystem::flushCurrentScanline() {
 void GbaSystem::tickTimers(uint32_t cycles) {
     constexpr uint32_t PRESCALERS[] = {1, 64, 256, 1024};
     for (unsigned timer = 0; timer < 4; ++timer) {
-        const uint16_t control = read16(TIMER_BASE + timer * 4 + 2);
+        const uint16_t control = loadIo16(TIMER_BASE + timer * 4 + 2);
         if ((control & 0x0080) == 0 ||
             (timer != 0 && (control & 0x0004) != 0))
             continue;
@@ -917,7 +1516,7 @@ void GbaSystem::incrementTimer(unsigned timer, uint32_t ticks) {
     if (timer >= 4 || ticks == 0)
         return;
 
-    const uint16_t control = read16(TIMER_BASE + timer * 4 + 2);
+    const uint16_t control = loadIo16(TIMER_BASE + timer * 4 + 2);
     while (ticks != 0) {
         const uint32_t ticksUntilOverflow = 0x10000u - timerCounter_[timer];
         if (ticks < ticksUntilOverflow) {
@@ -945,7 +1544,7 @@ void GbaSystem::incrementTimer(unsigned timer, uint32_t ticks) {
 
         if (timer < 3) {
             const uint16_t nextControl =
-                read16(TIMER_BASE + (timer + 1) * 4 + 2);
+                loadIo16(TIMER_BASE + (timer + 1) * 4 + 2);
             if ((nextControl & 0x0084) == 0x0084)
                 incrementTimer(timer + 1, 1);
         }
@@ -1833,31 +2432,124 @@ void GbaSystem::renderScanline(unsigned y, unsigned firstPixel,
     }
 }
 
-GbaSystem::FrameResult GbaSystem::runFrame() {
+void GbaSystem::initializeScanlineOam() {
     if (!renderedOamInitialized_) {
         renderedOam_ = oam_;
         renderedOamInitialized_ = true;
     }
+}
+
+Arm7Tdmi::StepResult GbaSystem::stepCpu() {
+    // These internal checks read the stored registers without a CPU bus access.
+    const uint16_t flags = loadIo16(REG_IF) & 0x3FFF;
+    const uint16_t enable = loadIo16(REG_IE) & 0x3FFF;
+    cpu_.wakeFromInterrupts(flags, enable);
+    if ((io_[REG_IME - 0x04000000] & 1) != 0 && (flags & enable) != 0 &&
+        !cpu_.irqDisabled()) {
+        if (bios_.empty()) {
+            const uint32_t handler = read32(0x03007FFC);
+            cpu_.enterIrq(handler != 0 ? handler : 0x00000018);
+        } else {
+            cpu_.enterIrqVector();
+        }
+    }
+    const Arm7Tdmi::StepResult result = cpu_.step(*this);
+    if (result.success) {
+        tick(result.cycles);
+        emulatedCycles_ += result.cycles;
+    }
+    return result;
+}
+
+GbaSystem::FrameResult GbaSystem::runFrame() {
+    initializeScanlineOam();
     uint32_t elapsed = 0;
-    while (elapsed < CYCLES_PER_FRAME) {
-        const uint16_t flags = read16(REG_IF);
-        const uint16_t enable = read16(REG_IE);
-        cpu_.wakeFromInterrupts(flags, enable);
-        if ((read16(REG_IME) & 1) != 0 && (flags & enable) != 0 &&
-            !cpu_.irqDisabled()) {
-            if (bios_.empty()) {
-                const uint32_t handler = read32(0x03007FFC);
-                cpu_.enterIrq(handler != 0 ? handler : 0x00000018);
-            } else {
-                cpu_.enterIrqVector();
+    while (remoteFrameCycles_ < CYCLES_PER_FRAME) {
+        beginRemoteMultiplayerTransfer();
+        applyPendingRemoteWord();
+
+        // Do not let guest code run past a completed local SIO clock while
+        // the remote word is still in transit unless the frame-credit window
+        // allows bounded guest progress. Keep SIOCNT busy and never fabricate
+        // a receive word or completion IRQ.
+        if (remoteLinkEnabled_ && multiplayerBusy_ &&
+            multiplayerCycles_ == 0 && !remotePeerWordReady_) {
+            if (remoteEventPump_)
+                remoteEventPump_();
+        }
+        if (remoteLinkEnabled_ && multiplayerBusy_ &&
+            multiplayerCycles_ == 0 && !remotePeerWordReady_) {
+            if (predictRemoteWord_) {
+                const auto predicted = predictRemoteWord_(
+                    remoteActiveSequence_, multiplayerWords_[0]);
+                if (predicted) {
+                    // Optional compatibility hook for a narrowly verified
+                    // deterministic reply. A late real word must match this
+                    // value or the transfer reports an error.
+                    remotePredictedWords_[remoteActiveSequence_] = *predicted;
+                    multiplayerWords_[1] = *predicted;
+                    remotePeerWordReady_ = true;
+                    remotePredictionUsed_ = true;
+                    completeMultiplayerTransfer();
+                    markRemoteLinkActivity();
+                }
             }
         }
-        const Arm7Tdmi::StepResult result = cpu_.step(*this);
+        if (remoteLinkEnabled_ && multiplayerBusy_ &&
+            multiplayerCycles_ == 0 && !remotePeerWordReady_) {
+            if (remoteEventPump_) {
+                // Do not run guest code or VBlank timers past a transfer that
+                // is waiting for its real peer word. The frontend can present
+                // the current frame again while polling the network on its
+                // next run; the guest resumes as soon as the word arrives.
+                remoteFrameStalled_ = true;
+                return {true, elapsed};
+            }
+            if (shouldPaceRemoteFrame()) {
+                remoteFrameStalled_ = true;
+                return {true, elapsed};
+            }
+        }
+        if (shouldPaceRemoteFrame()) {
+            remoteFrameStalled_ = true;
+            return {true, elapsed};
+        }
+        remoteFrameStalled_ = false;
+        const auto result = stepCpu();
         if (!result.success)
             return {false, elapsed};
+        remoteFrameCycles_ += result.cycles;
         elapsed += result.cycles;
-        tick(result.cycles);
     }
+    remoteFrameCycles_ = 0;
+    remoteFrameStalled_ = false;
+    remoteInputLatch_ = 0;
+    if (remoteLinkEnabled_) {
+        ++remoteFrameCount_;
+        if (remoteLinkConnected_ && sendRemoteFrame_ && remoteLocalReady_)
+            sendRemoteFrame_(remoteFrameCount_);
+    }
+    return {true, elapsed};
+}
+
+GbaSystem::FrameResult GbaSystem::runLinkedFrame() {
+    if (!linkPeer_ || linkChild_)
+        throw std::logic_error("Only the parent can run a linked GBA frame");
+    initializeScanlineOam();
+    linkPeer_->initializeScanlineOam();
+    uint32_t parentTime = linkedFrameCarry_;
+    uint32_t childTime = linkPeer_->linkedFrameCarry_;
+    while (std::min(parentTime, childTime) < CYCLES_PER_FRAME) {
+        const bool runParent = parentTime <= childTime;
+        auto &endpoint = runParent ? *this : *linkPeer_;
+        const auto result = endpoint.stepCpu();
+        if (!result.success)
+            return {false, std::min(parentTime, childTime)};
+        (runParent ? parentTime : childTime) += result.cycles;
+    }
+    const uint32_t elapsed = parentTime - linkedFrameCarry_;
+    linkedFrameCarry_ = parentTime - CYCLES_PER_FRAME;
+    linkPeer_->linkedFrameCarry_ = childTime - CYCLES_PER_FRAME;
     return {true, elapsed};
 }
 

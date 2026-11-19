@@ -18,6 +18,7 @@ constexpr size_t STORAGE_HOST_TIME_OFFSET = 16;
 
 constexpr uint8_t RTC_24_HOUR = 1u << 6;
 constexpr uint8_t RTC_POWER_FAILURE = 1u << 7;
+constexpr uint64_t GBA_CYCLES_PER_SECOND = 16'777'216;
 
 int64_t hostTimeNow() {
     return static_cast<int64_t>(std::time(nullptr));
@@ -62,14 +63,6 @@ unsigned daysInMonth(unsigned year, unsigned month) {
     return days[month - 1];
 }
 
-std::tm localTime(int64_t timestamp) {
-    const std::time_t value = static_cast<std::time_t>(timestamp);
-    const std::tm *local = std::localtime(&value);
-    if (!local)
-        throw std::runtime_error("GBA RTC could not convert host time");
-    return *local;
-}
-
 bool validStorage(const std::vector<uint8_t> &data) {
     return data.size() == GbaCartridgeRtc::STORAGE_SIZE &&
         std::equal(std::begin(STORAGE_MAGIC), std::end(STORAGE_MAGIC),
@@ -80,8 +73,10 @@ bool validStorage(const std::vector<uint8_t> &data) {
 } // namespace
 
 GbaCartridgeRtc::GbaCartridgeRtc(
-    bool present, std::shared_ptr<std::vector<uint8_t>> storage)
-    : present_(present), storage_(std::move(storage)) {
+    bool present, std::shared_ptr<std::vector<uint8_t>> storage,
+    std::optional<int64_t> sessionEpoch)
+    : present_(present), storage_(std::move(storage)),
+      sessionEpoch_(present ? sessionEpoch : std::nullopt) {
     if (!present_) {
         if (storage_)
             throw std::invalid_argument("RTC storage supplied for a cartridge without RTC hardware");
@@ -91,6 +86,32 @@ GbaCartridgeRtc::GbaCartridgeRtc(
         storage_ = std::make_shared<std::vector<uint8_t>>(STORAGE_SIZE, 0);
     if (storage_->size() != STORAGE_SIZE)
         throw std::invalid_argument("GBA RTC save data must be 24 bytes");
+}
+
+int64_t GbaCartridgeRtc::clockTime() const {
+    if (!sessionEpoch_)
+        return hostTimeNow();
+    return *sessionEpoch_ +
+        static_cast<int64_t>(elapsedCycles_ / GBA_CYCLES_PER_SECOND);
+}
+
+std::tm GbaCartridgeRtc::calendarTime(int64_t timestamp) const {
+    const auto value = static_cast<std::time_t>(timestamp);
+    const std::tm *date = sessionEpoch_ ? std::gmtime(&value)
+                                       : std::localtime(&value);
+    if (!date)
+        throw std::runtime_error("GBA RTC could not convert its clock time");
+    return *date;
+}
+
+std::time_t GbaCartridgeRtc::calendarTimestamp(std::tm &date) const {
+    if (!sessionEpoch_)
+        return std::mktime(&date);
+#ifdef _WIN32
+    return _mkgmtime(&date);
+#else
+    return timegm(&date);
+#endif
 }
 
 size_t GbaCartridgeRtc::storageSize() const {
@@ -294,7 +315,7 @@ void GbaCartridgeRtc::prepareReadPayload() {
         return;
     }
 
-    const std::tm date = localTime(currentRtcTime());
+    const std::tm date = calendarTime(currentRtcTime());
     const unsigned year = static_cast<unsigned>(date.tm_year + 1900);
     const uint8_t hour24 = toBcd(static_cast<unsigned>(date.tm_hour));
     uint8_t hour12 = hour24;
@@ -363,11 +384,11 @@ void GbaCartridgeRtc::applyWritePayload() {
         date.tm_min = static_cast<int>(minute);
         date.tm_sec = static_cast<int>(second);
         date.tm_isdst = -1;
-        const std::time_t timestamp = std::mktime(&date);
+        const std::time_t timestamp = calendarTimestamp(date);
         if (timestamp == static_cast<std::time_t>(-1))
             return;
         rtcTimeBase_ = static_cast<int64_t>(timestamp);
-        hostTimeBase_ = hostTimeNow();
+        clockTimeBase_ = clockTime();
     } else if (writeLength_ == 3 && ((command_ >> 1) & 7) == 3) {
         unsigned hour = 0, minute = 0, second = 0;
         if (!fromBcd(static_cast<uint8_t>(writePayload_[0] & 0x7F), hour) ||
@@ -383,16 +404,16 @@ void GbaCartridgeRtc::applyWritePayload() {
         } else if (hour > 23) {
             return;
         }
-        std::tm date = localTime(currentRtcTime());
+        std::tm date = calendarTime(currentRtcTime());
         date.tm_hour = static_cast<int>(hour);
         date.tm_min = static_cast<int>(minute);
         date.tm_sec = static_cast<int>(second);
         date.tm_isdst = -1;
-        const std::time_t timestamp = std::mktime(&date);
+        const std::time_t timestamp = calendarTimestamp(date);
         if (timestamp == static_cast<std::time_t>(-1))
             return;
         rtcTimeBase_ = static_cast<int64_t>(timestamp);
-        hostTimeBase_ = hostTimeNow();
+        clockTimeBase_ = clockTime();
     } else if (writeLength_ == 2 && ((command_ >> 1) & 7) == 4) {
         alarmHour_ = writePayload_[0];
         alarmMinute_ = writePayload_[1];
@@ -409,25 +430,25 @@ void GbaCartridgeRtc::resetRtc() {
     resetDate.tm_mon = 0;
     resetDate.tm_mday = 1;
     resetDate.tm_isdst = -1;
-    const std::time_t timestamp = std::mktime(&resetDate);
+    const std::time_t timestamp = calendarTimestamp(resetDate);
     rtcTimeBase_ = timestamp == static_cast<std::time_t>(-1)
-        ? hostTimeNow()
+        ? clockTime()
         : static_cast<int64_t>(timestamp);
-    hostTimeBase_ = hostTimeNow();
+    clockTimeBase_ = clockTime();
     persistRtcTime();
 }
 
 int64_t GbaCartridgeRtc::currentRtcTime() const {
-    const int64_t now = hostTimeNow();
-    return rtcTimeBase_ + std::max<int64_t>(0, now - hostTimeBase_);
+    const int64_t now = clockTime();
+    return rtcTimeBase_ + std::max<int64_t>(0, now - clockTimeBase_);
 }
 
 void GbaCartridgeRtc::persistRtcTime() const {
     if (!storage_)
         return;
-    const int64_t now = hostTimeNow();
-    rtcTimeBase_ = rtcTimeBase_ + std::max<int64_t>(0, now - hostTimeBase_);
-    hostTimeBase_ = now;
+    const int64_t now = clockTime();
+    rtcTimeBase_ = rtcTimeBase_ + std::max<int64_t>(0, now - clockTimeBase_);
+    clockTimeBase_ = now;
     std::copy(std::begin(STORAGE_MAGIC), std::end(STORAGE_MAGIC), storage_->begin());
     (*storage_)[4] = STORAGE_VERSION;
     (*storage_)[STORAGE_STATUS_OFFSET] = status_;
@@ -436,7 +457,7 @@ void GbaCartridgeRtc::persistRtcTime() const {
     writeU64(*storage_, STORAGE_RTC_TIME_OFFSET,
              static_cast<uint64_t>(rtcTimeBase_));
     writeU64(*storage_, STORAGE_HOST_TIME_OFFSET,
-             static_cast<uint64_t>(hostTimeBase_));
+             static_cast<uint64_t>(clockTimeBase_));
 }
 
 void GbaCartridgeRtc::ensureInitialized() const {
@@ -444,21 +465,25 @@ void GbaCartridgeRtc::ensureInitialized() const {
         return;
     if (!storage_ || storage_->size() != STORAGE_SIZE)
         throw std::runtime_error("GBA RTC persistence block is unavailable");
-    const int64_t now = hostTimeNow();
+    const int64_t now = clockTime();
     if (validStorage(*storage_)) {
         status_ = static_cast<uint8_t>((*storage_)[STORAGE_STATUS_OFFSET] & 0xEA);
         alarmHour_ = (*storage_)[STORAGE_ALARM_HOUR_OFFSET];
         alarmMinute_ = (*storage_)[STORAGE_ALARM_MINUTE_OFFSET];
         rtcTimeBase_ = static_cast<int64_t>(readU64(*storage_, STORAGE_RTC_TIME_OFFSET));
-        hostTimeBase_ = static_cast<int64_t>(readU64(*storage_, STORAGE_HOST_TIME_OFFSET));
-        rtcTimeBase_ += std::max<int64_t>(0, now - hostTimeBase_);
-        hostTimeBase_ = now;
+        clockTimeBase_ = static_cast<int64_t>(readU64(*storage_, STORAGE_HOST_TIME_OFFSET));
+        if (sessionEpoch_ &&
+            (rtcTimeBase_ < -2208988800 || rtcTimeBase_ >= 4102444800 ||
+             clockTimeBase_ < -2208988800 || clockTimeBase_ >= 4102444800))
+            throw std::runtime_error("Invalid GBA RTC save timestamps for Netplay");
+        rtcTimeBase_ += std::max<int64_t>(0, now - clockTimeBase_);
+        clockTimeBase_ = now;
     } else {
         status_ = RTC_24_HOUR;
         alarmHour_ = 0;
         alarmMinute_ = 0;
         rtcTimeBase_ = now;
-        hostTimeBase_ = now;
+        clockTimeBase_ = now;
     }
     initialized_ = true;
     persistRtcTime();

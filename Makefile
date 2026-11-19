@@ -24,6 +24,7 @@ endif
 # PHONY: non file targets
 .PHONY: build test test-roms test-mooneye test-mooneye-visual test-homebrew test-cgb-homebrew \
 	test-gbmicrotest-ppu-latch test-tobu-input test-tobu-input-vblank test-tobu-input-fixed test-vblank test-tobudx install-retroarch-core-macos package-retroarch-macos package-retroarch-steam-deck clean
+.PHONY: build-gba-zig-pair
 
 TEST_ROM_DIR ?= ../test-roms/dmg_sound
 TEST_ROM_FRAMES ?= 1200
@@ -197,3 +198,30 @@ package-retroarch-steam-deck:
 		--core "$(STEAM_DECK_PACKAGE_BUILD_DIR)/lotusgb_libretro.so" \
 		--info "$(STEAM_DECK_PACKAGE_BUILD_DIR)/lotusgb_libretro.info" \
 		--output-dir "$(STEAM_DECK_PACKAGE_DIR)"
+
+# Build both LotusGBA platform cores from this one macOS source tree. Use the
+# same Zig toolchain and source state for link tests on macOS and Linux.
+GBA_ZIG ?= $(CURDIR)/build/toolchains/zig-0.17.0/zig
+GBA_ZIG_PAIR_DIR ?= $(CURDIR)/build/gba-zig-pair
+GBA_ZIG_LINUX_DIR := $(GBA_ZIG_PAIR_DIR)/linux-x86_64
+GBA_ZIG_MACOS_DIR := $(GBA_ZIG_PAIR_DIR)/macos-arm64
+
+build-gba-zig-pair:
+	@test "$$(uname -s)" = Darwin || { printf '%s\n' 'Run this target on the Mac build host.' >&2; exit 1; }
+	@test -x "$(GBA_ZIG)" || { printf '%s\n' 'Zig 0.17.0 not found; set GBA_ZIG.' >&2; exit 1; }
+	ZIG_GLOBAL_CACHE_DIR="$(CURDIR)/build/zig-cache/global" \
+	ZIG_LOCAL_CACHE_DIR="$(CURDIR)/build/zig-cache/local" \
+	$(MAKE) -C $(src_dir)/gba_libretro build_dir="$(GBA_ZIG_LINUX_DIR)" \
+		CXX="$(GBA_ZIG) c++ -target x86_64-linux-gnu" \
+		"$(GBA_ZIG_LINUX_DIR)/lotusgba_libretro.so" \
+		"$(GBA_ZIG_LINUX_DIR)/lotusgba_libretro.info"
+	ZIG_GLOBAL_CACHE_DIR="$(CURDIR)/build/zig-cache/global" \
+	ZIG_LOCAL_CACHE_DIR="$(CURDIR)/build/zig-cache/local" \
+	$(MAKE) -C $(src_dir)/gba_libretro build_dir="$(GBA_ZIG_MACOS_DIR)" \
+		CXX="$(GBA_ZIG) c++ -target aarch64-macos" \
+		"$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.so" \
+		"$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.info"
+	cp "$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.so" \
+		"$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.dylib"
+	shasum -a 256 "$(GBA_ZIG_LINUX_DIR)/lotusgba_libretro.so" \
+		"$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.dylib"
