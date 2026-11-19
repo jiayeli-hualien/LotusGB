@@ -2714,35 +2714,45 @@ void testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply() {
     retro_unload_game();
 }
 
+enum class NetpacketSerialMode { Dmg, CgbNormal, CgbFast };
+
 [[noreturn]] void runNetpacketPairEndpoint(
     unsigned player, bool providesClock, int socket, unsigned transferCount,
-    std::chrono::milliseconds frontendFramePace) {
+    std::chrono::milliseconds frontendFramePace, NetpacketSerialMode mode) {
     processNetpacketSocket = socket;
     processNetpacketPeerId = player == 0 ? 1 : 0;
     retro_deinit();
     retro_init();
 
     std::vector<uint8_t> rom(0x8000);
+    const bool cgb = mode != NetpacketSerialMode::Dmg;
+    if (cgb)
+        rom[0x143] = 0xC0; // CGB-only cartridge.
     rom[0x147] = 0x03;
     rom[0x149] = 0x02;
-    const uint8_t control = providesClock ? 0x81 : 0x80;
+    const uint8_t internalControl = mode == NetpacketSerialMode::CgbFast ? 0x83 : 0x81;
+    const uint8_t control = providesClock ? internalControl : 0x80;
     std::vector<uint8_t> program{
         0x3E, 0x0A, 0xEA, 0, 0, // Enable SRAM.
         0xAF, 0xEA, 1, 0xB0,    // Clear host-controlled negotiation gate.
+        0xAF, 0xE0, 0x0F,       // Clear pending interrupts before arming serial.
         0x3E, 0x02, 0xE0, 1,    // Both games start with external role byte.
         0x3E, 0x80, 0xE0, 2,    // Arm external clock without starting any transfer.
-        0xEA, 2, 0xB0,          // Signal that this game has armed SC.
+        0xF0, 2, 0xE6, 0x83,    // Read SC and mask off the unused bits.
+        0xEA, 2, 0xB0,          // Record the armed external clock state.
     };
     if (providesClock) {
         program.insert(program.end(), {
             0xFA, 1, 0xB0, 0xA7, 0x28, 0xFA, // Wait until both external ports are armed.
             0x3E, 0x01, 0xE0, 1,              // Replace the external role byte.
-            0x3E, 0x81, 0xE0, 2,              // Start with internal clock.
+            0x3E, internalControl, 0xE0, 2,              // Start with internal clock.
         });
     }
     program.insert(program.end(), {
         0xF0, 2, 0xCB, 0x7F, 0x20, 0xFA, // Wait for the role exchange.
         0xF0, 1, 0xEA, 0, 0xB0,          // Record the actual peer role byte.
+        0xF0, 2, 0xE6, 0x83, 0xEA, 3, 0xB0, // Record SC after role exchange.
+        0xF0, 0x0F, 0xE6, 0x08, 0xEA, 4, 0xB0, // Record the serial IRQ flag.
         0x21, 0x00, 0xA0,       // HL = first byte of SRAM receive log.
         0x01, static_cast<uint8_t>(transferCount),
         static_cast<uint8_t>(transferCount >> 8), // BC = transferCount.
@@ -2792,7 +2802,8 @@ void testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply() {
         retro_run();
         netpacketInterface->poll();
     }
-    expect(saveRam[0x1002] == 0x80 && saveRam[0x1000] == 0xFF &&
+    const uint8_t externalControl = cgb ? 0x80 : 0x82;
+    expect(saveRam[0x1002] == externalControl && saveRam[0x1000] == 0xFF &&
                processNetpacketPacketsSent == 0,
            "an armed external port waits without sending or completing a transfer");
     expect(::send(socket, &processNetpacketArmedMarker, 1,
@@ -2830,6 +2841,10 @@ void testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply() {
                : "separate core processes exchange 64 ordered bytes in both directions");
     expect(saveRam[0x1000] == (providesClock ? 0x02 : 0x01),
            "both games receive complementary serial role bytes");
+    const uint8_t completedControl = (control & 0x03) | (cgb ? 0 : 0x02);
+    expect(saveRam[0x1003] == completedControl,
+           "role exchange clears SC start and preserves the selected clock");
+    expect(saveRam[0x1004] == 0x08, "role exchange requests a serial interrupt");
 
     netpacketInterface->stop();
     retro_unload_game();
@@ -2840,7 +2855,8 @@ void testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply() {
 
 void testLibretroNetpacketTwoProcessExchange(unsigned transferCount,
                                             bool useLatencyProfile,
-                                            bool hostProvidesClock) {
+                                            bool hostProvidesClock,
+                                            NetpacketSerialMode mode) {
     int sockets[2][2]{};
     expect(::socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets[0]) == 0,
            "host-to-relay Netpacket socket opens");
@@ -2867,7 +2883,8 @@ void testLibretroNetpacketTwoProcessExchange(unsigned transferCount,
         runNetpacketPairEndpoint(
             0, hostProvidesClock, sockets[0][1], transferCount,
             useLatencyProfile ? std::chrono::milliseconds(17)
-                              : std::chrono::milliseconds(0));
+                              : std::chrono::milliseconds(0),
+            mode);
     }
 
     const pid_t client = ::fork();
@@ -2883,7 +2900,8 @@ void testLibretroNetpacketTwoProcessExchange(unsigned transferCount,
         runNetpacketPairEndpoint(
             1, !hostProvidesClock, sockets[1][1], transferCount,
             useLatencyProfile ? std::chrono::milliseconds(33)
-                              : std::chrono::milliseconds(0));
+                              : std::chrono::milliseconds(0),
+            mode);
     }
 
     ::close(sockets[0][1]);
@@ -3090,8 +3108,10 @@ int main(int argc, char **argv) {
     testLibretroNetpacketQueuesPeerByteBeforeLocalStart();
     testLibretroNetpacketDisconnectKeepsFrontendResponsive();
     testLibretroNetpacketTimeoutKeepsFramesRunningAndAcceptsLateReply();
-    testLibretroNetpacketTwoProcessExchange(64, true, true);
-    testLibretroNetpacketTwoProcessExchange(4096, false, false);
+    testLibretroNetpacketTwoProcessExchange(64, true, true, NetpacketSerialMode::Dmg);
+    testLibretroNetpacketTwoProcessExchange(4096, false, false, NetpacketSerialMode::Dmg);
+    testLibretroNetpacketTwoProcessExchange(64, true, true, NetpacketSerialMode::CgbNormal);
+    testLibretroNetpacketTwoProcessExchange(64, true, false, NetpacketSerialMode::CgbFast);
 
     retro_unload_game();
     retro_deinit();
