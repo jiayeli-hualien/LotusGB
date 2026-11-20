@@ -1,9 +1,12 @@
 #include "libretro.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +14,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -32,11 +36,21 @@ uint16_t secondJoypad = 0;
 const retro_subsystem_info *linkSubsystem = nullptr;
 const retro_netpacket_callback *netpacket = nullptr;
 std::vector<std::vector<uint8_t>> sentNetpackets;
+std::vector<std::string> logMessages;
 std::string systemDirectoryPath;
 std::string biosStartupMode = "Automatic";
 bool biosOptionRegistered = false;
 
 void inputPoll() {}
+
+void testLog(retro_log_level, const char *format, ...) {
+    char message[1024];
+    va_list arguments;
+    va_start(arguments, format);
+    std::vsnprintf(message, sizeof(message), format, arguments);
+    va_end(arguments);
+    logMessages.emplace_back(message);
+}
 
 size_t audioBatch(const int16_t *samples, size_t frames) {
     if (frames != 0) {
@@ -90,6 +104,10 @@ bool environment(unsigned command, void *data) {
         for (size_t index = 0; options[index].key; ++index)
             biosOptionRegistered |=
                 std::string(options[index].key) == "lotusgba_bios_mode";
+        return true;
+    }
+    if (command == RETRO_ENVIRONMENT_GET_LOG_INTERFACE) {
+        static_cast<retro_log_callback *>(data)->log = testLog;
         return true;
     }
     if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
@@ -333,6 +351,123 @@ void runRemoteMultiplayerLinkCheck() {
 
     assert(!child.receiveRemoteMultiplayerStart(4, 0xFFFF, 3));
     assert((child.read16(control) & 0x40) != 0);
+}
+
+void runRemoteBufferedEmeraldLinkCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint32_t irqEnable = 0x04000200;
+    constexpr uint32_t irqFlags = 0x04000202;
+
+    GbaSystem parent(makeGbaMode3BootRom());
+    GbaSystem child(makeGbaMode3BootRom());
+    std::vector<GbaSystem::MultiplayerDataWords> parentBlocks;
+    std::vector<GbaSystem::MultiplayerDataWords> childBlocks;
+    std::vector<uint16_t> parentChecksums;
+    std::vector<uint16_t> childChecksums;
+
+    parent.configureRemoteMultiplayerLink(
+        false, true,
+        [&child](uint32_t sequence, uint16_t word, uint8_t baud,
+                 uint64_t elapsed) {
+            assert(child.receiveRemoteMultiplayerStart(sequence, word, baud,
+                                                        elapsed));
+        },
+        {},
+        [&child](bool ready) { child.setRemoteMultiplayerReady(ready); },
+        [&child](uint64_t frame) {
+            assert(child.receiveRemoteMultiplayerFrame(frame));
+        }, {},
+        [&child, &parentBlocks, &parentChecksums](
+            uint32_t sequence, const GbaSystem::MultiplayerDataWords &words,
+            uint16_t checksum) {
+            parentBlocks.push_back(words);
+            parentChecksums.push_back(checksum);
+            assert(child.receiveRemoteMultiplayerDataBlock(sequence, words,
+                                                           checksum));
+        });
+    child.configureRemoteMultiplayerLink(
+        true, true, {},
+        [&parent](uint32_t sequence, uint16_t word) {
+            assert(parent.receiveRemoteMultiplayerWord(sequence, word));
+        },
+        [&parent](bool ready) { parent.setRemoteMultiplayerReady(ready); },
+        [&parent](uint64_t frame) {
+            assert(parent.receiveRemoteMultiplayerFrame(frame));
+        }, {},
+        [&parent, &childBlocks, &childChecksums](
+            uint32_t sequence, const GbaSystem::MultiplayerDataWords &words,
+            uint16_t checksum) {
+            childBlocks.push_back(words);
+            childChecksums.push_back(checksum);
+            assert(parent.receiveRemoteMultiplayerDataBlock(sequence, words,
+                                                           checksum));
+        });
+    parent.setRemoteMultiplayerBufferedProtocol(true);
+    child.setRemoteMultiplayerBufferedProtocol(true);
+    parent.setRemoteMultiplayerEventPump([] {});
+    child.setRemoteMultiplayerEventPump([] {});
+
+    parent.write16(control, 0x2000);
+    child.write16(control, 0x6001);
+    parent.write16(send, 0x8FFF);
+    child.write16(send, 0xB9A0);
+    parent.write16(irqEnable, 0x0080);
+    child.write16(irqEnable, 0x0080);
+    parent.write16(control, 0x6083);
+    assert(parent.runFrame().success); // Stops at the raw handshake reply.
+    assert(child.runFrame().success);  // Completes raw handshake and switches.
+    assert(parent.runFrame().success); // Consumes the handshake reply/switches.
+    assert(parent.remoteMultiplayerBufferedProtocolActive());
+    assert(child.remoteMultiplayerBufferedProtocolActive());
+
+    parent.write16(send, 0);
+    child.write16(send, 0);
+    const uint64_t childTransfersBefore = child.remoteSioTransferCount();
+    for (uint8_t frame = 0;
+         frame < 3 && child.remoteSioTransferCount() <
+             childTransfersBefore + 9;
+         ++frame)
+        assert(child.runFrame().success);
+    assert(child.remoteSioTransferCount() >= childTransfersBefore + 9);
+    assert((child.read16(irqFlags) & 0x0080) != 0);
+    assert((child.read16(control) & 0x40) == 0);
+    assert(!childBlocks.empty());
+    assert(childChecksums.front() == 0);
+    for (uint16_t word : childBlocks.front())
+        assert(word == 0);
+
+    const GbaSystem::MultiplayerDataWords outgoing =
+        {1, 2, 3, 4, 5, 6, 7, 8};
+    const uint16_t expectedChecksum = 36;
+    const std::array<uint16_t, 9> transferWords =
+        {1, 2, 3, 4, 5, 6, 7, 8, expectedChecksum};
+    const uint64_t childFrameCountBeforeParentStream = child.remoteFrameCount();
+    const uint64_t parentFrameCountBeforeStream = parent.remoteFrameCount();
+    for (uint16_t word : transferWords) {
+        parent.write16(send, word);
+        parent.write16(control, 0x6083);
+        const auto parentFrame = parent.runFrame();
+        assert(parentFrame.success);
+        assert(parentFrame.cycles >= GbaSystem::CYCLES_PER_FRAME);
+        assert((parent.read16(control) & 0x80) == 0);
+    }
+    assert(child.remoteFrameCount() == childFrameCountBeforeParentStream);
+    assert(parent.remoteFrameCount() >= parentFrameCountBeforeStream + 9);
+    assert(!parentBlocks.empty());
+    assert(parentBlocks.back() == outgoing);
+    assert(parentChecksums.back() == expectedChecksum);
+    assert((parent.read16(control) & 0x40) == 0);
+    assert((child.read16(control) & 0x40) == 0);
+
+    GbaSystem invalid(makeGbaMode3BootRom());
+    invalid.configureRemoteMultiplayerLink(false, true, {}, {}, {}, {}, {});
+    invalid.setRemoteMultiplayerBufferedProtocol(true);
+    invalid.write16(control, 0x2000);
+    GbaSystem::MultiplayerDataWords corrupt = outgoing;
+    assert(!invalid.receiveRemoteMultiplayerDataBlock(1, corrupt, 35));
+    assert((invalid.read16(control) & 0x40) != 0);
 }
 
 void runLocalMultiplayerProbeRomCheck() {
@@ -942,6 +1077,636 @@ void runUnconnectedNormalSioCheck() {
     assert((externalClock.read16(control) & 0x80) == 0);
 }
 
+void runEmeraldRfuBootstrapCheck(char region) {
+    using LOTUSGBA::GbaSystem;
+    using LOTUSGBA::GbaRfuLogin;
+    constexpr uint32_t serialData = 0x04000120;
+    constexpr uint32_t serialControl = 0x04000128;
+    constexpr uint32_t remoteControl = 0x04000134;
+    constexpr uint32_t frameCycles = GbaSystem::CYCLES_PER_FRAME;
+
+    auto emeraldRom = makeGbaMode3BootRom();
+    emeraldRom.resize(0xC4, 0);
+    emeraldRom[0xAC] = 'B';
+    emeraldRom[0xAD] = 'P';
+    emeraldRom[0xAE] = 'E';
+    emeraldRom[0xAF] = static_cast<uint8_t>(region);
+    GbaSystem emerald(std::move(emeraldRom));
+    assert(emerald.hasEmeraldRfuProfile());
+
+    emerald.write16(remoteControl, 0x8000);
+    emerald.write16(remoteControl, 0x80A0);
+    emerald.write16(remoteControl, 0x80A2); // RFU reset pulse.
+    emerald.write16(remoteControl, 0x80A0);
+    emerald.write16(serialControl, 0x5003);
+    emerald.write16(remoteControl, 0);
+
+    constexpr uint32_t guestWords[] = {
+        0x7FFF494E, 0xFFFF494E, 0xB6B1494E, 0xB6B1544E,
+        0xABB1544E, 0xABB14E45, 0xB1BA4E45, 0xB1BA4F44,
+        0xB0BB4F44, 0xB0BB8001};
+    constexpr uint32_t adapterWords[] = {
+        0x00000000, 0x494EB6B1, 0x494EB6B1, 0x544EB6B1,
+        0x544EABB1, 0x4E45ABB1, 0x4E45B1BA, 0x4F44B1BA,
+        0x4F44B0BB, 0x8001B0BB};
+    for (unsigned index = 0; index < GbaRfuLogin::TRANSFER_COUNT; ++index) {
+        emerald.write32(serialData, guestWords[index]);
+        emerald.write16(serialControl, 0x5083);
+        const auto frame = emerald.runFrame();
+        assert(frame.success && frame.cycles >= frameCycles);
+        assert(emerald.read32(serialData) == adapterWords[index]);
+    }
+    assert(emerald.hasEmeraldRfuProfile());
+    assert((emerald.read16(serialControl) & 0x04) != 0);
+
+    emerald.write32(serialData,
+                    LOTUSGBA::makeGbaRfuCommandHeader(0x10, 0));
+    emerald.write16(serialControl, 0x5083);
+    assert(emerald.runFrame().success);
+    assert(emerald.read32(serialData) == 0x80000000);
+    emerald.write32(serialData, 0x80000000);
+    emerald.write16(serialControl, 0x5083);
+    assert(emerald.runFrame().success);
+    assert(emerald.read32(serialData) == 0x99660090);
+
+    // SIOCNT bit 2 is the adapter's ready input and follows the guest's SO
+    // output in the opposite phase between RFU word transfers.
+    emerald.write16(serialControl, 0x500B);
+    assert((emerald.read16(serialControl) & 0x04) == 0);
+
+    GbaSystem otherGame(makeGbaMode3BootRom());
+    assert(!otherGame.hasEmeraldRfuProfile());
+    otherGame.write16(remoteControl, 0x80A2);
+    otherGame.write16(remoteControl, 0);
+    otherGame.write16(serialControl, 0x5003);
+    otherGame.write32(serialData, guestWords[0]);
+    otherGame.write16(serialControl, 0x5083);
+    assert(otherGame.runFrame().success);
+    assert(otherGame.read32(serialData) == 0xFFFFFFFF);
+}
+
+std::vector<uint8_t> makeJapaneseEmeraldProfileProbeRom() {
+    auto rom = makeGbaMode3BootRom();
+    // Preserve the complete test ROM's instruction loop and literal pool.
+    rom[0xAC] = 'B';
+    rom[0xAD] = 'P';
+    rom[0xAE] = 'E';
+    rom[0xAF] = 'J';
+    return rom;
+}
+
+uint32_t runRfuTransfer(LOTUSGBA::GbaSystem &system, uint32_t word) {
+    constexpr uint32_t SERIAL_DATA = 0x04000120;
+    constexpr uint32_t SERIAL_CONTROL = 0x04000128;
+    system.write32(SERIAL_DATA, word);
+    system.write16(SERIAL_CONTROL, 0x5083);
+    assert(system.runFrame().success);
+    return system.read32(SERIAL_DATA);
+}
+
+void bootRfuAdapter(LOTUSGBA::GbaSystem &system) {
+    constexpr uint32_t REMOTE_CONTROL = 0x04000134;
+    constexpr uint32_t SERIAL_CONTROL = 0x04000128;
+    system.write16(REMOTE_CONTROL, 0x8000);
+    system.write16(REMOTE_CONTROL, 0x80A0);
+    system.write16(REMOTE_CONTROL, 0x80A2);
+    system.write16(REMOTE_CONTROL, 0x80A0);
+    system.write16(SERIAL_CONTROL, 0x5003);
+    system.write16(REMOTE_CONTROL, 0);
+    constexpr uint32_t guestWords[] = {
+        0x7FFF494E, 0xFFFF494E, 0xB6B1494E, 0xB6B1544E,
+        0xABB1544E, 0xABB14E45, 0xB1BA4E45, 0xB1BA4F44,
+        0xB0BB4F44, 0xB0BB8001};
+    constexpr uint32_t adapterWords[] = {
+        0x00000000, 0x494EB6B1, 0x494EB6B1, 0x544EB6B1,
+        0x544EABB1, 0x4E45ABB1, 0x4E45B1BA, 0x4F44B1BA,
+        0x4F44B0BB, 0x8001B0BB};
+    for (size_t index = 0; index < std::size(guestWords); ++index)
+        assert(runRfuTransfer(system, guestWords[index]) ==
+               adapterWords[index]);
+}
+
+struct RfuCommandResult {
+    uint32_t acknowledgement = 0;
+    std::vector<uint32_t> response;
+};
+
+RfuCommandResult runRfuCommand(LOTUSGBA::GbaSystem &system,
+                               uint8_t command,
+                               const std::vector<uint32_t> &parameters = {}) {
+    assert(parameters.size() <= LOTUSGBA::GbaRfuRequestDecoder::MAX_PAYLOAD_WORDS);
+    assert(runRfuTransfer(system,
+        LOTUSGBA::makeGbaRfuCommandHeader(
+            command, static_cast<uint8_t>(parameters.size()))) == 0x80000000);
+    for (uint32_t parameter : parameters)
+        assert(runRfuTransfer(system, parameter) == 0x80000000);
+
+    RfuCommandResult result;
+    result.acknowledgement = runRfuTransfer(system, 0x80000000);
+    const uint8_t responseWords = static_cast<uint8_t>(
+        (result.acknowledgement >> 8) & 0xFF);
+    if ((result.acknowledgement & 0xFFFF0000) == 0x99660000 &&
+        static_cast<uint8_t>(result.acknowledgement) != 0xEE) {
+        for (uint8_t index = 0; index < responseWords; ++index)
+            result.response.push_back(runRfuTransfer(system, 0x80000000));
+    }
+    return result;
+}
+
+std::vector<uint32_t> makeExpectedRfuReceivePacket(
+    const std::vector<uint32_t> &frame, uint8_t payloadBytes = 1,
+    bool receivingAsParent = true) {
+    std::vector<uint32_t> packet = {receivingAsParent
+        ? static_cast<uint32_t>(payloadBytes) << 8 : payloadBytes};
+    packet.insert(packet.end(), frame.begin(), frame.end());
+    return packet;
+}
+
+void runEmeraldRfuAdapterClockAckCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t data = 0x04000120;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t irq = 0x04000202;
+    constexpr uint16_t serialIrq = 1u << 7;
+
+    // Exercise the public SIO registers, including the guest's ready-line
+    // handshake. A completed external transfer must consume an ACK already
+    // present in that word, without requiring another dummy transfer.
+    for (bool sameTransferAck : {true, false}) {
+        GbaSystem system(makeJapaneseEmeraldProfileProbeRom());
+        bootRfuAdapter(system);
+        for (unsigned round = 0; round < 2; ++round) {
+            assert(runRfuCommand(system, 0x27).acknowledgement == 0x996600A7);
+            system.write16(control, 0x500B);
+            assert((system.read16(control) & 4) == 0);
+            system.write16(control, 0x5002);
+            assert((system.read16(control) & 4) == 0);
+            system.write16(irq, serialIrq);
+            system.write32(data, sameTransferAck ? 0x996600A8 : 0x80000000);
+            system.write16(control, 0x5082);
+            assert((system.read16(control) & 0x80) != 0);
+            assert(system.runFrame().success);
+            assert((system.read16(control) & 0x80) == 0);
+            assert((system.read16(irq) & serialIrq) != 0);
+            assert(system.read32(data) == 0x99660028);
+            assert((system.read16(control) & 4) == 0);
+            system.write16(control, 0x500A);
+            assert((system.read16(control) & 4) != 0);
+            if (!sameTransferAck) {
+                // Public RFU traces normally use a second reverse-clocked
+                // word for A8, while the adapter shifts the idle word back.
+                // A mismatched ACK must not hand clock ownership back.
+                system.write16(control, 0x5002);
+                system.write32(data, 0x996600A7);
+                system.write16(irq, serialIrq);
+                system.write16(control, 0x5082);
+                assert(system.runFrame().success);
+                assert(system.read32(data) == 0xFFFFFFFF);
+                assert((system.read16(control) & 0x80) == 0);
+                assert((system.read16(irq) & serialIrq) != 0);
+                system.write16(control, 0x500A);
+                assert((system.read16(control) & 4) != 0);
+                system.write16(control, 0x5002);
+                system.write32(data, 0x996600A8);
+                system.write16(irq, serialIrq);
+                system.write16(control, 0x5082);
+                assert(system.runFrame().success);
+                assert(system.read32(data) == 0x80000000);
+                assert((system.read16(control) & 0x80) == 0);
+                assert((system.read16(irq) & serialIrq) != 0);
+                assert((system.read16(control) & 4) == 0);
+                system.write16(control, 0x500A);
+                assert((system.read16(control) & 4) != 0);
+            }
+
+            // After A8 there is no adapter clock for another external word.
+            // It must stay busy and must not raise a serial IRQ.
+            system.write16(control, 0x5002);
+            system.write16(irq, serialIrq);
+            system.write32(data, 0x11223344);
+            system.write16(control, 0x5082);
+            assert(system.runFrame().success);
+            assert((system.read16(control) & 0x80) != 0);
+            assert(system.read32(data) == 0x11223344);
+            assert((system.read16(irq) & serialIrq) == 0);
+            system.write16(control, 0x5003); // Cancel and resume guest clock.
+            assert((system.read16(control) & 4) != 0);
+            assert(runRfuCommand(system, 0x26).acknowledgement == 0x996600A6);
+            assert(runRfuCommand(system, 0x13).response ==
+                   std::vector<uint32_t>{0});
+        }
+    }
+
+    // A network loss while the adapter owns SIO must reach Emerald through
+    // the documented 0x29 request body and A9 ACK before guest clock resumes.
+    GbaSystem disconnected(makeJapaneseEmeraldProfileProbeRom());
+    bootRfuAdapter(disconnected);
+    disconnected.configureRemoteRfuLink(
+        1, 2,
+        [](uint32_t, uint16_t, const GbaSystem::RfuAdvertisement &) {},
+        [](uint32_t, uint16_t, uint16_t) {},
+        [](uint32_t, uint8_t, const std::vector<uint32_t> &) { return true; });
+    assert(runRfuCommand(disconnected, 0x19).acknowledgement == 0x99660099);
+    assert(disconnected.receiveRemoteRfuConnectionRequest(1, 2, 1));
+    assert(runRfuCommand(disconnected, 0x27).acknowledgement == 0x996600A7);
+    disconnected.receiveRemoteRfuDisconnect();
+
+    const auto adapterClockedTransfer = [&](uint32_t guestWord) {
+        disconnected.write16(control, 0x5002);
+        disconnected.write32(data, guestWord);
+        disconnected.write16(control, 0x5082);
+        assert(disconnected.runFrame().success);
+        const uint32_t adapterWord = disconnected.read32(data);
+        disconnected.write16(control, 0x500A);
+        return adapterWord;
+    };
+    disconnected.write16(control, 0x500B);
+    assert((disconnected.read16(control) & 4) == 0);
+    disconnected.write16(control, 0x5002);
+    assert(adapterClockedTransfer(0x80000000) == 0x99660129);
+    assert(adapterClockedTransfer(0x80000000) == 1); // Slot 0, disconnected.
+    assert(adapterClockedTransfer(0x996600A8) == 0xFFFFFFFF);
+    assert((disconnected.read16(control) & 4) != 0);
+    assert(adapterClockedTransfer(0x996600A9) == 0x80000000);
+    assert((disconnected.read16(control) & 4) != 0);
+    disconnected.write16(control, 0x5002);
+    disconnected.write16(irq, serialIrq);
+    disconnected.write32(data, 0x11223344);
+    disconnected.write16(control, 0x5082);
+    assert(disconnected.runFrame().success);
+    assert((disconnected.read16(control) & 0x80) != 0);
+    assert(disconnected.read32(data) == 0x11223344);
+    assert((disconnected.read16(irq) & serialIrq) == 0);
+    disconnected.write16(control, 0x5003);
+}
+
+void runEmeraldRfuRadioProgressCheck() {
+    using LOTUSGBA::GbaSystem;
+    GbaSystem system(makeJapaneseEmeraldProfileProbeRom());
+    bootRfuAdapter(system);
+    system.configureRemoteRfuLink(1, 2,
+        [](uint32_t, uint16_t, const GbaSystem::RfuAdvertisement &) {},
+        [](uint32_t, uint16_t, uint16_t) {},
+        [](uint32_t, uint8_t, const std::vector<uint32_t> &) { return true; });
+    assert(runRfuCommand(system, 0x19).acknowledgement == 0x99660099);
+    assert(system.receiveRemoteRfuConnectionRequest(1, 2, 1));
+    constexpr uint32_t data = 0x04000120, control = 0x04000128;
+    constexpr uint32_t irq = 0x04000202;
+    for (uint32_t sequence = 1; sequence <= 2; ++sequence) {
+        // Starting a parent send is not the same as completing its radio
+        // exchange: await a child reply while the guest CPU keeps progressing.
+        assert(runRfuCommand(system, 0x26).response.empty());
+        assert(runRfuCommand(system, 0x25, {1, 0xA0u + sequence})
+                   .acknowledgement == 0x996600A5);
+        system.write32(data, 0x80000000);
+        system.write16(irq, 1u << 7);
+        system.write16(control, 0x5082);
+        assert(system.runFrame().success);
+        assert((system.read16(control) & 0x80) != 0);
+        assert((system.read16(irq) & (1u << 7)) == 0);
+        assert(system.receiveRemoteRfuData(sequence, 1, {sequence}) ==
+               GbaSystem::RfuDataReceiveResult::Accepted);
+        assert(system.runFrame().success);
+        assert((system.read16(control) & 0x80) == 0);
+        assert((system.read16(irq) & (1u << 7)) != 0);
+        assert(system.read32(data) == 0x99660028);
+        system.write16(control, 0x500A);
+        system.write32(data, 0x996600A8);
+        system.write16(control, 0x5082);
+        assert(system.runFrame().success);
+        assert(system.read32(data) == 0x80000000);
+        system.write16(control, 0x500A);
+        system.write16(control, 0x5003);
+        assert(runRfuCommand(system, 0x26).response ==
+               makeExpectedRfuReceivePacket({sequence}));
+    }
+}
+
+void runEmeraldRfuChildSnapshotCheck() {
+    using LOTUSGBA::GbaSystem;
+    GbaSystem child(makeJapaneseEmeraldProfileProbeRom());
+    bootRfuAdapter(child);
+    bool credit = false;
+    std::vector<std::vector<uint32_t>> replies;
+    std::vector<uint32_t> admissions;
+    child.configureRemoteRfuLink(2, 1,
+        [](uint32_t, uint16_t, const GbaSystem::RfuAdvertisement &) {},
+        [&](uint32_t seq, uint16_t source, uint16_t) {
+            assert(child.receiveRemoteRfuConnectionResult(seq, source, 0, true));
+        }, [&](uint32_t seq, uint8_t count, const std::vector<uint32_t> &data) {
+            assert(seq == replies.size() + 1);
+            assert(count == data.size() * 4);
+            if (!credit) return false;
+            replies.push_back(data);
+            return true;
+        }, [&](uint32_t seq) { admissions.push_back(seq); });
+    assert(child.receiveRemoteRfuAdvertisement(1, 1, {}));
+    assert(runRfuCommand(child, 0x1C).acknowledgement == 0x9966009C);
+    assert(runRfuCommand(child, 0x1F, {1}).acknowledgement == 0x9966009F);
+    assert(runRfuCommand(child, 0x24, {4u << 8, 0x11111111}).acknowledgement == 0x996600A4);
+    assert(replies.empty()); // No independent child radio transmission.
+    assert(child.receiveRemoteRfuData(1, 1, {0}) == GbaSystem::RfuDataReceiveResult::Accepted);
+    assert(admissions == std::vector<uint32_t>{1}); // Not waiting for ROM 0x26.
+    assert(runRfuCommand(child, 0x24, {4u << 8, 0x22222222}).acknowledgement == 0x996600A4);
+    assert(child.receiveRemoteRfuData(2, 1, {0}) == GbaSystem::RfuDataReceiveResult::QueueFull);
+    assert(admissions.size() == 1); // Cannot falsely ACK an unbuffered exchange.
+    credit = true;
+    assert(child.runFrame().success);
+    assert(replies == std::vector<std::vector<uint32_t>>{{0x11111111}});
+    assert(child.receiveRemoteRfuData(2, 1, {0}) == GbaSystem::RfuDataReceiveResult::Accepted);
+    assert(replies.size() == 2 && replies.back() == std::vector<uint32_t>{0x22222222});
+    assert(child.receiveRemoteRfuData(3, 1, {0}) == GbaSystem::RfuDataReceiveResult::Accepted);
+    assert(replies.size() == 3 && replies.back().empty()); // Consume scheduled TX once.
+    assert(admissions == (std::vector<uint32_t>{1, 2, 3}));
+    assert(runRfuCommand(child, 0x26).response == makeExpectedRfuReceivePacket({0}, 1, false));
+    assert(admissions.size() == 3); // ROM consumption never emits another credit.
+}
+
+void runEmeraldRfuTransmitBackpressureCheck() {
+    using LOTUSGBA::GbaSystem;
+    GbaSystem system(makeJapaneseEmeraldProfileProbeRom());
+    bootRfuAdapter(system);
+    bool hasSendCredit = false;
+    std::vector<std::vector<uint32_t>> snapshots;
+    std::vector<uint32_t> admissions;
+    system.configureRemoteRfuLink(1, 2,
+        [](uint32_t, uint16_t, const GbaSystem::RfuAdvertisement &) {},
+        [](uint32_t, uint16_t, uint16_t) {},
+        [&](uint32_t sequence, uint8_t count, const std::vector<uint32_t> &data) {
+            assert(sequence == snapshots.size() + 1);
+            assert(count == 4 && data.size() == 1);
+            if (!hasSendCredit) return false;
+            snapshots.push_back(data);
+            return true;
+        }, [&](uint32_t sequence) { admissions.push_back(sequence); });
+    assert(runRfuCommand(system, 0x19).acknowledgement == 0x99660099);
+    assert(system.receiveRemoteRfuConnectionRequest(1, 2, 1));
+    assert(runRfuCommand(system, 0x24, {4, 0x11111111}).acknowledgement == 0x996600A4);
+    for (unsigned i = 0; i < 16; ++i) assert(system.runFrame().success);
+    assert(snapshots.empty());
+    // A not-yet-admitted parent register can be updated; it is not a FIFO.
+    assert(runRfuCommand(system, 0x24, {4, 0x22222222}).acknowledgement == 0x996600A4);
+    hasSendCredit = true;
+    assert(system.runFrame().success);
+    assert(snapshots == std::vector<std::vector<uint32_t>>{{0x22222222}});
+    assert(system.runFrame().success);
+    assert(snapshots.size() == 1);
+    // The in-flight snapshot is immutable. Later writes wait for its reply.
+    assert(runRfuCommand(system, 0x24, {4, 0x33333333}).acknowledgement == 0x996600A4);
+    assert(system.runFrame().success);
+    assert(snapshots.size() == 1);
+    assert(system.receiveRemoteRfuData(1, 0, {}) == GbaSystem::RfuDataReceiveResult::Accepted);
+    assert(admissions == std::vector<uint32_t>{1});
+    assert(system.runFrame().success);
+    assert(snapshots.size() == 2 && snapshots.back() == std::vector<uint32_t>{0x33333333});
+    assert(system.receiveRemoteRfuData(2, 0, {}) == GbaSystem::RfuDataReceiveResult::Accepted);
+    assert(runRfuCommand(system, 0x26).response.empty());
+    assert(admissions == (std::vector<uint32_t>{1, 2}));
+
+    // A5 is local, but its 0x28 must wait for the actual child response.
+    hasSendCredit = false;
+    assert(runRfuCommand(system, 0x25, {4, 0x44444444}).acknowledgement == 0x996600A5);
+    constexpr uint32_t data = 0x04000120, control = 0x04000128;
+    system.write16(control, 0x5002);
+    system.write32(data, 0x80000000);
+    system.write16(control, 0x5082);
+    for (unsigned i = 0; i < 16; ++i) assert(system.runFrame().success);
+    assert((system.read16(control) & 0x80) != 0);
+    hasSendCredit = true;
+    assert(system.runFrame().success);
+    assert(snapshots.size() == 3);
+    assert((system.read16(control) & 0x80) != 0); // Sent, not radio-complete.
+    assert(system.receiveRemoteRfuData(3, 1, {0x5A}) == GbaSystem::RfuDataReceiveResult::Accepted);
+    assert(admissions == (std::vector<uint32_t>{1, 2, 3})); // Before 0x26.
+    assert(system.runFrame().success);
+    assert(system.read32(data) == 0x99660028);
+    system.write16(control, 0x500A);
+    system.write16(control, 0x5002);
+    system.write32(data, 0x996600A8);
+    system.write16(control, 0x5082);
+    assert(system.runFrame().success);
+    assert(system.read32(data) == 0x80000000);
+    system.write16(control, 0x500A);
+    system.write16(control, 0x5003);
+    assert(runRfuCommand(system, 0x26).response == makeExpectedRfuReceivePacket({0x5A}, 1, true));
+    assert(admissions.size() == 3); // No second credit when ROM reads data.
+    hasSendCredit = false;
+    assert(runRfuCommand(system, 0x24, {4, 0x55555555}).acknowledgement == 0x996600A4);
+    system.receiveRemoteRfuDisconnect();
+    hasSendCredit = true;
+    assert(system.runFrame().success);
+    assert(snapshots.size() == 3); // No unsent data leaks across disconnect.
+}
+
+void runEmeraldRfuParentCandidateCheck() {
+    using LOTUSGBA::GbaSystem;
+    GbaSystem parent(makeJapaneseEmeraldProfileProbeRom());
+    GbaSystem child(makeJapaneseEmeraldProfileProbeRom());
+    bootRfuAdapter(parent);
+    bootRfuAdapter(child);
+    parent.configureRemoteRfuLink(
+        1, 2,
+        [&child](uint32_t sequence, uint16_t id,
+                 const GbaSystem::RfuAdvertisement &data) {
+            assert(child.receiveRemoteRfuAdvertisement(sequence, id, data));
+        }, [](uint32_t, uint16_t, uint16_t) {},
+        [](uint32_t, uint8_t, const std::vector<uint32_t> &) {
+            return true;
+        });
+    child.configureRemoteRfuLink(
+        2, 1,
+        [&parent](uint32_t sequence, uint16_t id,
+                  const GbaSystem::RfuAdvertisement &data) {
+            assert(parent.receiveRemoteRfuAdvertisement(sequence, id, data));
+        }, [](uint32_t, uint16_t, uint16_t) {},
+        [](uint32_t, uint8_t, const std::vector<uint32_t> &) {
+            return true;
+        });
+
+    std::array<uint8_t, 24> config{};
+    config[0] = 0x78;
+    config[1] = 0x56;
+    constexpr char GAME_NAME[] = "EMERALD";
+    constexpr char USER_NAME[] = "RIKU";
+    for (size_t i = 0; i < sizeof(GAME_NAME) - 1; ++i)
+        config[2 + i] = static_cast<uint8_t>(GAME_NAME[i]);
+    for (size_t i = 0; i < sizeof(USER_NAME) - 1; ++i)
+        config[16 + i] = static_cast<uint8_t>(USER_NAME[i]);
+    uint8_t checksum = 0;
+    for (size_t i = 0; i < 8; ++i)
+        checksum = static_cast<uint8_t>(checksum + config[2 + i] +
+                                        config[16 + i]);
+    config[15] = static_cast<uint8_t>(~checksum);
+    std::vector<uint32_t> advertisement(6);
+    for (size_t i = 0; i < advertisement.size(); ++i)
+        for (size_t byte = 0; byte < 4; ++byte)
+            advertisement[i] |= static_cast<uint32_t>(config[i * 4 + byte])
+                                << (byte * 8);
+
+    assert(runRfuCommand(parent, 0x16, advertisement).acknowledgement ==
+           0x99660096);
+    assert(runRfuCommand(parent, 0x19).acknowledgement == 0x99660099);
+    assert(runRfuCommand(child, 0x1C).acknowledgement == 0x9966009C);
+    const auto found = runRfuCommand(child, 0x1D);
+    assert(found.acknowledgement == 0x9966079D);
+    assert(found.response.size() == 7);
+
+    // Mirror the byte offsets used by Emerald's
+    // rfu_STC_readParentCandidateList: the adapter's first word contains the
+    // peer ID/slot, followed by the peer's 24-byte GameConfig payload.
+    std::array<uint8_t, 28> candidate{};
+    for (size_t i = 0; i < found.response.size(); ++i)
+        for (size_t byte = 0; byte < 4; ++byte)
+            candidate[i * 4 + byte] = static_cast<uint8_t>(
+                found.response[i] >> (byte * 8));
+    assert(candidate[0] == 1 && candidate[1] == 0);
+    assert(candidate[2] == 0);
+    assert(candidate[4] == 0x78 && candidate[5] == 0x56);
+    checksum = 0;
+    for (size_t i = 0; i < 8; ++i)
+        checksum = static_cast<uint8_t>(checksum + candidate[6 + i] +
+                                        candidate[20 + i]);
+    assert(candidate[19] == static_cast<uint8_t>(~checksum));
+    assert(std::string(candidate.begin() + 6, candidate.begin() + 13) ==
+           "EMERALD");
+    assert(std::string(candidate.begin() + 20, candidate.begin() + 24) ==
+           "RIKU");
+}
+
+void runEmeraldRfuHostDrivenCycleCheck() {
+    using LOTUSGBA::GbaSystem;
+    GbaSystem parent(makeJapaneseEmeraldProfileProbeRom());
+    GbaSystem child(makeJapaneseEmeraldProfileProbeRom());
+    bootRfuAdapter(parent);
+    bootRfuAdapter(child);
+
+    parent.configureRemoteRfuLink(
+        1, 2,
+        [&child](uint32_t sequence, uint16_t id,
+                 const GbaSystem::RfuAdvertisement &data) {
+            assert(child.receiveRemoteRfuAdvertisement(sequence, id, data));
+        },
+        [&child, &parent](uint32_t sequence, uint16_t sourceId,
+                          uint16_t targetId) {
+            const bool accepted = child.receiveRemoteRfuConnectionRequest(
+                sequence, sourceId, targetId);
+            assert(parent.receiveRemoteRfuConnectionResult(
+                sequence, sourceId, 0, accepted));
+        },
+        [&child](uint32_t sequence, uint8_t payloadBytes,
+                 const std::vector<uint32_t> &words) {
+            return child.receiveRemoteRfuData(sequence, payloadBytes, words) ==
+                   GbaSystem::RfuDataReceiveResult::Accepted;
+        });
+    child.configureRemoteRfuLink(
+        2, 1,
+        [&parent](uint32_t sequence, uint16_t id,
+                  const GbaSystem::RfuAdvertisement &data) {
+            assert(parent.receiveRemoteRfuAdvertisement(sequence, id, data));
+        },
+        [&parent, &child](uint32_t sequence, uint16_t sourceId,
+                          uint16_t targetId) {
+            const bool accepted = parent.receiveRemoteRfuConnectionRequest(
+                sequence, sourceId, targetId);
+            assert(child.receiveRemoteRfuConnectionResult(
+                sequence, sourceId, 0, accepted));
+        },
+        [&parent](uint32_t sequence, uint8_t payloadBytes,
+                  const std::vector<uint32_t> &words) {
+            return parent.receiveRemoteRfuData(sequence, payloadBytes, words) ==
+                   GbaSystem::RfuDataReceiveResult::Accepted;
+        });
+
+    const std::vector<uint32_t> parentBroadcast(6, 0x11111111);
+    const std::vector<uint32_t> childBroadcast(6, 0x22222222);
+    assert(runRfuCommand(parent, 0x16, parentBroadcast).acknowledgement ==
+           0x99660096);
+    assert(runRfuCommand(child, 0x16, childBroadcast).acknowledgement ==
+           0x99660096);
+    assert(runRfuCommand(parent, 0x19).acknowledgement == 0x99660099);
+    assert(runRfuCommand(child, 0x1C).acknowledgement == 0x9966009C);
+    assert(runRfuCommand(child, 0x1F, {1}).acknowledgement == 0x9966009F);
+    assert(runRfuCommand(child, 0x21).response == std::vector<uint32_t>{2});
+    assert(runRfuCommand(parent, 0x21).response == std::vector<uint32_t>{1});
+
+    constexpr uint32_t serialData = 0x04000120;
+    constexpr uint32_t serialControl = 0x04000128;
+    const auto finishAdapterEvent = [&](GbaSystem &system) {
+        system.write16(serialControl, 0x5002);
+        system.write32(serialData, 0x80000000);
+        system.write16(serialControl, 0x5082);
+        assert(system.runFrame().success);
+        assert(system.read32(serialData) == 0x99660028);
+        system.write16(serialControl, 0x500A);
+        system.write16(serialControl, 0x5002);
+        system.write32(serialData, 0x996600A8);
+        system.write16(serialControl, 0x5082);
+        assert(system.runFrame().success);
+        assert(system.read32(serialData) == 0x80000000);
+        system.write16(serialControl, 0x500A);
+        system.write16(serialControl, 0x5003);
+    };
+
+    // Emerald's leader sends this idle request before any real TX frame.
+    // An initialized zero prefix is still a one-byte radio payload.
+    assert(runRfuCommand(parent, 0x24, {1}).acknowledgement == 0x996600A4);
+    assert(runRfuCommand(child, 0x26).response ==
+           makeExpectedRfuReceivePacket({0}, 1, false));
+    assert(runRfuCommand(parent, 0x24, {1}).acknowledgement == 0x996600A4);
+    assert(runRfuCommand(child, 0x26).response ==
+           makeExpectedRfuReceivePacket({0}, 1, false));
+
+    // Before finalization, Emerald's parent uses 0x24 without changing its
+    // clock. That exchange must release the child's scheduled name/data too.
+    assert(runRfuCommand(child, 0x25, {4u << 8, 0x00AA0001})
+               .acknowledgement == 0x996600A5);
+    assert(runRfuCommand(parent, 0x26).response.empty());
+    assert(runRfuCommand(parent, 0x24, {1}).acknowledgement == 0x996600A4);
+    finishAdapterEvent(child);
+    assert(runRfuCommand(parent, 0x26).response ==
+           makeExpectedRfuReceivePacket({0x00AA0001}, 4, true));
+    assert(runRfuCommand(child, 0x26).response ==
+           makeExpectedRfuReceivePacket({0}, 1, false));
+
+    const std::vector<uint32_t> childData = {0x00AA0001};
+    const std::vector<uint32_t> parentData = {0x00BB0001};
+    assert(runRfuCommand(child, 0x25, {4u << 8, childData.front()})
+               .acknowledgement == 0x996600A5);
+    // Child has only scheduled its uplink. Parent cannot receive it yet.
+    assert(runRfuCommand(parent, 0x26).response.empty());
+    assert(runRfuCommand(parent, 0x25, {3, parentData.front()})
+               .acknowledgement == 0x996600A5);
+    finishAdapterEvent(parent);
+    finishAdapterEvent(child);
+    assert(runRfuCommand(parent, 0x26).response ==
+           makeExpectedRfuReceivePacket(childData, 4, true));
+    assert(runRfuCommand(child, 0x26).response ==
+           makeExpectedRfuReceivePacket(parentData, 3, false));
+
+    const std::vector<uint32_t> nextChildData = {0x00CC0001};
+    assert(runRfuCommand(child, 0x25, {4u << 8, nextChildData.front()})
+               .acknowledgement == 0x996600A5);
+    // A one-byte ghost send reuses the first retained parent byte (0x01),
+    // drives another exchange, and is not represented as an empty packet.
+    assert(runRfuCommand(parent, 0x25, {1}).acknowledgement == 0x996600A5);
+    finishAdapterEvent(parent);
+    finishAdapterEvent(child);
+    assert(runRfuCommand(parent, 0x26).response ==
+           makeExpectedRfuReceivePacket(nextChildData, 4, true));
+    assert(runRfuCommand(child, 0x26).response ==
+           makeExpectedRfuReceivePacket({1}, 1, false));
+
+    // Radio completion is an event in its own right. Parent must wake even
+    // when the child did not schedule a new payload for this cycle.
+    assert(runRfuCommand(child, 0x27).acknowledgement == 0x996600A7);
+    assert(runRfuCommand(parent, 0x25, {1}).acknowledgement == 0x996600A5);
+    finishAdapterEvent(parent);
+    finishAdapterEvent(child);
+    assert(runRfuCommand(parent, 0x26).response.empty());
+    assert(runRfuCommand(child, 0x26).response ==
+           makeExpectedRfuReceivePacket({1}, 1, false));
+}
+
 void runHleVBlankWaitDuringSerialInterruptCheck() {
     using LOTUSGBA::GbaSystem;
     // The serial IRQ occurs on the first few scanlines. The IRQ handler
@@ -1091,7 +1856,6 @@ void runLocalLinkSubsystemCheck() {
 }
 
 void runRemoteNetplaySioCheck() {
-    using LOTUSGBA::GbaSystem;
     assert(netpacket);
     const auto rom = makeMultiplayerProbe(0x001F, 1, 0x1234, 0x6003);
     const retro_game_info game{"netplay-link.gba", rom.data(), rom.size(), nullptr};
@@ -1100,6 +1864,7 @@ void runRemoteNetplaySioCheck() {
     auto *save = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
     assert(save && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 32768);
     sentNetpackets.clear();
+    logMessages.clear();
     netpacket->start(0, [](int flags, const void *data, size_t len, uint16_t id) {
         assert(id == 1 && (flags & RETRO_NETPACKET_RELIABLE));
         const auto *bytes = static_cast<const uint8_t *>(data);
@@ -1112,152 +1877,104 @@ void runRemoteNetplaySioCheck() {
     assert(sentNetpackets.front()[4] == 0);
     auto startup = sentNetpackets.front();
     netpacket->receive(startup.data(), startup.size(), 1);
-    retro_run(); // Install the remote SIO endpoint after startup agreement.
-    assert(videoReceived && receivedWidth == 240 && receivedHeight == 160);
-
-    const auto makePacket = [](uint8_t type) {
-        return std::vector<uint8_t>{'L', 'G', 'B', 'A', type};
-    };
-    const auto read32 = [](const uint8_t *data) {
-        return static_cast<uint32_t>(data[0]) |
-            (static_cast<uint32_t>(data[1]) << 8) |
-            (static_cast<uint32_t>(data[2]) << 16) |
-            (static_cast<uint32_t>(data[3]) << 24);
-    };
-    const auto add32 = [](std::vector<uint8_t> &packet, uint32_t value) {
-        for (unsigned byte = 0; byte < 4; ++byte)
-            packet.push_back(static_cast<uint8_t>(value >> (byte * 8)));
-    };
-    const auto add16 = [](std::vector<uint8_t> &packet, uint16_t value) {
-        packet.push_back(static_cast<uint8_t>(value));
-        packet.push_back(static_cast<uint8_t>(value >> 8));
-    };
-    const auto add64 = [](std::vector<uint8_t> &packet, uint64_t value) {
-        for (unsigned byte = 0; byte < 8; ++byte)
-            packet.push_back(static_cast<uint8_t>(value >> (byte * 8)));
-    };
-    uint64_t peerFrame = 0;
-    uint16_t peerId = 1;
-    const auto runPeerProgressFrame = [&] {
-        auto progress = makePacket(4);
-        add64(progress, ++peerFrame);
-        netpacket->receive(progress.data(), progress.size(), peerId);
-        retro_run();
-    };
-    auto ready = makePacket(1);
-    ready.push_back(1);
-    add64(ready, peerFrame);
-    netpacket->receive(ready.data(), ready.size(), 1);
-    const unsigned beforeUnpairedFrames = videoRefreshCount;
-    for (unsigned frame = 0; frame < 4; ++frame)
-        runPeerProgressFrame();
-    assert(videoRefreshCount == beforeUnpairedFrames + 4);
-    const auto takeTransferStart = [&]() {
-        for (const auto &packet : sentNetpackets) {
-            if (packet.size() == 20 && packet[4] == 2)
-                return packet;
-        }
-        return std::vector<uint8_t>{};
-    };
-    const auto replyToStart = [&](const std::vector<uint8_t> &start,
-                                  uint16_t childWord) {
-        assert(start.size() == 20 && start[4] == 2);
-        const uint32_t sequence = read32(start.data() + 5);
-        assert(read32(start.data() + 5) != 0);
-        assert(start[9] == 0x34 && start[10] == 0x12);
-        assert(start[11] == 3);
-        auto word = makePacket(3);
-        add32(word, sequence);
-        add16(word, childWord);
-        netpacket->receive(word.data(), word.size(), 1);
-    };
-
-    pressedJoypad = 1u << RETRO_DEVICE_ID_JOYPAD_A;
-    for (unsigned frame = 0; frame < 120 && takeTransferStart().empty(); ++frame)
-        runPeerProgressFrame();
-    auto firstStart = takeTransferStart();
-    assert(!firstStart.empty());
-    assert(read32(firstStart.data() + 5) == 1);
-    replyToStart(firstStart, 0xABCD);
-    sentNetpackets.clear();
-
-    for (unsigned frame = 0; frame < 120 && takeTransferStart().empty(); ++frame)
-        runPeerProgressFrame();
-    auto secondStart = takeTransferStart();
-    assert(!secondStart.empty());
-    assert(read32(secondStart.data() + 5) == 2);
-    replyToStart(secondStart, 0xABCD);
-    for (unsigned frame = 0; frame < 8; ++frame)
-        runPeerProgressFrame();
-    const uint8_t parentResult[] = {0x34, 0x12, 0xCD, 0xAB, 0x0B};
-    assert(std::equal(std::begin(parentResult), std::end(parentResult), save));
-    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == save);
-    pressedJoypad = 0;
+    retro_run(); // Cable-only ROMs remain out of the RFU-first network scope.
+    assert(std::any_of(logMessages.begin(), logMessages.end(), [](const auto &message) {
+        return message.find("remote cable SIO is deferred") != std::string::npos;
+    }));
     netpacket->stop();
     retro_unload_game();
+    biosStartupMode = "Automatic";
+}
+
+void runRemoteEmeraldRfuNetpacketCheck(char region) {
+    assert(netpacket);
+    auto rom = makeJapaneseEmeraldProfileProbeRom();
+    rom[0xAF] = static_cast<uint8_t>(region);
+    const retro_game_info game{"emerald-rfu-probe.gba", rom.data(), rom.size(), nullptr};
+    biosStartupMode = "Skip BIOS";
+    assert(retro_load_game(&game));
 
     sentNetpackets.clear();
-    assert(retro_load_game(&game));
-    save = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
-    assert(save && retro_get_memory_size(RETRO_MEMORY_SAVE_RAM) == 32768);
-    netpacket->start(1, [](int flags, const void *data, size_t len, uint16_t id) {
-        assert(id == 0 && (flags & RETRO_NETPACKET_RELIABLE));
+    logMessages.clear();
+    netpacket->start(0, [](int flags, const void *data, size_t len, uint16_t id) {
+        assert(id == 1 && (flags & RETRO_NETPACKET_RELIABLE));
         const auto *bytes = static_cast<const uint8_t *>(data);
         sentNetpackets.emplace_back(bytes, bytes + len);
     }, nullptr);
-    peerId = 0;
-    peerFrame = 0;
-    netpacket->receive(startup.data(), startup.size(), 0);
+    assert(netpacket->connected(1));
     retro_run();
-    assert(sentNetpackets.size() == 1 && sentNetpackets.front()[4] == 0);
-    sentNetpackets.clear();
+    assert(sentNetpackets.size() == 1);
+    const auto startup = sentNetpackets.front();
+    assert(startup.size() == 26 && startup[4] == 0);
+    netpacket->receive(startup.data(), startup.size(), 1);
+    retro_run();
+    assert(std::any_of(logMessages.begin(), logMessages.end(), [](const auto &message) {
+        return message.find("independent-clock Emerald RFU link") != std::string::npos;
+    }));
 
-    ready = makePacket(1);
-    ready.push_back(1);
-    add64(ready, peerFrame);
-    netpacket->receive(ready.data(), ready.size(), 0);
-    pressedJoypad = 1u << RETRO_DEVICE_ID_JOYPAD_A;
-    const auto takeReadyPacket = [&]() {
-        for (auto packet = sentNetpackets.rbegin();
-             packet != sentNetpackets.rend(); ++packet) {
-            if (packet->size() == 14 && (*packet)[4] == 1 &&
-                (*packet)[5] == 1)
-                return *packet;
-        }
-        return std::vector<uint8_t>{};
+    const auto makeRfuPacket = [](uint8_t type, uint32_t sequence,
+                                  uint16_t firstId, uint16_t secondId) {
+        std::vector<uint8_t> packet{'L', 'G', 'B', 'A', type};
+        const auto append = [&packet](uint64_t value, unsigned count) {
+            for (unsigned index = 0; index < count; ++index)
+                packet.push_back(static_cast<uint8_t>(value >> (index * 8)));
+        };
+        append(sequence, 4);
+        append(firstId, 2);
+        append(secondId, 2);
+        return packet;
     };
-    for (unsigned frame = 0;
-         frame < 120 && takeReadyPacket().empty(); ++frame) {
-        runPeerProgressFrame();
+    std::vector<uint8_t> advertisement{'L', 'G', 'B', 'A', 6};
+    const auto appendAdvertisementInteger = [&advertisement](uint64_t value,
+                                                               unsigned count) {
+        for (unsigned index = 0; index < count; ++index)
+            advertisement.push_back(static_cast<uint8_t>(value >> (index * 8)));
+    };
+    appendAdvertisementInteger(1, 4);
+    appendAdvertisementInteger(2, 2);
+    for (uint32_t word : {0x454D4552u, 0x414C4420u, 1u, 2u, 3u, 4u}) {
+        for (unsigned index = 0; index < 4; ++index)
+            advertisement.push_back(static_cast<uint8_t>(word >> (index * 8)));
     }
-    const auto childReady = takeReadyPacket();
-    assert(childReady.size() == 14 && childReady[5] == 1);
+    netpacket->receive(advertisement.data(), advertisement.size(), 1);
 
-    auto remoteStart = makePacket(2);
-    add32(remoteStart, 1);
-    add16(remoteStart, 0x5678);
-    remoteStart.push_back(3);
-    add64(remoteStart, 0);
-    netpacket->receive(remoteStart.data(), remoteStart.size(), 0);
-    const auto findChildWord = [&]() {
-        for (auto packet = sentNetpackets.rbegin();
-             packet != sentNetpackets.rend(); ++packet) {
-            if (packet->size() == 11 && (*packet)[4] == 3)
-                return *packet;
-        }
-        return std::vector<uint8_t>{};
-    };
-    for (unsigned frame = 0; frame < 8 && findChildWord().empty(); ++frame)
-        runPeerProgressFrame();
-    const auto childWord = findChildWord();
-    assert(childWord.size() == 11 && childWord[4] == 3);
-    assert(read32(childWord.data() + 5) == 1);
-    assert(childWord[9] == 0x34 && childWord[10] == 0x12);
-    for (unsigned frame = 0; frame < 8; ++frame)
-        runPeerProgressFrame();
-    const uint8_t childResult[] = {0x78, 0x56, 0x34, 0x12, 0x1F};
-    assert(std::equal(std::begin(childResult), std::end(childResult), save));
-    pressedJoypad = 0;
+    auto connectionRequest = makeRfuPacket(7, 1, 2, 1);
+    sentNetpackets.clear();
+    netpacket->receive(connectionRequest.data(), connectionRequest.size(), 1);
+    const auto resultPacket = std::find_if(sentNetpackets.begin(), sentNetpackets.end(),
+        [](const auto &packet) { return packet.size() >= 5 && packet[4] == 8; });
+    assert(resultPacket != sentNetpackets.end());
+    const auto &connectionResult = *resultPacket;
+    assert(connectionResult.size() == 13 && connectionResult[4] == 8);
+    assert(connectionResult[5] == 1 && connectionResult[6] == 0 &&
+           connectionResult[7] == 0 && connectionResult[8] == 0);
+    assert(connectionResult[9] == 2 && connectionResult[10] == 0);
+    assert(connectionResult[11] == 0 && connectionResult[12] == 0);
+    // A data message already in transit after RFU reset is dropped and ACKed;
+    // the frontend session remains alive instead of entering a permanent wait.
+    std::vector<uint8_t> staleData{'L', 'G', 'B', 'A', 9,
+                                   1, 0, 0, 0, 1, 1,
+                                   0xDD, 0xCC, 0xBB, 0xAA};
+    sentNetpackets.clear();
+    netpacket->receive(staleData.data(), staleData.size(), 1);
+    assert(sentNetpackets.size() == 1);
+    assert(sentNetpackets.front().size() == 9 &&
+           sentNetpackets.front()[4] == 10);
+    assert(std::none_of(logMessages.begin(), logMessages.end(), [](const auto &message) {
+        return message.find("GBA rejected remote RFU data") != std::string::npos;
+    }));
+
+    const std::vector<uint8_t> resetPacket{'L', 'G', 'B', 'A', 11};
+    netpacket->receive(resetPacket.data(), resetPacket.size(), 1);
+    assert(std::any_of(logMessages.begin(), logMessages.end(), [](const auto &message) {
+        return message.find("peer reset the Emerald RFU adapter link") !=
+               std::string::npos;
+    }));
+    assert(std::none_of(logMessages.begin(), logMessages.end(), [](const auto &message) {
+        return message.find("Invalid GBA RFU") != std::string::npos ||
+               message.find("GBA rejected remote RFU") != std::string::npos;
+    }));
+
     netpacket->stop();
     retro_unload_game();
     biosStartupMode = "Automatic";
@@ -1304,6 +2021,53 @@ void runOptionalBiosCheck() {
         for (uint32_t pixel : receivedPixels)
             assert(pixel == 0x7C00);
     }
+    retro_unload_game();
+
+    // Netplay recreates the console after metadata negotiation. A synthetic
+    // BIOS writes a battery marker so the test observes actual BIOS execution
+    // both on content load and after the Netplay restart (not just a log).
+    constexpr uint32_t markerBios[] = {
+        0xE3A0040E, // mov r0, #0x0E000000
+        0xE3A0105A, // mov r1, #0x5A
+        0xE5C01010, // strb r1, [r0, #16]
+        0xE51FF004, // ldr pc, [pc, #-4]
+        0x08000000,
+    };
+    std::fill(bios.begin(), bios.end(), 0);
+    for (size_t index = 0; index < std::size(markerBios); ++index)
+        for (unsigned byte = 0; byte < 4; ++byte)
+            bios[index * 4 + byte] = static_cast<uint8_t>(
+                markerBios[index] >> (byte * 8));
+    {
+        std::ofstream file(biosPath, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char *>(bios.data()),
+                   static_cast<std::streamsize>(bios.size()));
+        assert(file.good());
+    }
+    rom = makeJapaneseEmeraldProfileProbeRom();
+    constexpr char saveMarker[] = "SRAM_V113";
+    rom.insert(rom.end(), std::begin(saveMarker), std::end(saveMarker));
+    game.data = rom.data();
+    game.size = rom.size();
+    assert(retro_load_game(&game));
+    auto *save = static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    assert(save);
+    retro_run();
+    assert(save[16] == 0x5A);
+    save[16] = 0;
+    sentNetpackets.clear();
+    netpacket->start(0, [](int, const void *data, size_t len, uint16_t) {
+        const auto *bytes = static_cast<const uint8_t *>(data);
+        sentNetpackets.emplace_back(bytes, bytes + len);
+    }, nullptr);
+    assert(netpacket->connected(1));
+    retro_run();
+    assert(sentNetpackets.size() == 1);
+    const auto startup = sentNetpackets.front();
+    netpacket->receive(startup.data(), startup.size(), 1);
+    retro_run();
+    assert(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM) == save);
+    assert(save[16] == 0x5A);
     retro_unload_game();
     biosStartupMode = "Automatic";
     systemDirectoryPath.clear();
@@ -1832,16 +2596,27 @@ int main() {
     runRemoteMultiplayerLinkCheck();
     runRemoteMultiplayerLatencyCheck();
     runRemoteMultiplayerWaitCheck();
+    runRemoteBufferedEmeraldLinkCheck();
     runRemoteFramePacingCheck();
     runRemoteSioPredictionCheck();
     runRemoteSioEventPumpCheck();
     runRemoteSioQueuedWordCheck();
     runRemoteMultiplayerQueuedStartsCheck();
     runUnconnectedNormalSioCheck();
+    runEmeraldRfuBootstrapCheck('J');
+    runEmeraldRfuBootstrapCheck('E');
+    runEmeraldRfuAdapterClockAckCheck();
+    runEmeraldRfuRadioProgressCheck();
+    runEmeraldRfuChildSnapshotCheck();
+    runEmeraldRfuTransmitBackpressureCheck();
+    runEmeraldRfuHostDrivenCycleCheck();
+    runEmeraldRfuParentCandidateCheck();
     runHleVBlankWaitDuringSerialInterruptCheck();
     runHleNestedSerialInterruptCheck();
     runLocalLinkSubsystemCheck();
     runRemoteNetplaySioCheck();
+    runRemoteEmeraldRfuNetpacketCheck('J');
+    runRemoteEmeraldRfuNetpacketCheck('E');
 
     retro_deinit();
 

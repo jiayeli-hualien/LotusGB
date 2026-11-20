@@ -9,12 +9,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
 #include "arm7tdmi.hpp"
 #include "gba_audio.hpp"
 #include "gba_cartridge_rtc.hpp"
+#include "gba_rfu_protocol.hpp"
 
 namespace LOTUSGBA {
 
@@ -61,17 +63,41 @@ public:
     using MultiplayerWordPredictor =
         std::function<std::optional<uint16_t>(uint32_t sequence,
                                               uint16_t localWord)>;
+    using MultiplayerDataWords = std::array<uint16_t, 8>;
+    using MultiplayerDataBlockSender =
+        std::function<void(uint32_t sequence, const MultiplayerDataWords &words,
+                           uint16_t checksum)>;
+    using RfuAdvertisement = std::array<uint32_t, 6>;
+    using RfuDataReceiveResult = GbaRfuDataChannel::ReceiveResult;
+    using RfuAdvertisementSender = std::function<void(
+        uint32_t sequence, uint16_t id, const RfuAdvertisement &data)>;
+    using RfuConnectionSender = std::function<void(
+        uint32_t sequence, uint16_t sourceId, uint16_t targetId)>;
+    using RfuDataSender = std::function<bool(
+        uint32_t sequence, uint8_t payloadBytes,
+        const std::vector<uint32_t> &frameWords)>;
+    using RfuDataAcceptedSender = std::function<void(uint32_t sequence)>;
+    using RfuDisconnectSender = std::function<void()>;
     void configureRemoteMultiplayerLink(bool child, bool connected,
                                         MultiplayerStartSender sendStart,
                                         MultiplayerWordSender sendWord,
                                         MultiplayerReadinessSender sendReady,
                                         MultiplayerFrameSender sendFrame = {},
-                                        MultiplayerWordPredictor predictWord = {});
+                                        MultiplayerWordPredictor predictWord = {},
+                                        MultiplayerDataBlockSender sendDataBlock = {});
+    void setRemoteMultiplayerBufferedProtocol(bool enabled);
+    bool remoteMultiplayerBufferedProtocolActive() const {
+        return remoteBufferedProtocolActive_;
+    }
     void setRemoteMultiplayerEventPump(RemoteMultiplayerEventPump pump);
     void setRemoteMultiplayerConnected(bool connected);
     void setRemoteMultiplayerReady(bool ready, uint64_t peerFrame = 0);
     bool receiveRemoteMultiplayerFrame(uint64_t peerFrame);
     uint64_t remoteFrameCount() const { return remoteFrameCount_; }
+    uint64_t remoteGuestFrameCount() const {
+        return remoteRfuEnabled_ ? rfuGuestFrameCount_ : remoteFrameCount_;
+    }
+    uint64_t remoteSioTransferCount() const { return remoteTransferSequence_; }
     uint64_t remoteElapsedCycles() const {
         return emulatedCycles_ - remoteLocalReadyCycle_;
     }
@@ -79,6 +105,30 @@ public:
                                        uint8_t baudIndex,
                                        uint64_t elapsedCycles = 0);
     bool receiveRemoteMultiplayerWord(uint32_t sequence, uint16_t childWord);
+    bool receiveRemoteMultiplayerDataBlock(
+        uint32_t sequence, const MultiplayerDataWords &words,
+        uint16_t checksum);
+    void configureRemoteRfuLink(uint16_t localId, uint16_t peerId,
+                                RfuAdvertisementSender sendAdvertisement,
+                                RfuConnectionSender sendConnection,
+                                RfuDataSender sendData,
+                                RfuDataAcceptedSender sendDataAccepted = {},
+                                RfuDisconnectSender sendDisconnect = {});
+    void setRfuDiagnosticLogger(
+        std::function<void(const std::string &)> logger);
+    bool receiveRemoteRfuAdvertisement(uint32_t sequence, uint16_t id,
+                                       const RfuAdvertisement &data);
+    bool receiveRemoteRfuConnectionRequest(uint32_t sequence,
+                                           uint16_t sourceId,
+                                           uint16_t targetId);
+    bool receiveRemoteRfuConnectionResult(uint32_t sequence,
+                                          uint16_t targetId, uint8_t slot,
+                                          bool accepted);
+    RfuDataReceiveResult receiveRemoteRfuData(
+        uint32_t sequence, uint8_t payloadBytes,
+        const std::vector<uint32_t> &frameWords);
+    void receiveRemoteRfuDisconnect();
+    void disconnectRemoteRfuLink();
     void disconnectRemoteMultiplayerLink();
     FrameResult runLinkedFrame();
     void setPressedButtons(uint16_t activeHighMask);
@@ -105,6 +155,11 @@ public:
     void registerRamReset(uint8_t flags) override;
     bool hasBios() const override { return !bios_.empty(); }
     uint64_t emulatedCycles() const { return emulatedCycles_; }
+    bool hasEmeraldRfuProfile() const {
+        return rom_.size() > 0xAF && rom_[0xAC] == 'B' &&
+            rom_[0xAD] == 'P' && rom_[0xAE] == 'E' &&
+            (rom_[0xAF] == 'J' || rom_[0xAF] == 'E');
+    }
     void beginCpuStep() override;
     uint32_t endCpuStep(uint32_t baseCycles) override;
 
@@ -165,6 +220,12 @@ private:
         uint16_t word = 0;
     };
 
+    struct RemoteMultiplayerDataBlock {
+        uint32_t sequence = 0;
+        MultiplayerDataWords words{};
+        uint16_t checksum = 0;
+    };
+
     static uint32_t videoRamOffset(uint32_t address);
     uint16_t readOamForRendering(uint32_t address) const;
     static SaveType detectSaveType(const std::vector<uint8_t> &rom);
@@ -181,8 +242,17 @@ private:
     bool multiplayerChild() const;
     void writeSerialControl(uint32_t address, uint16_t value);
     void tickNormalSerial(uint32_t cycles);
+    void answerEmeraldRfuRequest(
+        const GbaRfuRequestDecoder::Request &request);
+    void servicePendingEmeraldRfuTransmit();
+    void logRfuDiagnostic(const std::string &message, bool essential = false);
+    void logRfuDisconnectDiagnostic(uint8_t command);
     void abortMultiplayerTransfer();
     void beginRemoteMultiplayerTransfer();
+    void beginRemoteBufferedChildTransfer();
+    void activateRemoteBufferedProtocol();
+    uint16_t prepareRemoteBufferedTransferWord();
+    void finishRemoteBufferedTransferWord();
     void applyPendingRemoteWord();
     void completeMultiplayerTransfer();
     void tickMultiplayer(uint32_t cycles);
@@ -269,7 +339,23 @@ private:
     MultiplayerFrameSender sendRemoteFrame_;
     RemoteMultiplayerEventPump remoteEventPump_;
     MultiplayerWordPredictor predictRemoteWord_;
+    MultiplayerDataBlockSender sendRemoteDataBlock_;
     std::unordered_map<uint32_t, uint16_t> remotePredictedWords_;
+    std::deque<RemoteMultiplayerDataBlock> remotePendingDataBlocks_;
+    RemoteMultiplayerDataBlock remoteActiveDataBlock_{};
+    MultiplayerDataWords remoteOutgoingDataWords_{};
+    uint32_t remoteNextDataBlockSequence_ = 1;
+    uint32_t remoteExpectedDataBlockSequence_ = 1;
+    uint16_t remotePreviousDataChecksum_ = 0;
+    uint64_t remoteNextChildPulseCycle_ = 0;
+    uint8_t remoteStreamWordIndex_ = 0;
+    uint8_t remoteChildPulseIndex_ = 0;
+    uint8_t remoteBufferedBaudIndex_ = 3;
+    bool remoteBufferedProtocolRequested_ = false;
+    bool remoteBufferedProtocolActive_ = false;
+    bool remoteBufferedSwitchAfterTransfer_ = false;
+    bool remoteActiveDataBlockValid_ = false;
+    bool remoteBufferedWordPending_ = false;
     bool multiplayerBusy_ = false;
     bool multiplayerError_ = false;
     uint32_t multiplayerCycles_ = 0;
@@ -290,6 +376,64 @@ private:
     uint64_t emulatedCycles_ = 0;
     bool normalSerialBusy_ = false;
     uint32_t normalSerialCycles_ = 0;
+    GbaRfuLogin rfuLogin_;
+    GbaRfuCommandSession rfuCommandSession_;
+    std::optional<uint32_t> rfuPendingConsumedSequence_;
+    std::function<void(const std::string &)> rfuDiagnosticLogger_;
+    uint32_t rfuTransferCount_ = 0;
+    uint32_t rfuDiagnosticCount_ = 0;
+    std::deque<std::string> rfuRecentDiagnostics_;
+    bool rfuLoginActive_ = false;
+    bool rfuCommandSessionActive_ = false;
+    bool rfuMasterSwitchPending_ = false;
+    bool rfuAdapterClockMaster_ = false;
+    bool rfuAdapterAwaitingAck_ = false;
+    uint8_t rfuAdapterEventCommand_ = 0;
+    bool rfuDisconnectEventPending_ = false;
+    bool rfuDisconnectPayloadPending_ = false;
+    uint8_t rfuDisconnectEventSlotMask_ = 0;
+    uint8_t rfuDisconnectEventReason_ = 0;
+    std::array<uint32_t, 6> rfuBroadcastData_{};
+    uint32_t rfuSystemConfig_ = 0;
+    bool rfuSearchingChildren_ = false;
+    bool rfuSearchingParents_ = false;
+    bool rfuSiLineHigh_ = false;
+    uint16_t rfuLocalId_ = 0;
+    uint16_t rfuPeerId_ = 0;
+    uint16_t rfuConnectedId_ = 0;
+    uint8_t rfuConnectedSlot_ = 0;
+    uint32_t rfuNextAdvertisementSequence_ = 1;
+    uint32_t rfuExpectedAdvertisementSequence_ = 1;
+    uint32_t rfuNextConnectionSequence_ = 1;
+    uint32_t rfuExpectedIncomingConnectionSequence_ = 1;
+    uint32_t rfuPendingConnectionSequence_ = 0;
+    uint32_t rfuNextDataSequence_ = 1;
+    RfuAdvertisement rfuPeerAdvertisement_{};
+    RfuAdvertisementSender sendRfuAdvertisement_;
+    RfuConnectionSender sendRfuConnection_;
+    RfuDataSender sendRfuData_;
+    RfuDataAcceptedSender sendRfuDataAccepted_;
+    RfuDisconnectSender sendRfuDisconnect_;
+    GbaRfuDataChannel rfuDataChannel_;
+    struct RemoteRfuData {
+        uint32_t sequence = 0;
+        uint8_t payloadBytes = 0;
+        std::vector<uint32_t> frameWords;
+    };
+    std::optional<RemoteRfuData> rfuRetainedTxData_;
+    // Parent: replaceable TX register awaiting exchange admission.
+    // Child: immutable reply snapshot; live scheduled TX is retained above.
+    std::optional<RemoteRfuData> rfuPendingTxData_;
+    bool rfuPendingTxClockChange_ = false;
+    bool rfuRadioAwaitingReply_ = false;
+    bool rfuRadioReplyClockChange_ = false;
+    uint32_t rfuPendingRadioEvents_ = 0;
+    bool rfuPeerAdvertisementKnown_ = false;
+    bool rfuConnectionPending_ = false;
+    bool rfuConnected_ = false;
+    bool rfuIsParent_ = false;
+    bool remoteRfuEnabled_ = false;
+    uint64_t rfuGuestFrameCount_ = 0;
     uint32_t linkedFrameCarry_ = 0;
     std::array<uint16_t, 2> multiplayerWords_{};
     std::array<uint8_t, 1024> paletteRam_{};

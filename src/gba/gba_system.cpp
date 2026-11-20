@@ -1,8 +1,10 @@
 #include "gba_system.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace LOTUSGBA {
 namespace {
@@ -28,6 +30,7 @@ constexpr uint16_t SIO_MULTI_WRITABLE = 0x6F03;
 constexpr uint16_t IRQ_SERIAL = 1u << 7;
 constexpr uint32_t MULTIPLAYER_BAUD[] = {9600, 38400, 57600, 115200};
 constexpr uint32_t NORMAL_BAUD[] = {256'000, 2'000'000};
+constexpr uint32_t RFU_NORMAL_BAUD[] = {9600, 38400, 57600, 115200};
 constexpr uint32_t CPU_CLOCK = 16'777'216;
 // Network-mode compatibility policy: render/frontend time remains free-running,
 // while guest progress is loosely bounded only during active multiplayer SIO.
@@ -37,6 +40,8 @@ constexpr uint64_t REMOTE_LINK_MAX_FRAME_LEAD = 2;
 constexpr uint64_t REMOTE_LINK_HOT_WINDOW_FRAMES = 8;
 constexpr size_t REMOTE_LINK_MAX_QUEUED_STARTS = 64;
 constexpr size_t REMOTE_LINK_MAX_QUEUED_WORDS = 64;
+constexpr size_t REMOTE_LINK_MAX_QUEUED_DATA_BLOCKS = 64;
+constexpr uint32_t EMERALD_LINK_TIMER3_CYCLES = 197 * 64;
 constexpr uint32_t CYCLES_PER_SCANLINE = 1232;
 constexpr uint32_t HDRAW_CYCLES = 960;
 constexpr uint16_t TOTAL_SCANLINES = 228;
@@ -273,6 +278,27 @@ void GbaSystem::reset() {
     remotePredictionUsed_ = false;
     normalSerialBusy_ = false;
     normalSerialCycles_ = 0;
+    rfuLogin_.reset();
+    rfuCommandSession_.reset();
+    rfuPendingTxData_.reset();
+    rfuPendingTxClockChange_ = false;
+    rfuRadioAwaitingReply_ = false;
+    rfuRadioReplyClockChange_ = false;
+    rfuPendingConsumedSequence_.reset();
+    rfuLoginActive_ = false;
+    rfuCommandSessionActive_ = false;
+    rfuMasterSwitchPending_ = false;
+    rfuAdapterClockMaster_ = false;
+    rfuAdapterAwaitingAck_ = false;
+    rfuAdapterEventCommand_ = 0;
+    rfuDisconnectEventPending_ = false;
+    rfuDisconnectPayloadPending_ = false;
+    rfuDisconnectEventSlotMask_ = 0;
+    rfuDisconnectEventReason_ = 0;
+    rfuBroadcastData_.fill(0);
+    rfuSystemConfig_ = 0;
+    rfuSearchingChildren_ = false;
+    rfuSearchingParents_ = false;
     externalWorkRam_.fill(0);
     internalWorkRam_.fill(0);
     io_.fill(0);
@@ -567,6 +593,12 @@ uint8_t GbaSystem::read8Impl(uint32_t address) const {
                     (multiplayerChild() ? 0x04 : 0);
                 return static_cast<uint8_t>(reserved | lines);
             }
+        }
+        if (address == REG_SIOCNT && rfuCommandSessionActive_ &&
+            hasEmeraldRfuProfile()) {
+            const auto stored = io_[address - 0x04000000];
+            return static_cast<uint8_t>((stored & ~0x04u) |
+                (rfuSiLineHigh_ ? 0x04u : 0));
         }
         if (audio_.handlesRegister(address))
             return audio_.readRegister(address);
@@ -913,7 +945,8 @@ void GbaSystem::configureRemoteMultiplayerLink(
     bool child, bool connected, MultiplayerStartSender sendStart,
     MultiplayerWordSender sendWord, MultiplayerReadinessSender sendReady,
     MultiplayerFrameSender sendFrame,
-    MultiplayerWordPredictor predictWord) {
+    MultiplayerWordPredictor predictWord,
+    MultiplayerDataBlockSender sendDataBlock) {
     if (linkPeer_ || remoteLinkEnabled_)
         throw std::logic_error("GBA already has a multiplayer link");
     remoteLinkEnabled_ = true;
@@ -925,8 +958,24 @@ void GbaSystem::configureRemoteMultiplayerLink(
     sendRemoteReady_ = std::move(sendReady);
     sendRemoteFrame_ = std::move(sendFrame);
     predictRemoteWord_ = std::move(predictWord);
+    sendRemoteDataBlock_ = std::move(sendDataBlock);
+    remoteBufferedProtocolRequested_ = false;
     remotePredictedWords_.clear();
     remotePendingWords_.clear();
+    remotePendingDataBlocks_.clear();
+    remoteActiveDataBlock_ = {};
+    remoteOutgoingDataWords_ = {};
+    remoteNextDataBlockSequence_ = 1;
+    remoteExpectedDataBlockSequence_ = 1;
+    remotePreviousDataChecksum_ = 0;
+    remoteNextChildPulseCycle_ = 0;
+    remoteStreamWordIndex_ = 0;
+    remoteChildPulseIndex_ = 0;
+    remoteBufferedBaudIndex_ = 3;
+    remoteBufferedProtocolActive_ = false;
+    remoteBufferedSwitchAfterTransfer_ = false;
+    remoteActiveDataBlockValid_ = false;
+    remoteBufferedWordPending_ = false;
     remotePeerWordReady_ = false;
     remoteReplySent_ = false;
     remotePendingStarts_.clear();
@@ -943,6 +992,18 @@ void GbaSystem::configureRemoteMultiplayerLink(
     multiplayerError_ = false;
     if (remoteLinkConnected_ && inMultiplayerMode())
         notifyRemoteReadiness(true);
+}
+
+void GbaSystem::setRemoteMultiplayerBufferedProtocol(bool enabled) {
+    if (!remoteLinkEnabled_)
+        throw std::logic_error("GBA has no remote multiplayer link");
+    remoteBufferedProtocolRequested_ = enabled;
+    if (!enabled) {
+        remoteBufferedProtocolActive_ = false;
+        remoteBufferedSwitchAfterTransfer_ = false;
+        remotePendingDataBlocks_.clear();
+        remoteActiveDataBlockValid_ = false;
+    }
 }
 
 void GbaSystem::setRemoteMultiplayerEventPump(
@@ -1019,6 +1080,11 @@ void GbaSystem::markRemoteLinkActivity() {
 }
 
 bool GbaSystem::shouldPaceRemoteFrame() {
+    // Emerald advances its own video/game clock while the ordered link stream
+    // is buffered independently. Never gate its local frames on the peer's
+    // frame watermark, including during the raw SIO handshake.
+    if (remoteBufferedProtocolRequested_)
+        return false;
     // A pending or active transfer must be allowed to advance to its local
     // SIO completion point. Once the local wire time has elapsed, the CPU may
     // wait on the busy bit for a bounded number of VBlanks while the peer reply
@@ -1052,6 +1118,7 @@ bool GbaSystem::receiveRemoteMultiplayerStart(uint32_t sequence,
                                               uint8_t baudIndex,
                                               uint64_t elapsedCycles) {
     if (!remoteLinkEnabled_ || !remoteLinkChild_ || !remoteLinkConnected_ ||
+        remoteBufferedProtocolActive_ ||
         !inMultiplayerMode() ||
         sequence != remoteTransferSequence_ + 1 || !sendRemoteWord_ ||
         baudIndex >= 4 ||
@@ -1092,6 +1159,10 @@ bool GbaSystem::receiveRemoteMultiplayerStart(uint32_t sequence,
 }
 
 void GbaSystem::beginRemoteMultiplayerTransfer() {
+    if (remoteBufferedProtocolActive_ && remoteLinkChild_) {
+        beginRemoteBufferedChildTransfer();
+        return;
+    }
     if (multiplayerBusy_ || remotePendingStarts_.empty() ||
         emulatedCycles_ < remotePendingStarts_.front().startCycle)
         return;
@@ -1112,10 +1183,40 @@ void GbaSystem::beginRemoteMultiplayerTransfer() {
     remoteReplySent_ = false;
     for (uint32_t slot = 0; slot < 4; ++slot)
         storeIo16(REG_SIOMULTI0 + 2 * slot, 0xFFFF);
+    remoteBufferedSwitchAfterTransfer_ = remoteBufferedProtocolRequested_ &&
+        remoteLinkChild_ && start.parentWord == 0x8FFF &&
+        multiplayerWords_[1] == 0xB9A0;
     if (remoteLinkChild_ && multiplayerCycles_ == 0) {
         sendRemoteWord_(remoteActiveSequence_, multiplayerWords_[1]);
         remoteReplySent_ = true;
         completeMultiplayerTransfer();
+        if (remoteBufferedSwitchAfterTransfer_)
+            activateRemoteBufferedProtocol();
+    }
+}
+
+void GbaSystem::beginRemoteBufferedChildTransfer() {
+    if (multiplayerBusy_ || !remoteLinkConnected_ ||
+        !inMultiplayerMode() || emulatedCycles_ < remoteNextChildPulseCycle_)
+        return;
+    ++remoteTransferSequence_;
+    multiplayerWords_ = {prepareRemoteBufferedTransferWord(),
+                         read16Impl(REG_SIOMLT_SEND)};
+    const uint32_t baud = MULTIPLAYER_BAUD[remoteBufferedBaudIndex_];
+    multiplayerCycles_ = (36 * CPU_CLOCK + baud - 1) / baud;
+    multiplayerBusy_ = true;
+    multiplayerError_ = false;
+    remotePeerWordReady_ = true;
+    remoteBufferedWordPending_ = true;
+    for (uint32_t slot = 0; slot < 4; ++slot)
+        storeIo16(REG_SIOMULTI0 + 2 * slot, 0xFFFF);
+
+    if (++remoteChildPulseIndex_ < 9) {
+        remoteNextChildPulseCycle_ += EMERALD_LINK_TIMER3_CYCLES;
+    } else {
+        remoteChildPulseIndex_ = 0;
+        remoteNextChildPulseCycle_ += CYCLES_PER_FRAME -
+            8 * EMERALD_LINK_TIMER3_CYCLES;
     }
 }
 
@@ -1132,7 +1233,8 @@ bool GbaSystem::receiveRemoteMultiplayerWord(uint32_t sequence,
         markRemoteLinkActivity();
         return true;
     }
-    if (!remoteLinkEnabled_ || remoteLinkChild_ || !remoteLinkConnected_) {
+    if (!remoteLinkEnabled_ || remoteLinkChild_ || !remoteLinkConnected_ ||
+        remoteBufferedProtocolActive_) {
         multiplayerError_ = true;
         return false;
     }
@@ -1172,9 +1274,398 @@ bool GbaSystem::receiveRemoteMultiplayerWord(uint32_t sequence,
     markRemoteLinkActivity();
     multiplayerWords_[1] = childWord;
     remotePeerWordReady_ = true;
-    if (multiplayerCycles_ == 0)
+    remoteBufferedSwitchAfterTransfer_ =
+        remoteBufferedProtocolRequested_ && !remoteLinkChild_ &&
+        multiplayerWords_[0] == 0x8FFF && childWord == 0xB9A0;
+    if (multiplayerCycles_ == 0) {
         completeMultiplayerTransfer();
+        if (remoteBufferedSwitchAfterTransfer_)
+            activateRemoteBufferedProtocol();
+    }
     return true;
+}
+
+bool GbaSystem::receiveRemoteMultiplayerDataBlock(
+    uint32_t sequence, const MultiplayerDataWords &words,
+    uint16_t checksum) {
+    if (!remoteLinkEnabled_ || !remoteLinkConnected_ ||
+        !remoteBufferedProtocolRequested_ ||
+        sequence != remoteExpectedDataBlockSequence_ ||
+        remotePendingDataBlocks_.size() >=
+            REMOTE_LINK_MAX_QUEUED_DATA_BLOCKS) {
+        multiplayerError_ = true;
+        return false;
+    }
+    uint16_t calculatedChecksum = 0;
+    for (uint16_t word : words)
+        calculatedChecksum = static_cast<uint16_t>(calculatedChecksum + word);
+    if (calculatedChecksum != checksum) {
+        multiplayerError_ = true;
+        return false;
+    }
+    remotePendingDataBlocks_.push_back({sequence, words, checksum});
+    ++remoteExpectedDataBlockSequence_;
+    markRemoteLinkActivity();
+    return true;
+}
+
+void GbaSystem::configureRemoteRfuLink(
+    uint16_t localId, uint16_t peerId,
+    RfuAdvertisementSender sendAdvertisement,
+    RfuConnectionSender sendConnection, RfuDataSender sendData,
+    RfuDataAcceptedSender sendDataAccepted,
+    RfuDisconnectSender sendDisconnect) {
+    if (!hasEmeraldRfuProfile() || remoteRfuEnabled_ ||
+        remoteLinkEnabled_ || linkPeer_ || localId == 0 || peerId == 0 ||
+        localId == peerId || !sendAdvertisement || !sendConnection ||
+        !sendData)
+        throw std::invalid_argument("Invalid Emerald remote RFU link");
+    remoteRfuEnabled_ = true;
+    rfuLocalId_ = localId;
+    rfuPeerId_ = peerId;
+    rfuGuestFrameCount_ = 0;
+    rfuNextAdvertisementSequence_ = 1;
+    rfuExpectedAdvertisementSequence_ = 1;
+    rfuNextConnectionSequence_ = 1;
+    rfuExpectedIncomingConnectionSequence_ = 1;
+    rfuPendingConnectionSequence_ = 0;
+    rfuNextDataSequence_ = 1;
+    rfuPeerAdvertisementKnown_ = false;
+    rfuConnectionPending_ = false;
+    rfuConnected_ = false;
+    rfuAdapterEventCommand_ = 0;
+    rfuDisconnectEventPending_ = false;
+    rfuDisconnectPayloadPending_ = false;
+    rfuDisconnectEventSlotMask_ = 0;
+    rfuDisconnectEventReason_ = 0;
+    rfuAdapterClockMaster_ = false;
+    rfuAdapterAwaitingAck_ = false;
+    rfuDataChannel_.reset(true);
+    rfuRetainedTxData_.reset();
+    rfuPendingTxData_.reset();
+    rfuPendingTxClockChange_ = false;
+    rfuRadioAwaitingReply_ = false;
+    rfuRadioReplyClockChange_ = false;
+    rfuPendingRadioEvents_ = 0;
+    sendRfuAdvertisement_ = std::move(sendAdvertisement);
+    sendRfuConnection_ = std::move(sendConnection);
+    sendRfuData_ = std::move(sendData);
+    sendRfuDataAccepted_ = std::move(sendDataAccepted);
+    sendRfuDisconnect_ = std::move(sendDisconnect);
+}
+
+void GbaSystem::setRfuDiagnosticLogger(
+    std::function<void(const std::string &)> logger) {
+    rfuDiagnosticLogger_ = std::move(logger);
+    rfuTransferCount_ = 0;
+    rfuDiagnosticCount_ = 0;
+    rfuRecentDiagnostics_.clear();
+}
+
+void GbaSystem::logRfuDiagnostic(const std::string &message, bool essential) {
+    constexpr uint32_t MAX_RFU_DIAGNOSTICS = 4096;
+    if (!rfuDiagnosticLogger_)
+        return;
+    // Connection and clock evidence must survive long discovery sessions.
+    if (essential) {
+        rfuDiagnosticLogger_(message);
+        return;
+    }
+    if (rfuDiagnosticCount_ >= MAX_RFU_DIAGNOSTICS) {
+        // Retain bounded context after the startup trace limit. Emerald can
+        // reset much later, and losing these words hides the failing exchange.
+        constexpr size_t RECENT_WORDS = 32;
+        if (rfuRecentDiagnostics_.size() == RECENT_WORDS)
+            rfuRecentDiagnostics_.pop_front();
+        rfuRecentDiagnostics_.push_back(message);
+        return;
+    }
+    ++rfuDiagnosticCount_;
+    rfuDiagnosticLogger_(message);
+    if (rfuDiagnosticCount_ == MAX_RFU_DIAGNOSTICS)
+        rfuDiagnosticLogger_("RFU trace limit reached; further SIO words suppressed");
+}
+
+void GbaSystem::logRfuDisconnectDiagnostic(uint8_t command) {
+    if (!rfuDiagnosticLogger_)
+        return;
+    rfuDiagnosticLogger_("RFU disconnect context begin (before state clear)");
+    for (const auto &message : rfuRecentDiagnostics_)
+        rfuDiagnosticLogger_(message);
+    rfuRecentDiagnostics_.clear();
+    char trace[320];
+    std::snprintf(trace, sizeof(trace),
+                  "RFU disconnect: command=%02X pc=%08X lr=%08X connected=%u "
+                  "pending=%u queued=%zu role=%s slot=%u next_rx=%u "
+                  "next_tx=%u pending_events=%u clock=%s awaiting_ack=%u "
+                  "serial_busy=%u siocnt=%04X rcnt=%04X",
+                  command, cpu_.registerValue(15), cpu_.registerValue(14),
+                  unsigned(rfuConnected_), unsigned(rfuConnectionPending_),
+                  rfuDataChannel_.queuedMessages(),
+                  rfuIsParent_ ? "parent" : "child",
+                  unsigned(rfuConnectedSlot_),
+                  rfuDataChannel_.expectedSequence(),
+                  rfuNextDataSequence_, rfuPendingRadioEvents_,
+                  rfuAdapterClockMaster_ ? "adapter" : "guest",
+                  unsigned(rfuAdapterAwaitingAck_),
+                  unsigned(normalSerialBusy_), read16Impl(REG_SIOCNT),
+                  read16Impl(REG_RCNT));
+    rfuDiagnosticLogger_(trace);
+}
+
+bool GbaSystem::receiveRemoteRfuAdvertisement(
+    uint32_t sequence, uint16_t id, const RfuAdvertisement &data) {
+    if (!remoteRfuEnabled_ || sequence != rfuExpectedAdvertisementSequence_ ||
+        id != rfuPeerId_) {
+        return false;
+    }
+    rfuPeerAdvertisement_ = data;
+    rfuPeerAdvertisementKnown_ = true;
+    ++rfuExpectedAdvertisementSequence_;
+    return true;
+}
+
+bool GbaSystem::receiveRemoteRfuConnectionRequest(
+    uint32_t sequence, uint16_t sourceId, uint16_t targetId) {
+    const char *reason = !remoteRfuEnabled_ ? "disabled" :
+        sequence != rfuExpectedIncomingConnectionSequence_ ? "sequence" :
+        sourceId != rfuPeerId_ ? "source_id" :
+        targetId != rfuLocalId_ ? "target_id" :
+        !rfuSearchingChildren_ ? "not_listening" :
+        rfuConnected_ ? "already_connected" : "accepted";
+    char trace[384];
+    std::snprintf(trace, sizeof(trace),
+        "RFU connection request: seq=%u expected=%u source=%u target=%u "
+        "local=%u peer=%u searching_children=%u searching_parents=%u "
+        "connected=%u pending=%u reason=%s",
+        sequence, rfuExpectedIncomingConnectionSequence_, sourceId, targetId,
+        rfuLocalId_, rfuPeerId_, unsigned(rfuSearchingChildren_),
+        unsigned(rfuSearchingParents_), unsigned(rfuConnected_),
+        unsigned(rfuConnectionPending_), reason);
+    logRfuDiagnostic(trace, true);
+    if (!remoteRfuEnabled_ ||
+        sequence != rfuExpectedIncomingConnectionSequence_ ||
+        sourceId != rfuPeerId_ || targetId != rfuLocalId_)
+        return false;
+    ++rfuExpectedIncomingConnectionSequence_;
+    if (!rfuSearchingChildren_ || rfuConnected_)
+        return false;
+    rfuConnected_ = true;
+    rfuIsParent_ = true;
+    rfuDataChannel_.setConnection(true, true);
+    rfuConnectedId_ = sourceId;
+    rfuConnectedSlot_ = 0;
+    return true;
+}
+
+bool GbaSystem::receiveRemoteRfuConnectionResult(
+    uint32_t sequence, uint16_t targetId, uint8_t slot, bool accepted) {
+    char trace[256];
+    std::snprintf(trace, sizeof(trace),
+        "RFU connection result: seq=%u expected=%u target=%u local=%u "
+        "slot=%u accepted=%u enabled=%u pending=%u connected=%u",
+        sequence, rfuPendingConnectionSequence_, targetId, rfuLocalId_,
+        unsigned(slot), unsigned(accepted), unsigned(remoteRfuEnabled_),
+        unsigned(rfuConnectionPending_), unsigned(rfuConnected_));
+    logRfuDiagnostic(trace, true);
+    if (!remoteRfuEnabled_ || !rfuConnectionPending_ ||
+        sequence != rfuPendingConnectionSequence_ || targetId != rfuLocalId_ ||
+        slot > 3) {
+        return false;
+    }
+    rfuConnectionPending_ = false;
+    if (accepted) {
+        rfuConnected_ = true;
+        rfuIsParent_ = false;
+        rfuDataChannel_.setConnection(true, false);
+        rfuConnectedId_ = rfuPeerId_;
+        rfuConnectedSlot_ = slot;
+    }
+    return true;
+}
+
+GbaSystem::RfuDataReceiveResult GbaSystem::receiveRemoteRfuData(
+    uint32_t sequence, uint8_t payloadBytes,
+    const std::vector<uint32_t> &frameWords) {
+    // A child stores one immutable reply snapshot separately from its live TX
+    // register. A further exchange cannot overwrite a reply not yet dispatched.
+    if (remoteRfuEnabled_ && rfuConnected_ && !rfuIsParent_ && rfuPendingTxData_)
+        return RfuDataReceiveResult::QueueFull;
+    const auto result = rfuDataChannel_.receive(sequence, payloadBytes, frameWords);
+    if (result != RfuDataReceiveResult::Accepted)
+        return result;
+    if (rfuIsParent_) {
+        // This data is the child response to the parent's outstanding radio
+        // exchange, not an independent child transmission awaiting another
+        // parent send. Complete both directions at this boundary.
+        if (rfuRadioAwaitingReply_) {
+            rfuDataChannel_.advanceParentRadioCycle();
+            if (rfuRadioReplyClockChange_)
+                ++rfuPendingRadioEvents_;
+            rfuRadioAwaitingReply_ = false;
+            rfuRadioReplyClockChange_ = false;
+        }
+    } else {
+        // Snapshot the scheduled child TX when a parent exchange arrives.
+        // Subsequent guest writes can prepare the next exchange, but cannot
+        // mutate this reply. An empty child slot still completes the exchange.
+        const uint8_t count = rfuRetainedTxData_ ? rfuRetainedTxData_->payloadBytes : 0;
+        const std::vector<uint32_t> reply = rfuRetainedTxData_
+            ? rfuRetainedTxData_->frameWords : std::vector<uint32_t>{};
+        // One scheduled child uplink belongs to one selected exchange. NI
+        // retries are fresh guest writes; do not invent new application data
+        // by retransmitting an already selected child slot on every cycle.
+        rfuRetainedTxData_.reset();
+        if (sendRfuData_(rfuNextDataSequence_, count, reply)) {
+            ++rfuNextDataSequence_;
+        } else {
+            rfuPendingTxData_ = RemoteRfuData{rfuNextDataSequence_, count, reply};
+            rfuPendingTxClockChange_ = false;
+        }
+        ++rfuPendingRadioEvents_;
+    }
+    // Admission credit is independent of guest reads and NI acknowledgements.
+    if (sendRfuDataAccepted_)
+        sendRfuDataAccepted_(sequence);
+    return result;
+}
+
+void GbaSystem::receiveRemoteRfuDisconnect() {
+    const bool canClockDisconnectEvent = remoteRfuEnabled_ && rfuConnected_ &&
+        rfuAdapterClockMaster_ && !rfuAdapterAwaitingAck_;
+    if (canClockDisconnectEvent) {
+        rfuDisconnectEventPending_ = true;
+        rfuDisconnectPayloadPending_ = false;
+        rfuDisconnectEventSlotMask_ = static_cast<uint8_t>(
+            1u << rfuConnectedSlot_);
+        rfuDisconnectEventReason_ = 0; // REASON_DISCONNECTED.
+        rfuPendingRadioEvents_ = 1;
+        logRfuDiagnostic(
+            "RFU peer disconnected; scheduling 0x29 adapter event");
+    } else {
+        rfuDisconnectEventPending_ = false;
+        rfuDisconnectPayloadPending_ = false;
+        rfuPendingRadioEvents_ = 0;
+        if (!rfuAdapterAwaitingAck_)
+            rfuAdapterClockMaster_ = false;
+    }
+    rfuConnected_ = false;
+    rfuIsParent_ = false;
+    rfuConnectionPending_ = false;
+    rfuConnectedId_ = 0;
+    rfuPeerAdvertisementKnown_ = false;
+    rfuDataChannel_.disconnect();
+    rfuRetainedTxData_.reset();
+    rfuPendingTxData_.reset();
+    rfuPendingTxClockChange_ = false;
+    rfuRadioAwaitingReply_ = false;
+    rfuRadioReplyClockChange_ = false;
+    rfuMasterSwitchPending_ = false;
+}
+
+void GbaSystem::disconnectRemoteRfuLink() {
+    remoteRfuEnabled_ = false;
+    rfuConnected_ = false;
+    rfuConnectionPending_ = false;
+    rfuPeerAdvertisementKnown_ = false;
+    rfuDataChannel_.reset();
+    rfuRetainedTxData_.reset();
+    rfuPendingTxData_.reset();
+    rfuPendingTxClockChange_ = false;
+    rfuRadioAwaitingReply_ = false;
+    rfuRadioReplyClockChange_ = false;
+    rfuPendingRadioEvents_ = 0;
+    rfuAdapterClockMaster_ = false;
+    rfuAdapterAwaitingAck_ = false;
+    rfuAdapterEventCommand_ = 0;
+    rfuDisconnectEventPending_ = false;
+    rfuDisconnectPayloadPending_ = false;
+    rfuDisconnectEventSlotMask_ = 0;
+    rfuDisconnectEventReason_ = 0;
+    sendRfuAdvertisement_ = {};
+    sendRfuConnection_ = {};
+    sendRfuData_ = {};
+    sendRfuDataAccepted_ = {};
+    sendRfuDisconnect_ = {};
+}
+
+void GbaSystem::activateRemoteBufferedProtocol() {
+    if (!remoteBufferedProtocolRequested_ || remoteBufferedProtocolActive_)
+        return;
+    remoteBufferedProtocolActive_ = true;
+    remoteBufferedSwitchAfterTransfer_ = false;
+    remoteBufferedWordPending_ = false;
+    remoteStreamWordIndex_ = 0;
+    remoteOutgoingDataWords_.fill(0);
+    remotePreviousDataChecksum_ = 0;
+    remoteActiveDataBlock_ = {};
+    remoteActiveDataBlockValid_ = false;
+
+    if (remoteLinkChild_) {
+        // Emerald's remote station receives nine serial interrupts per link
+        // command group: one VBlank start followed by the master's Timer 3
+        // retries. Recreate that local cadence without waiting for packets.
+        // These empty groups contain zero command words and a zero checksum;
+        // they do not consume or replace queued peer data.
+        const uint32_t vblankOffset = SCREEN_HEIGHT * CYCLES_PER_SCANLINE;
+        const uint32_t frameOffset = frameCycle_;
+        // Begin on the next full frame boundary. Starting at the imminent
+        // VBlank can make the tail of a frame look like a partial Emerald
+        // command group and mix handshake words into its first data block.
+        const uint32_t untilVBlank = CYCLES_PER_FRAME - frameOffset +
+            vblankOffset;
+        remoteNextChildPulseCycle_ = emulatedCycles_ +
+            untilVBlank;
+        remoteChildPulseIndex_ = 0;
+    }
+}
+
+uint16_t GbaSystem::prepareRemoteBufferedTransferWord() {
+    if (remoteStreamWordIndex_ == 0) {
+        if (!remotePendingDataBlocks_.empty()) {
+            remoteActiveDataBlock_ = remotePendingDataBlocks_.front();
+            remotePendingDataBlocks_.pop_front();
+            remoteActiveDataBlockValid_ = true;
+        } else {
+            // Emerald treats zero command slots as an empty receive group.
+            // Keep the group's checksum phase aligned while retaining every
+            // late peer block in the ordered queue for a later group.
+            remoteActiveDataBlock_ = {};
+            remoteActiveDataBlockValid_ = false;
+        }
+        return remotePreviousDataChecksum_;
+    }
+    return remoteActiveDataBlock_.words[remoteStreamWordIndex_ - 1];
+}
+
+void GbaSystem::finishRemoteBufferedTransferWord() {
+    const uint8_t wordIndex = remoteStreamWordIndex_;
+    if (wordIndex < remoteOutgoingDataWords_.size()) {
+        remoteOutgoingDataWords_[wordIndex] = remoteLinkChild_
+            ? multiplayerWords_[1] : multiplayerWords_[0];
+    }
+    if (wordIndex == 8) {
+        uint16_t checksum = 0;
+        for (uint16_t word : remoteOutgoingDataWords_)
+            checksum = static_cast<uint16_t>(checksum + word);
+        const uint16_t transmittedChecksum = remoteLinkChild_
+            ? multiplayerWords_[1] : multiplayerWords_[0];
+        if (transmittedChecksum != checksum) {
+            multiplayerError_ = true;
+            remoteStreamWordIndex_ = 0;
+            remoteActiveDataBlockValid_ = false;
+            return;
+        }
+        if (sendRemoteDataBlock_)
+            sendRemoteDataBlock_(remoteNextDataBlockSequence_++,
+                                 remoteOutgoingDataWords_,
+                                 transmittedChecksum);
+        remotePreviousDataChecksum_ = remoteActiveDataBlock_.checksum;
+        remoteActiveDataBlockValid_ = false;
+        remoteStreamWordIndex_ = 0;
+    } else {
+        ++remoteStreamWordIndex_;
+    }
 }
 
 void GbaSystem::applyPendingRemoteWord() {
@@ -1203,12 +1694,19 @@ void GbaSystem::disconnectRemoteMultiplayerLink() {
     remoteLinkEnabled_ = false;
     remoteLinkChild_ = false;
     remoteLinkConnected_ = false;
+    remoteBufferedProtocolRequested_ = false;
+    remoteBufferedProtocolActive_ = false;
+    remoteBufferedSwitchAfterTransfer_ = false;
+    remoteBufferedWordPending_ = false;
+    remotePendingDataBlocks_.clear();
+    remoteActiveDataBlockValid_ = false;
     remotePeerReady_ = false;
     remotePeerWordReady_ = false;
     sendRemoteStart_ = {};
     sendRemoteWord_ = {};
     sendRemoteReady_ = {};
     sendRemoteFrame_ = {};
+    sendRemoteDataBlock_ = {};
     remoteEventPump_ = {};
     predictRemoteWord_ = {};
     remotePredictedWords_.clear();
@@ -1246,6 +1744,32 @@ bool GbaSystem::multiplayerChild() const {
 void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
     const bool wasMultiplayer = inMultiplayerMode();
     storeIo16(address, value);
+    if (address == REG_RCNT && hasEmeraldRfuProfile() &&
+        value == 0x80A2) {
+        if (!rfuLoginActive_)
+            logRfuDiagnostic("RFU login started by RCNT=80A2");
+        rfuLogin_.reset();
+        rfuCommandSession_.reset();
+        rfuPendingConsumedSequence_.reset();
+        rfuLoginActive_ = true;
+        rfuCommandSessionActive_ = false;
+        rfuMasterSwitchPending_ = false;
+        rfuAdapterClockMaster_ = false;
+        rfuAdapterAwaitingAck_ = false;
+        rfuAdapterEventCommand_ = 0;
+        rfuDisconnectEventPending_ = false;
+        rfuDisconnectPayloadPending_ = false;
+        rfuSiLineHigh_ = false;
+    } else if (address == REG_SIOCNT && rfuCommandSessionActive_ &&
+               hasEmeraldRfuProfile()) {
+        // RFU ready handshakes invert with the clock direction. Use the
+        // guest's selected direction (bit 0), not rfuAdapterClockMaster_:
+        // the A5/A7 word still finishes a guest-clocked handshake, and the
+        // A8 word still finishes an adapter-clocked one after role restoration.
+        const bool guestClock = (value & 1) != 0;
+        const bool guestReady = (value & 0x08) != 0;
+        rfuSiLineHigh_ = guestClock ? !guestReady : guestReady;
+    }
     const bool isMultiplayer = inMultiplayerMode();
     if (remoteLinkEnabled_ && remoteLinkConnected_ &&
         wasMultiplayer != isMultiplayer)
@@ -1268,13 +1792,34 @@ void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
             } else if (!normalSerialBusy_) {
                 normalSerialBusy_ = true;
                 const uint32_t bits = (control & 0x1000) ? 32 : 8;
-                normalSerialCycles_ = (bits * CPU_CLOCK +
-                    NORMAL_BAUD[(control >> 1) & 1] - 1) /
-                    NORMAL_BAUD[(control >> 1) & 1];
+                const bool rfu32BitTransfer =
+                    hasEmeraldRfuProfile() &&
+                    (control & 0x1000) &&
+                    (rfuLoginActive_ || rfuAdapterClockMaster_);
+                if (rfu32BitTransfer) {
+                    // Emerald's adapter-ID probe and RFU clock-role changes
+                    // use the four 32-bit SIO baud selectors. In this mode
+                    // SIOCNT bits 0-1 select baud; bit 0 is not an
+                    // internal/external clock selector.
+                    const uint32_t baud = RFU_NORMAL_BAUD[control & 3];
+                    normalSerialCycles_ =
+                        (32 * CPU_CLOCK + baud - 1) / baud;
+                } else {
+                    normalSerialCycles_ = (bits * CPU_CLOCK +
+                        NORMAL_BAUD[(control >> 1) & 1] - 1) /
+                        NORMAL_BAUD[(control >> 1) & 1];
+                }
                 // With no emulated Normal-mode peripheral, the SI line is
                 // pulled high and the receiver shifts in one bits.
-                if (!(control & 1))
-                    normalSerialCycles_ = 0; // External clock has not arrived.
+                if (!(control & 1) && !rfu32BitTransfer) {
+                    if (rfuAdapterClockMaster_ && (control & 0x1000)) {
+                        const uint32_t baud = RFU_NORMAL_BAUD[control & 3];
+                        normalSerialCycles_ =
+                            (32 * CPU_CLOCK + baud - 1) / baud;
+                    } else {
+                        normalSerialCycles_ = 0; // External clock has not arrived.
+                    }
+                }
             }
         }
         return;
@@ -1295,10 +1840,16 @@ void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
     multiplayerWords_ = {read16Impl(REG_SIOMLT_SEND),
                          linkPeer_ ? linkPeer_->read16Impl(REG_SIOMLT_SEND)
                                    : uint16_t{0xFFFF}};
+    if (remoteLinkEnabled_ && remoteBufferedProtocolActive_) {
+        remoteBufferedBaudIndex_ = static_cast<uint8_t>(value & 3);
+        multiplayerWords_[1] = prepareRemoteBufferedTransferWord();
+        remoteBufferedWordPending_ = true;
+    }
     const uint32_t baud = MULTIPLAYER_BAUD[value & 3];
     // Two 16-bit words with one start and one stop bit each.
     multiplayerCycles_ = (36 * CPU_CLOCK + baud - 1) / baud;
-    remotePeerWordReady_ = !remoteLinkEnabled_;
+    remotePeerWordReady_ = !remoteLinkEnabled_ ||
+                           remoteBufferedProtocolActive_;
     for (GbaSystem *endpoint : {this, linkPeer_}) {
         if (!endpoint)
             break;
@@ -1309,6 +1860,10 @@ void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
     }
     if (remoteLinkEnabled_) {
         markRemoteLinkActivity();
+        if (remoteBufferedProtocolActive_) {
+            remoteActiveSequence_ = ++remoteTransferSequence_;
+            return;
+        }
         if (!sendRemoteStart_)
             throw std::runtime_error("GBA remote link has no start sender");
         remoteActiveSequence_ = ++remoteTransferSequence_;
@@ -1372,17 +1927,409 @@ void GbaSystem::tickMultiplayer(uint32_t cycles) {
         return;
     }
     multiplayerCycles_ = 0;
-    if (remoteLinkEnabled_ && remoteLinkChild_ && !remoteReplySent_) {
+    if (remoteBufferedProtocolActive_ && remoteBufferedWordPending_) {
+        finishRemoteBufferedTransferWord();
+        remoteBufferedWordPending_ = false;
+    } else if (remoteLinkEnabled_ && remoteLinkChild_ && !remoteReplySent_) {
         sendRemoteWord_(remoteActiveSequence_, multiplayerWords_[1]);
         remoteReplySent_ = true;
     }
-    if (!remoteLinkEnabled_ || remotePeerWordReady_)
+    if (!remoteLinkEnabled_ || remotePeerWordReady_) {
         completeMultiplayerTransfer();
+        if (remoteBufferedSwitchAfterTransfer_)
+            activateRemoteBufferedProtocol();
+    }
+}
+
+void GbaSystem::answerEmeraldRfuRequest(
+    const GbaRfuRequestDecoder::Request &request) {
+    bool accepted = false;
+    std::vector<uint32_t> response;
+    const auto noParameters = [&request] { return request.payload.empty(); };
+    const auto advertise = [this] {
+        if (remoteRfuEnabled_ && sendRfuAdvertisement_)
+            sendRfuAdvertisement_(rfuNextAdvertisementSequence_++,
+                                 rfuLocalId_, rfuBroadcastData_);
+    };
+    const auto disconnect = [this](bool notifyPeer) {
+        if (notifyPeer && remoteRfuEnabled_ && sendRfuDisconnect_)
+            sendRfuDisconnect_();
+        rfuDataChannel_.disconnect();
+        rfuPendingTxData_.reset();
+        rfuPendingTxClockChange_ = false;
+        rfuRadioAwaitingReply_ = false;
+        rfuRadioReplyClockChange_ = false;
+        rfuConnected_ = false;
+        rfuIsParent_ = false;
+        rfuConnectionPending_ = false;
+        rfuConnectedId_ = 0;
+        rfuMasterSwitchPending_ = false;
+        rfuAdapterClockMaster_ = false;
+        rfuAdapterAwaitingAck_ = false;
+        rfuAdapterEventCommand_ = 0;
+        rfuDisconnectEventPending_ = false;
+        rfuDisconnectPayloadPending_ = false;
+    };
+
+    switch (request.command) {
+    case 0x10: // RESET_REQ; full state-reset semantics still need review.
+        accepted = noParameters();
+        break;
+    case 0x11: // Signal levels are reported per connected client slot.
+        accepted = noParameters();
+        if (accepted) {
+            const uint32_t level = rfuConnected_ ? 0xFFu : 0u;
+            response.push_back(level << (rfuConnectedSlot_ * 8));
+        }
+        break;
+    case 0x12: // Version status; report a known Wireless Adapter profile.
+        accepted = noParameters();
+        if (accepted)
+            response.push_back(0x00830117);
+        break;
+    case 0x13: // System status.
+        accepted = noParameters();
+        if (accepted) {
+            uint32_t state = 0;
+            if (rfuSearchingChildren_)
+                state = 2; // Serving an open room.
+            else if (rfuConnectionPending_)
+                state = 4;
+            else if (rfuConnected_)
+                state = rfuSearchingParents_ ? 5 : 1;
+            else if (rfuSearchingParents_)
+                state = 3;
+            const uint32_t id = state == 0 ? 0u : rfuLocalId_;
+            const uint32_t clientSlots =
+                rfuConnected_ && !rfuSearchingChildren_
+                    ? (1u << rfuConnectedSlot_) : 0u;
+            response.push_back(id | (clientSlots << 16) | (state << 24));
+        }
+        break;
+    case 0x16: // Game/player advertisement.
+        accepted = request.payload.size() == rfuBroadcastData_.size();
+        if (accepted) {
+            std::copy(request.payload.begin(), request.payload.end(),
+                      rfuBroadcastData_.begin());
+            advertise();
+        }
+        break;
+    case 0x17: // RFU system configuration.
+        accepted = request.payload.size() == 1;
+        if (accepted)
+            rfuSystemConfig_ = request.payload.front();
+        break;
+    case 0x19: // Start child search.
+        accepted = noParameters();
+        if (accepted) {
+            rfuSearchingChildren_ = true;
+            advertise();
+        }
+        break;
+    case 0x1A: // Poll child search.
+        accepted = noParameters();
+        if (accepted && rfuSearchingChildren_ && rfuConnected_) {
+            response.push_back(static_cast<uint32_t>(rfuConnectedId_) |
+                (static_cast<uint32_t>(rfuConnectedSlot_) << 16));
+        }
+        break;
+    case 0x1D: // Poll parent search.
+        accepted = noParameters();
+        if (accepted && rfuSearchingParents_ &&
+            rfuPeerAdvertisementKnown_) {
+            response.reserve(7);
+            // Search results carry the peer ID and its next available slot.
+            response.push_back(static_cast<uint32_t>(rfuPeerId_));
+            response.insert(response.end(), rfuPeerAdvertisement_.begin(),
+                            rfuPeerAdvertisement_.end());
+        }
+        break;
+    case 0x1B: // End child search.
+        accepted = noParameters();
+        if (accepted)
+            rfuSearchingChildren_ = false;
+        break;
+    case 0x1C: // Start parent search.
+        accepted = noParameters();
+        if (accepted) {
+            rfuSearchingParents_ = true;
+            advertise();
+        }
+        break;
+    case 0x1E: // End parent search.
+        accepted = noParameters();
+        if (accepted)
+            rfuSearchingParents_ = false;
+        break;
+    case 0x1F: // Connect to the selected parent adapter.
+        accepted = request.payload.size() == 1 && remoteRfuEnabled_ &&
+            rfuPeerAdvertisementKnown_ &&
+            static_cast<uint16_t>(request.payload.front()) == rfuPeerId_ &&
+            !rfuConnected_ && !rfuConnectionPending_;
+        if (accepted) {
+            rfuConnectionPending_ = true;
+            rfuPendingConnectionSequence_ = rfuNextConnectionSequence_++;
+            sendRfuConnection_(rfuPendingConnectionSequence_, rfuLocalId_,
+                               rfuPeerId_);
+        }
+        break;
+    case 0x20: // Connection completion poll.
+        accepted = noParameters();
+        if (accepted) {
+            const uint32_t result = rfuConnected_
+                ? static_cast<uint32_t>(rfuLocalId_) |
+                    (static_cast<uint32_t>(rfuConnectedSlot_) << 16)
+                : 0x01000000;
+            response.push_back(result);
+        }
+        break;
+    case 0x21: // Finalize selected connection.
+        accepted = noParameters();
+        if (accepted)
+            response.push_back(rfuConnected_
+                ? static_cast<uint32_t>(rfuLocalId_) |
+                    (static_cast<uint32_t>(rfuConnectedSlot_) << 16)
+                : 0u);
+        break;
+    case 0x24: // Send link-layer data.
+    case 0x25: // Send data and switch clock role.
+        accepted = remoteRfuEnabled_ && rfuConnected_ && sendRfuData_ &&
+            (!rfuIsParent_ || !rfuPendingTxData_ || !rfuPendingTxClockChange_) &&
+            !request.payload.empty() &&
+            request.payload.size() <= GbaRfuRequestDecoder::MAX_PAYLOAD_WORDS;
+        if (accepted) {
+            const uint32_t txSequence = rfuNextDataSequence_;
+            const auto admit = [this, &request](uint8_t bytes,
+                                                const std::vector<uint32_t> &words) {
+                // A child send only writes its live TX register. The next
+                // parent-triggered exchange selects and returns a snapshot.
+                if (!rfuIsParent_)
+                    return true;
+                if (rfuPendingTxData_) {
+                    rfuPendingTxData_->payloadBytes = bytes;
+                    rfuPendingTxData_->frameWords = words;
+                    rfuPendingTxClockChange_ = request.command == 0x25;
+                    logRfuDiagnostic("RFU local TX register updated before exchange admission", true);
+                    return true;
+                }
+                if (!rfuRadioAwaitingReply_) {
+                    // Install state before invoking a sender: deterministic
+                    // in-process peers may reply synchronously.
+                    rfuRadioAwaitingReply_ = true;
+                    rfuRadioReplyClockChange_ = request.command == 0x25;
+                    if (sendRfuData_(rfuNextDataSequence_, bytes, words)) {
+                        ++rfuNextDataSequence_;
+                        return true;
+                    }
+                    rfuRadioAwaitingReply_ = false;
+                    rfuRadioReplyClockChange_ = false;
+                }
+                rfuPendingTxData_ = RemoteRfuData{rfuNextDataSequence_, bytes, words};
+                rfuPendingTxClockChange_ = request.command == 0x25;
+                logRfuDiagnostic("RFU local TX buffered; command ACK remains local", true);
+                return true;
+            };
+            // Parent TX stores the byte count directly. Child TX encodes
+            // per-slot byte counts in bits 8..12; slot zero is this remote
+            // parent's receive stream.
+            const size_t frameBytes = rfuIsParent_
+                ? request.payload.front()
+                : ((request.payload.front() >> 8) & 0x1Fu);
+            const size_t paddedFrameBytes =
+                (request.payload.size() - 1) * sizeof(uint32_t);
+            const bool ghostSend = rfuIsParent_ &&
+                request.payload.size() == 1 && request.payload.front() == 1;
+            if (ghostSend) {
+                // A length-only parent send reuses the requested prefix of
+                // the adapter's retained TX buffer. It is not an empty radio
+                // packet. Emerald uses a one-byte ghost send to clock the
+                // next child exchange when it has no new LLSF frame.
+                const bool hasRetainedPrefix = rfuRetainedTxData_.has_value() &&
+                    rfuRetainedTxData_->payloadBytes >= 1 &&
+                    !rfuRetainedTxData_->frameWords.empty();
+                // Compatibility initialization: the first idle send has no
+                // retained bytes yet. Use a zero prefix, which Emerald's
+                // parser ignores as shorter than an LLSF header. Hardware
+                // power-on TX contents are not established by the ROM source.
+                const uint32_t prefix = hasRetainedPrefix
+                    ? rfuRetainedTxData_->frameWords.front() & 0xFFu : 0u;
+                accepted = admit(1, {prefix});
+                if (accepted) {
+                    rfuRetainedTxData_ = RemoteRfuData{
+                        txSequence, 1, {prefix}};
+                }
+            } else if (frameBytes <= paddedFrameBytes &&
+                       frameBytes <= 127 &&
+                       (rfuIsParent_ || frameBytes <= 31) &&
+                       1 + (frameBytes + 3) / 4 <=
+                           GbaRfuRequestDecoder::MAX_PAYLOAD_WORDS) {
+                if (frameBytes == 0) {
+                    accepted = admit(0, {});
+                    if (!rfuIsParent_)
+                        rfuRetainedTxData_.reset();
+                } else {
+                    const size_t wordCount = (frameBytes + 3) / 4;
+                    std::vector<uint32_t> frameWords(
+                        request.payload.begin() + 1,
+                        request.payload.begin() + static_cast<ptrdiff_t>(
+                            1 + wordCount));
+                    accepted = admit(static_cast<uint8_t>(frameBytes), frameWords);
+                    if (accepted) {
+                        rfuRetainedTxData_ = RemoteRfuData{
+                            txSequence,
+                            static_cast<uint8_t>(frameBytes), frameWords};
+                        const uint8_t firstFrameHeaderBytes =
+                            rfuIsParent_ ? 3 : 2;
+                        const uint8_t firstFramePayloadBytes =
+                            static_cast<uint8_t>(frameWords.front() &
+                                (rfuIsParent_ ? 0x7Fu : 0x1Fu));
+                        char trace[192];
+                        std::snprintf(trace, sizeof(trace),
+                            "RFU data TX: seq=%u role=%s bytes=%zu meta=%08X "
+                            "first=%08X llsf_header=%u first_len=%u",
+                            txSequence,
+                            rfuIsParent_ ? "parent" : "child", frameBytes,
+                            request.payload.front(), frameWords.front(),
+                            unsigned(firstFrameHeaderBytes),
+                            unsigned(firstFramePayloadBytes));
+                        logRfuDiagnostic(trace);
+                    }
+                }
+            } else {
+                accepted = false;
+            }
+            if (request.command == 0x25)
+                rfuMasterSwitchPending_ = accepted;
+        }
+        break;
+    case 0x26: // Receive queued link-layer data; empty polls keep later data.
+        accepted = noParameters();
+        if (accepted && rfuDataChannel_.hasReceived()) {
+            if (rfuPendingConsumedSequence_)
+                throw std::logic_error(
+                    "RFU receive response already awaits serial completion");
+            auto message = rfuDataChannel_.takeReceived();
+            if (!message)
+                throw std::logic_error("RFU receive queue changed unexpectedly");
+            const uint32_t sequence = message->sequence;
+            // DATA_RX_REQ returns an RfuPacket body, not a bare LLSF frame.
+            // Emerald's parser reads the receive byte budget from data[0]
+            // (packet offset 4) and starts LLSF data at packet offset 8. The
+            // byte array includes the ACK word, so this is one metadata word
+            // followed by frames, not two metadata words. Parent receives a
+            // child per-slot count in bits 8..12; child receives the parent's
+            // byte count in bits 0..6. This adapter uses peer slot zero.
+            response.reserve(1 + message->frameWords.size());
+            response.push_back(rfuIsParent_
+                ? static_cast<uint32_t>(message->payloadBytes) << 8
+                : message->payloadBytes);
+            const uint32_t receiveMetadata = response.front();
+            char trace[192];
+            if (message->frameWords.empty()) {
+                std::snprintf(trace, sizeof(trace),
+                    "RFU data RX: seq=%u role=%s idle_slot=1 meta=%08X "
+                    "queued=%zu", sequence,
+                    rfuIsParent_ ? "parent" : "child", receiveMetadata,
+                    rfuDataChannel_.queuedMessages());
+            } else {
+                const uint8_t firstFrameHeaderBytes =
+                    rfuIsParent_ ? 2 : 3;
+                const uint8_t firstFramePayloadBytes =
+                        static_cast<uint8_t>(message->frameWords.front() &
+                        (rfuIsParent_ ? 0x1Fu : 0x7Fu));
+                std::snprintf(trace, sizeof(trace),
+                    "RFU data RX: seq=%u role=%s bytes=%u meta=%08X "
+                    "first=%08X llsf_header=%u first_len=%u queued=%zu",
+                    sequence, rfuIsParent_ ? "parent" : "child",
+                    unsigned(message->payloadBytes), receiveMetadata,
+                    message->frameWords.front(),
+                    unsigned(firstFrameHeaderBytes),
+                    unsigned(firstFramePayloadBytes),
+                    rfuDataChannel_.queuedMessages());
+            }
+            logRfuDiagnostic(trace);
+            response.insert(response.end(), message->frameWords.begin(),
+                            message->frameWords.end());
+            rfuPendingConsumedSequence_ = sequence;
+        }
+        break;
+    case 0x27: // MS_CHANGE_REQ switches the RFU port into adapter-clocked mode.
+        accepted = noParameters();
+        if (accepted)
+            rfuMasterSwitchPending_ = true;
+        break;
+    case 0x30: // Disconnect.
+        accepted = request.payload.size() == 1;
+        if (accepted) {
+            logRfuDisconnectDiagnostic(request.command);
+            disconnect(rfuConnected_ || rfuConnectionPending_);
+        }
+        break;
+    case 0x3D: // STOP_MODE_REQ; Emerald also issues this during InitRFU.
+        accepted = noParameters();
+        // The cartridge sends this while initialising the RFU before it
+        // configures or searches for peers. Treating it as a LAN disconnect
+        // tears down the transport before the first advertisement. It stops
+        // the guest's current adapter activity; it does not end the netplay
+        // peer session.
+        if (accepted) {
+            rfuSearchingChildren_ = false;
+            rfuSearchingParents_ = false;
+        }
+        break;
+    default:
+        break;
+    }
+    char trace[256];
+    std::snprintf(trace, sizeof(trace),
+                  "RFU command: id=%02X payload_words=%zu result=%s response_words=%zu "
+                  "response0=%08X children=%u parents=%u connected=%u pending=%u",
+                  request.command, request.payload.size(),
+                  accepted ? "accepted" : "rejected", response.size(),
+                  response.empty() ? 0u : response.front(),
+                  unsigned(rfuSearchingChildren_), unsigned(rfuSearchingParents_),
+                  unsigned(rfuConnected_), unsigned(rfuConnectionPending_));
+    logRfuDiagnostic(trace, request.command != 0x1D &&
+        request.command != 0x1A && request.command != 0x11 &&
+        request.command != 0x13);
+    rfuCommandSession_.respond(accepted, std::move(response), 1);
+}
+
+void GbaSystem::servicePendingEmeraldRfuTransmit() {
+    if (!rfuPendingTxData_ || !remoteRfuEnabled_ || !rfuConnected_ ||
+        (rfuIsParent_ && rfuRadioAwaitingReply_))
+        return;
+    const auto packet = *rfuPendingTxData_;
+    if (rfuIsParent_) {
+        rfuRadioAwaitingReply_ = true;
+        rfuRadioReplyClockChange_ = rfuPendingTxClockChange_;
+    }
+    if (!sendRfuData_(packet.sequence, packet.payloadBytes, packet.frameWords)) {
+        if (rfuIsParent_) {
+            rfuRadioAwaitingReply_ = false;
+            rfuRadioReplyClockChange_ = false;
+        }
+        return;
+    }
+    ++rfuNextDataSequence_;
+    char trace[128];
+    std::snprintf(trace, sizeof(trace), "RFU local TX dispatched: seq=%u", packet.sequence);
+    logRfuDiagnostic(trace, true);
+    rfuPendingTxData_.reset();
+    rfuPendingTxClockChange_ = false;
 }
 
 void GbaSystem::tickNormalSerial(uint32_t cycles) {
     if (!normalSerialBusy_ || normalSerialCycles_ == 0)
         return;
+    if (rfuAdapterClockMaster_ && !rfuAdapterAwaitingAck_ &&
+        remoteRfuEnabled_ && rfuConnected_ &&
+        (loadIo16(REG_SIOCNT) & 1) == 0 &&
+        rfuPendingRadioEvents_ == 0) {
+        // The adapter clocks exactly one event for each completed radio
+        // cycle. Child TX scheduling alone is not a cycle; a parent send is.
+        return;
+    }
     if (cycles < normalSerialCycles_) {
         normalSerialCycles_ -= cycles;
         return;
@@ -1391,7 +2338,157 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
     normalSerialBusy_ = false;
     const uint16_t control = read16Impl(REG_SIOCNT);
     storeIo16(REG_SIOCNT, control & ~SIO_START);
-    if (control & 0x1000) {
+    if ((control & 0x1000) && (control & 1) == 0 &&
+        rfuAdapterClockMaster_ && hasEmeraldRfuProfile()) {
+        // RFU adapter events use the clock-slave SIO path. A completed parent
+        // radio cycle emits 0x28; a peer loss while the adapter owns the clock
+        // emits 0x29 and its packed slot/reason word. ACK completion returns
+        // clock ownership to Emerald; this models guest-visible events, not
+        // RFU radio timing.
+        const uint32_t guestWord = static_cast<uint32_t>(
+            read16Impl(REG_SIOMULTI0)) |
+            (static_cast<uint32_t>(read16Impl(REG_SIOMULTI0 + 2)) << 16);
+        uint32_t adapterWord = 0x80000000;
+        const bool startingEvent = !rfuAdapterAwaitingAck_;
+        if (startingEvent) {
+            if (rfuPendingRadioEvents_ > 0)
+                --rfuPendingRadioEvents_;
+            if (rfuDisconnectEventPending_) {
+                rfuAdapterEventCommand_ = 0x29;
+                rfuDisconnectEventPending_ = false;
+                rfuDisconnectPayloadPending_ = true;
+                adapterWord = makeGbaRfuCommandHeader(0x29, 1);
+                logRfuDiagnostic(
+                    "RFU adapter clocked DISCONNECTED_AND_CHANGE_REQ (0x29)");
+            } else {
+                rfuAdapterEventCommand_ = 0x28;
+                adapterWord = makeGbaRfuCommandHeader(0x28, 0);
+                logRfuDiagnostic(
+                    "RFU adapter clocked DATA_READY_AND_CHANGE_REQ (0x28)", true);
+            }
+            rfuAdapterAwaitingAck_ = true;
+        } else if (rfuDisconnectPayloadPending_) {
+            // 0x29 has one request word: slot bitmask followed by reason.
+            // Emerald sends 0xA9 after this word on the next adapter clock.
+            adapterWord = static_cast<uint32_t>(rfuDisconnectEventSlotMask_) |
+                (static_cast<uint32_t>(rfuDisconnectEventReason_) << 8);
+            rfuDisconnectPayloadPending_ = false;
+        } else {
+            const uint32_t expectedAck = makeGbaRfuResponseHeader(
+                rfuAdapterEventCommand_, 0);
+            // SIO is full duplex. Preserve the observed next-word ACK path;
+            // the simultaneous 0x28/0xA8 case remains a compatibility path.
+            if (guestWord == expectedAck) {
+                rfuAdapterClockMaster_ = false;
+                rfuAdapterAwaitingAck_ = false;
+                rfuAdapterEventCommand_ = 0;
+                rfuPendingRadioEvents_ = 0;
+                logRfuDiagnostic(
+                    "RFU adapter event ACK received; guest SIO master role restored", true);
+            } else {
+                adapterWord = 0xFFFFFFFF;
+                logRfuDiagnostic(
+                    "RFU adapter event received an invalid command ACK", true);
+            }
+        }
+        if (startingEvent && rfuAdapterEventCommand_ == 0x28 &&
+            guestWord == makeGbaRfuResponseHeader(0x28, 0)) {
+            // Retained as a compatibility allowance for the simultaneous
+            // full-duplex word shape; normal decompiled flow ACKs next.
+            rfuAdapterClockMaster_ = false;
+            rfuAdapterAwaitingAck_ = false;
+            rfuAdapterEventCommand_ = 0;
+            rfuPendingRadioEvents_ = 0;
+            logRfuDiagnostic(
+                "RFU adapter event ACK received in the header transfer", true);
+        }
+        char trace[192];
+        std::snprintf(trace, sizeof(trace),
+                      "RFU adapter word guest=%08X adapter=%08X clock=%s",
+                      guestWord, adapterWord,
+                      rfuAdapterClockMaster_ ? "adapter" : "guest");
+        logRfuDiagnostic(trace, true);
+        // The slave IRQ first waits for SI low, then raises SO and waits
+        // for SI high. This final external handshake also applies to A8.
+        rfuSiLineHigh_ = false;
+        storeIo16(REG_SIOMULTI0, static_cast<uint16_t>(adapterWord));
+        storeIo16(REG_SIOMULTI0 + 2,
+                  static_cast<uint16_t>(adapterWord >> 16));
+        if (control & SIO_IRQ_ENABLE)
+            storeIo16(REG_IF, read16Impl(REG_IF) | IRQ_SERIAL);
+        return;
+    }
+    if ((control & 0x1000) && rfuLoginActive_ &&
+        hasEmeraldRfuProfile() && !rfuLogin_.complete()) {
+        // Emerald's adapter login is an RFU-specific 32-bit SIO
+        // exchange. This clean-room endpoint reproduces the public NINTENDO
+        // challenge sequence; command service begins only after login.
+        const uint32_t guestWord = static_cast<uint32_t>(
+            read16Impl(REG_SIOMULTI0)) |
+            (static_cast<uint32_t>(read16Impl(REG_SIOMULTI0 + 2)) << 16);
+        const uint32_t adapterWord = rfuLogin_.exchangeWord(guestWord);
+        ++rfuTransferCount_;
+        char trace[160];
+        std::snprintf(trace, sizeof(trace),
+                      "RFU login word=%u guest=%08X adapter=%08X",
+                      rfuLogin_.transferCount(), guestWord, adapterWord);
+        logRfuDiagnostic(trace);
+        storeIo16(REG_SIOMULTI0, static_cast<uint16_t>(adapterWord));
+        storeIo16(REG_SIOMULTI0 + 2,
+                  static_cast<uint16_t>(adapterWord >> 16));
+        if (rfuLogin_.complete()) {
+            rfuLoginActive_ = false;
+            rfuCommandSessionActive_ = true;
+            rfuSiLineHigh_ = true;
+        }
+    } else if ((control & 0x1000) && rfuCommandSessionActive_ &&
+               hasEmeraldRfuProfile()) {
+        const uint32_t guestWord = static_cast<uint32_t>(
+            read16Impl(REG_SIOMULTI0)) |
+            (static_cast<uint32_t>(read16Impl(REG_SIOMULTI0 + 2)) << 16);
+        auto exchange = rfuCommandSession_.exchangeWord(guestWord);
+        ++rfuTransferCount_;
+        if (exchange.protocolError) {
+            char trace[160];
+            std::snprintf(trace, sizeof(trace),
+                          "RFU protocol error at word=%u guest=%08X",
+                          rfuTransferCount_, guestWord);
+            logRfuDiagnostic(trace);
+            rfuCommandSession_.reset();
+            rfuPendingConsumedSequence_.reset();
+            exchange.adapterWord = 0xFFFFFFFF;
+        } else if (exchange.requestComplete) {
+            answerEmeraldRfuRequest(exchange.request);
+        }
+        if (exchange.responseComplete && rfuPendingConsumedSequence_) {
+            const uint32_t sequence = *rfuPendingConsumedSequence_;
+            rfuPendingConsumedSequence_.reset();
+            char trace[128];
+            std::snprintf(trace, sizeof(trace),
+                          "RFU data consumed: seq=%u response_complete=1",
+                          sequence);
+            logRfuDiagnostic(trace);
+        }
+        if (rfuMasterSwitchPending_ &&
+            (exchange.adapterWord == makeGbaRfuResponseHeader(0x27, 0) ||
+             exchange.adapterWord == makeGbaRfuResponseHeader(0x25, 0))) {
+            rfuMasterSwitchPending_ = false;
+            rfuAdapterClockMaster_ = true;
+            rfuAdapterAwaitingAck_ = false;
+            logRfuDiagnostic(
+                "RFU change-request ACK complete; adapter now clocks SIO", true);
+        }
+        char trace[160];
+        std::snprintf(trace, sizeof(trace),
+                      "RFU command word=%u guest=%08X adapter=%08X",
+                      rfuTransferCount_, guestWord, exchange.adapterWord);
+        logRfuDiagnostic(trace);
+        storeIo16(REG_SIOMULTI0,
+                  static_cast<uint16_t>(exchange.adapterWord));
+        storeIo16(REG_SIOMULTI0 + 2,
+                  static_cast<uint16_t>(exchange.adapterWord >> 16));
+        rfuSiLineHigh_ = true;
+    } else if (control & 0x1000) {
         storeIo16(REG_SIOMULTI0, 0xFFFF);
         storeIo16(REG_SIOMULTI0 + 2, 0xFFFF);
     } else {
@@ -2462,6 +3559,7 @@ Arm7Tdmi::StepResult GbaSystem::stepCpu() {
 }
 
 GbaSystem::FrameResult GbaSystem::runFrame() {
+    servicePendingEmeraldRfuTransmit();
     initializeScanlineOam();
     uint32_t elapsed = 0;
     while (remoteFrameCycles_ < CYCLES_PER_FRAME) {
@@ -2524,6 +3622,8 @@ GbaSystem::FrameResult GbaSystem::runFrame() {
     remoteFrameCycles_ = 0;
     remoteFrameStalled_ = false;
     remoteInputLatch_ = 0;
+    if (remoteRfuEnabled_)
+        ++rfuGuestFrameCount_;
     if (remoteLinkEnabled_) {
         ++remoteFrameCount_;
         if (remoteLinkConnected_ && sendRemoteFrame_ && remoteLocalReady_)

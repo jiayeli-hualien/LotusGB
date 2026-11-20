@@ -5,6 +5,7 @@ build_dir ?= build
 build_dir_stamp := $(build_dir)/.directory-ready
 
 gba_sources := ../gba/arm7tdmi.cpp ../gba/gba_system.cpp ../gba/gba_audio.cpp \
+	../gba/gba_rfu_protocol.cpp \
 	../gba/gba_cartridge_rtc.cpp \
 	../lib/dmg_apu.cpp
 core_info := lotusgba_libretro.info
@@ -19,15 +20,24 @@ all: build
 
 build: $(build_dir)/lotusgba_libretro.so $(build_dir)/lotusgba_libretro.info $(macos_core)
 
-test: $(build_dir)/gba_libretro_core_test $(build_dir)/gba_video_test \
-	$(build_dir)/gba_audio_test $(build_dir)/gba_rtc_test
+test: $(build_dir)/gba_rfu_ni_test $(build_dir)/gba_bios_sqrt_test $(build_dir)/gba_libretro_core_test $(build_dir)/gba_video_test \
+	$(build_dir)/gba_audio_test $(build_dir)/gba_rtc_test \
+	$(build_dir)/gba_rfu_protocol_test
+	$(build_dir)/gba_rfu_ni_test
+	$(build_dir)/gba_bios_sqrt_test
 	$(build_dir)/gba_libretro_core_test
 	$(build_dir)/gba_video_test
 	$(build_dir)/gba_audio_test
 	$(build_dir)/gba_rtc_test
+	$(build_dir)/gba_rfu_protocol_test
+
+$(build_dir)/gba_rfu_protocol_test: gba_rfu_protocol_test.cpp \
+		../gba/gba_rfu_protocol.cpp ../gba/include/gba_rfu_protocol.hpp | $(build_dir_stamp)
+	$(CXX) $(CPPFLAGS) -o $@ gba_rfu_protocol_test.cpp ../gba/gba_rfu_protocol.cpp
 
 $(build_dir)/lotusgba_libretro.so: libretro_gba_core.cpp $(gba_sources) \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
+		../gba/include/gba_rfu_protocol.hpp \
 		../gba/include/gba_cartridge_rtc.hpp \
 		../gba/include/gba_audio.hpp ../lib/include/dmg_apu.hpp \
 		../libretro/include/libretro.h | $(build_dir_stamp)
@@ -45,6 +55,7 @@ $(build_dir)/gba_libretro_core_test: gba_libretro_core_test.cpp libretro_gba_cor
 		../../tests/roms/gba-thumb-tests/thumb.gba \
 		../../tests/roms/gba-pong/pong.gba \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
+		../gba/include/gba_rfu_protocol.hpp \
 		../gba/include/gba_cartridge_rtc.hpp \
 		../gba/include/gba_audio.hpp ../lib/include/dmg_apu.hpp \
 		../libretro/include/libretro.h | $(build_dir_stamp)
@@ -54,6 +65,7 @@ $(build_dir)/gba_libretro_core_test: gba_libretro_core_test.cpp libretro_gba_cor
 $(build_dir)/gba_video_test: gba_video_test.cpp $(gba_sources) \
 		../../tests/include/gba_boot_rom.hpp \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
+		../gba/include/gba_rfu_protocol.hpp \
 		../gba/include/gba_cartridge_rtc.hpp \
 		../gba/include/gba_audio.hpp ../lib/include/dmg_apu.hpp | $(build_dir_stamp)
 	$(CXX) $(CPPFLAGS) -o $@ gba_video_test.cpp $(gba_sources)
@@ -62,6 +74,7 @@ $(build_dir)/gba_audio_test: gba_audio_test.cpp $(gba_sources) \
 		../../tests/roms/gba-audio-check/audio-check.gba \
 		../../tests/roms/gba-audio-check/direct-sound-check.gba \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
+		../gba/include/gba_rfu_protocol.hpp \
 		../gba/include/gba_cartridge_rtc.hpp \
 		../gba/include/gba_audio.hpp ../lib/include/dmg_apu.hpp | $(build_dir_stamp)
 	$(CXX) $(CPPFLAGS) -o $@ gba_audio_test.cpp $(gba_sources)
@@ -75,15 +88,34 @@ $(build_dir)/gba_audio_test: gba_audio_test.cpp $(gba_sources) \
 	python3 $<
 
 $(build_dir)/gba_rtc_test: gba_rtc_test.cpp ../gba/gba_system.cpp \
+		../gba/gba_rfu_protocol.cpp \
 		../gba/gba_cartridge_rtc.cpp ../gba/arm7tdmi.cpp \
 		../gba/gba_audio.cpp ../lib/dmg_apu.cpp \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
 		../gba/include/gba_cartridge_rtc.hpp ../gba/include/gba_audio.hpp \
+		../gba/include/gba_rfu_protocol.hpp \
 		../lib/include/dmg_apu.hpp | $(build_dir_stamp)
 	$(CXX) $(CPPFLAGS) -o $@ gba_rtc_test.cpp ../gba/arm7tdmi.cpp \
-		../gba/gba_system.cpp ../gba/gba_cartridge_rtc.cpp \
+		../gba/gba_system.cpp ../gba/gba_rfu_protocol.cpp \
+		../gba/gba_cartridge_rtc.cpp \
 		../gba/gba_audio.cpp ../lib/dmg_apu.cpp
 
 $(build_dir_stamp):
 	mkdir -p $(build_dir)
 	touch $@
+
+$(build_dir)/gba_bios_sqrt_test: ../unit_test/gba_bios_sqrt_test.cpp \
+        ../gba/arm7tdmi.cpp ../gba/include/arm7tdmi.hpp | $(build_dir_stamp)
+	$(CXX) $(CPPFLAGS) -o $@ ../unit_test/gba_bios_sqrt_test.cpp ../gba/arm7tdmi.cpp
+
+# Focused consolidated RFU gate; also included in the ordinary test target.
+# Synthetic guest driver, no commercial ROM required.
+.PHONY: test-rfu-ni
+test-rfu-ni: $(build_dir)/gba_rfu_ni_test
+	$(build_dir)/gba_rfu_ni_test
+
+$(build_dir)/gba_rfu_ni_test: gba_rfu_ni_test.cpp $(gba_sources) \
+        ../gba/include/gba_system.hpp ../gba/include/gba_rfu_protocol.hpp \
+        ../gba/include/arm7tdmi.hpp ../gba/include/gba_audio.hpp \
+        ../gba/include/gba_cartridge_rtc.hpp ../lib/include/dmg_apu.hpp | $(build_dir_stamp)
+	$(CXX) $(CPPFLAGS) -o $@ gba_rfu_ni_test.cpp $(gba_sources)

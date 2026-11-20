@@ -22,7 +22,7 @@ by the validation matrix.
 The experimental LotusGBA core is a separate system under `src/gba` with its
 own libretro adapter under `src/gba_libretro`; it does not extend
 `GameBoySystem` or the LotusGB core. Its first-stage status and limitations are
-tracked in the [GBA development record](gba-development.md). The licensed ARM
+tracked in the [GBA development record](gba-status.md). The licensed ARM
 and Thumb instruction suites pass through its public callbacks; this does not
 yet establish GBA game playability.
 
@@ -223,7 +223,7 @@ clock is independent of Timer/DIV and is not restarted by SC writes.
 In internal-clock mode it shifts in one high bit per edge with no connected
 peer; after eight bits it clears SC bit 7 and requests the serial interrupt.
 External-clock mode waits for host-supplied edges; an optional internal-clock
-callback exchanges bits with a peer (see the [host interface and tests](serial-link.md)).
+callback exchanges bits with a peer (see the [host interface and tests](serial-link-overview.md)).
 Clearing SC bit 7 aborts without completing or requesting an interrupt.
 The synthetic serial clock starts at phase zero; exact model-specific
 post-boot phase, SC-write edge races, link cables and accessories are not

@@ -204,6 +204,7 @@ package-retroarch-steam-deck:
 GBA_ZIG ?= $(CURDIR)/build/toolchains/zig-0.17.0/zig
 GBA_ZIG_PAIR_DIR ?= $(CURDIR)/build/gba-zig-pair
 GBA_ZIG_LINUX_DIR := $(GBA_ZIG_PAIR_DIR)/linux-x86_64
+GBA_ZIG_LINUX_ARM64_DIR := $(GBA_ZIG_PAIR_DIR)/linux-aarch64
 GBA_ZIG_MACOS_DIR := $(GBA_ZIG_PAIR_DIR)/macos-arm64
 
 build-gba-zig-pair:
@@ -217,6 +218,12 @@ build-gba-zig-pair:
 		"$(GBA_ZIG_LINUX_DIR)/lotusgba_libretro.info"
 	ZIG_GLOBAL_CACHE_DIR="$(CURDIR)/build/zig-cache/global" \
 	ZIG_LOCAL_CACHE_DIR="$(CURDIR)/build/zig-cache/local" \
+	$(MAKE) -C $(src_dir)/gba_libretro build_dir="$(GBA_ZIG_LINUX_ARM64_DIR)" \
+		CXX="$(GBA_ZIG) c++ -target aarch64-linux-gnu" \
+		"$(GBA_ZIG_LINUX_ARM64_DIR)/lotusgba_libretro.so" \
+		"$(GBA_ZIG_LINUX_ARM64_DIR)/lotusgba_libretro.info"
+	ZIG_GLOBAL_CACHE_DIR="$(CURDIR)/build/zig-cache/global" \
+	ZIG_LOCAL_CACHE_DIR="$(CURDIR)/build/zig-cache/local" \
 	$(MAKE) -C $(src_dir)/gba_libretro build_dir="$(GBA_ZIG_MACOS_DIR)" \
 		CXX="$(GBA_ZIG) c++ -target aarch64-macos" \
 		"$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.so" \
@@ -224,4 +231,5 @@ build-gba-zig-pair:
 	cp "$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.so" \
 		"$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.dylib"
 	shasum -a 256 "$(GBA_ZIG_LINUX_DIR)/lotusgba_libretro.so" \
+		"$(GBA_ZIG_LINUX_ARM64_DIR)/lotusgba_libretro.so" \
 		"$(GBA_ZIG_MACOS_DIR)/lotusgba_libretro.dylib"

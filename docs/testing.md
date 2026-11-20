@@ -106,7 +106,7 @@ while comparing the two environments.
 
 The Zig build path has passed gameplay checks on both distributions.
 The [Steam Deck checkpoint](steam-deck-check.md#m3-gameplay-and-battery-save-checkpoint--passed)
-records a hash-identified Linux core. The [Red/Blue LAN rematch](serial-link.md)
+records a hash-identified Linux core. The [Red/Blue LAN rematch](serial-link-overview.md)
 used a later Mac-built Linux core on Ubuntu RetroArch 1.18.0. In the Ubuntu
 run, the deployed core's SHA-256 matched the Mac build output. The two
 checkpoints used different revisions, so a new build still needs a load

@@ -24,14 +24,14 @@ LotusGBA has automated homebrew gameplay coverage and a private Pokémon
 Emerald early-game checkpoint: Route 102 movement, in-game save/reload, and RTC
 advancement have been observed. Its video, audio, save, BIOS startup and timing
 coverage remain bounded; these results do not establish broad GBA compatibility
-or hardware-level fidelity. See the [GBA development record](docs/gba-development.md).
+or hardware-level fidelity. See the [GBA implementation status](docs/gba-status.md).
 
 The libretro core sends ordered link data through RetroArch Netpacket. Pokémon
 Red/Blue LAN trade and battle checks have completed in reported setups, though
 these bounded results do not guarantee every game, session, or network will
 stay in sync. Synthetic tests also check shared battle RNG and long ordered
 data streams without commercial game files. See the
-[serial-link design and evidence](docs/serial-link.md) for results and limits.
+[serial-link design and evidence](docs/serial-link-overview.md) for results and limits.
 Public checks use licensed homebrew and original fixtures; commercial ROMs,
 derived saves and captures are not included.
 
@@ -60,9 +60,9 @@ macOS builds also produce `.dylib` variants. See the
 - [Testing workflow and ROM policy](docs/testing.md)
 - [DMG validation matrix](docs/dmg-validation.md)
 - [CGB development and acceptance](docs/cgb-development.md)
-- [GBA implementation and evidence](docs/gba-development.md)
+- [GBA implementation and evidence](docs/gba-status.md)
 - [Homebrew gameplay checks](docs/homebrew-check.md)
-- [Serial-link design and evidence](docs/serial-link.md)
+- [Serial-link design and evidence](docs/serial-link-overview.md)
 - [Save-state format and limits](docs/save-states.md)
 - [Input and presentation behavior](docs/input-latency.md)
 - [Documentation writing guide](docs/documentation-guide.md)

@@ -355,6 +355,23 @@ bool Arm7Tdmi::executeSoftwareInterrupt(uint32_t service, GbaBus &bus,
                                         uint32_t returnAddress) {
     if (bus.hasBios())
         return enterSwiVector(returnAddress);
+    if (service == 0x000008) { // BIOS Sqrt: floor(sqrt(unsigned r0)).
+        // HLE returns the documented result without BIOS instruction timing
+        // or scratch-register side effects. A real BIOS still uses its vector.
+        // Reference: https://mgba-emu.github.io/gbatek/#biosarithmeticfunctions
+        uint32_t lower = 0;
+        uint32_t upper = 65536;
+        const uint32_t input = registers_[0];
+        while (lower + 1 < upper) {
+            const uint32_t middle = lower + (upper - lower) / 2;
+            if (uint64_t{middle} * middle <= input)
+                lower = middle;
+            else
+                upper = middle;
+        }
+        registers_[0] = lower;
+        return true;
+    }
     if (service == 0x000001) { // BIOS RegisterRamReset
         bus.registerRamReset(static_cast<uint8_t>(registers_[0]));
         return true;
