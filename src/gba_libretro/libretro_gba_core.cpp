@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <exception>
 #include <filesystem>
@@ -252,7 +253,7 @@ uint16_t readPressedButtons(unsigned port) {
     return pressed;
 }
 
-constexpr char NETPACKET_PROTOCOL_VERSION[] = "LotusGBA-emerald-rfu-v9";
+constexpr char NETPACKET_PROTOCOL_VERSION[] = "LotusGBA-emerald-rfu-v12";
 constexpr uint8_t PACKET_MAGIC[] = {'L', 'G', 'B', 'A'};
 enum class PacketType : uint8_t {
     Startup, Ready, TransferStart, TransferWord, FrameProgress, DataBlock,
@@ -260,10 +261,10 @@ enum class PacketType : uint8_t {
     RfuDataAccepted, RfuDisconnect
 };
 
-// One immutable snapshot per direction may be in flight. Credit is released
-// at bounded adapter RX admission, independently of guest 0x26 or NI ACKs.
-// Pending parent writes remain in the local TX register, not a network FIFO.
-constexpr size_t RFU_DATA_WINDOW = 1;
+// Grouped commands retain a bounded immutable pipeline. Transport credits
+// mean adapter admission; the final radio fence additionally waits for all
+// ordered replies. Neither kind of credit synthesizes a guest NI ACK.
+constexpr size_t RFU_DATA_WINDOW = LOTUSGBA::GbaRfuDataChannel::MAX_QUEUED_MESSAGES;
 
 void netpacketPoll();
 void clearRfuSendWindow();
@@ -724,10 +725,11 @@ void startRemoteEmulation() {
     gbaSystem->configureRemoteRfuLink(
         rfuId(net.localId), rfuId(net.peerId), sendRfuAdvertisement,
         sendRfuConnectionRequest, sendRfuData, sendRfuDataAccepted,
-        sendRfuDisconnect);
+        sendRfuDisconnect, GbaSystem::RfuCompletionMode::GroupedCommands);
+    const char *detailedTrace = std::getenv("LOTUSGBA_RFU_TRACE");
     gbaSystem->setRfuDiagnosticLogger([](const std::string &message) {
         logMessage(RETRO_LOG_INFO, message.c_str());
-    });
+    }, detailedTrace && std::string(detailedTrace) == "1");
     net.guestFrameMeasurementStart = std::chrono::steady_clock::now();
     net.guestFrameMeasurementStarted = true;
     net.linkConfigured = true;

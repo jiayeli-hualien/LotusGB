@@ -83,6 +83,26 @@ private:
     std::optional<Message> scheduledChild_;
 };
 
+// Bounded Emerald UNI block grouping. This plans local buffered-prefix
+// completion only; the caller owns immutable packet storage and the final
+// peer-confirmed fence. NI and readiness commands never get synthesized ACKs.
+class GbaRfuCommandGroup final {
+public:
+    static constexpr size_t MAX_COMMANDS = 28;
+    static constexpr unsigned MAX_BLOCKS = 20;
+    enum class Decision { WaitForPeer, BufferedPrefix };
+    Decision append(uint8_t payloadBytes, const std::vector<uint32_t> &words);
+    void completeFence();
+    void reset();
+    bool awaitingFence() const { return fence_; }
+private:
+    bool active_ = false;
+    bool fence_ = false;
+    unsigned blocks_ = 0;
+    unsigned next_ = 0;
+    size_t commands_ = 0;
+};
+
 // Tracks the RFU's word-level command transaction: receive a framed request,
 // emit the ACK on the next clocked word, then return any response words.
 class GbaRfuCommandSession final {

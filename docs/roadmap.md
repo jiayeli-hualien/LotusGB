@@ -76,6 +76,18 @@ Reset/reconnect races, recovery and measured network timeout budgets remain
 open; see the [RFU design and reproducible test scope](gba-rfu-protocol.md).
 Commercial-game session records remain private. GBA save states remain deferred.
 
+The grouped RFU frontend has a bounded English Emerald relay trade checkpoint
+above 100 ms reported ping; leader movement and menus still stall. Keep
+latency optimization separate from data integrity and callback/barrier
+correctness. See the [canonical scope and evidence](gba-rfu-protocol.md#scope-and-evidence).
+
+Deferred frontend follow-up: remove unnecessary guest restarts when starting
+or cancelling a network link. Audit both endpoints' ROM-driven Wireless
+Adapter / Link Cable selection and consider an explicit startup core option.
+Define which mode changes require a reset, then check that connecting,
+cancelling and reconnecting preserve running game progress when the mode is
+unchanged. Keep this separate from RFU latency and smoothness validation.
+
 The bounded gameplay and Steam Deck checkpoints are complete. The intermittent
 Deck tearing report is closed for now: it did not recur in the latest Deck
 check, and the user reports no tearing during Mac testing. No core defect was

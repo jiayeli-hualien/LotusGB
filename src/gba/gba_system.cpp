@@ -282,6 +282,13 @@ void GbaSystem::reset() {
     rfuCommandSession_.reset();
     rfuPendingTxData_.reset();
     rfuPendingTxClockChange_ = false;
+    rfuGuestSyncRequired_ = true;
+    rfuGroupedRounds_.clear();
+    rfuCommandGroup_.reset();
+    rfuPendingTxBuffered_ = false;
+    rfuParentAttemptPending_ = false;
+    rfuParentReplyReady_ = false;
+    rfuDataAckPayloadPending_ = false;
     rfuRadioAwaitingReply_ = false;
     rfuRadioReplyClockChange_ = false;
     rfuPendingConsumedSequence_.reset();
@@ -1314,12 +1321,13 @@ void GbaSystem::configureRemoteRfuLink(
     RfuAdvertisementSender sendAdvertisement,
     RfuConnectionSender sendConnection, RfuDataSender sendData,
     RfuDataAcceptedSender sendDataAccepted,
-    RfuDisconnectSender sendDisconnect) {
+    RfuDisconnectSender sendDisconnect, RfuCompletionMode completionMode) {
     if (!hasEmeraldRfuProfile() || remoteRfuEnabled_ ||
         remoteLinkEnabled_ || linkPeer_ || localId == 0 || peerId == 0 ||
         localId == peerId || !sendAdvertisement || !sendConnection ||
         !sendData)
         throw std::invalid_argument("Invalid Emerald remote RFU link");
+    rfuCompletionMode_ = completionMode;
     remoteRfuEnabled_ = true;
     rfuLocalId_ = localId;
     rfuPeerId_ = peerId;
@@ -1344,6 +1352,13 @@ void GbaSystem::configureRemoteRfuLink(
     rfuRetainedTxData_.reset();
     rfuPendingTxData_.reset();
     rfuPendingTxClockChange_ = false;
+    rfuGuestSyncRequired_ = true;
+    rfuGroupedRounds_.clear();
+    rfuCommandGroup_.reset();
+    rfuPendingTxBuffered_ = false;
+    rfuParentAttemptPending_ = false;
+    rfuParentReplyReady_ = false;
+    rfuDataAckPayloadPending_ = false;
     rfuRadioAwaitingReply_ = false;
     rfuRadioReplyClockChange_ = false;
     rfuPendingRadioEvents_ = 0;
@@ -1355,7 +1370,8 @@ void GbaSystem::configureRemoteRfuLink(
 }
 
 void GbaSystem::setRfuDiagnosticLogger(
-    std::function<void(const std::string &)> logger) {
+    std::function<void(const std::string &)> logger, bool detailed) {
+    rfuDetailedDiagnostics_ = detailed;
     rfuDiagnosticLogger_ = std::move(logger);
     rfuTransferCount_ = 0;
     rfuDiagnosticCount_ = 0;
@@ -1384,6 +1400,155 @@ void GbaSystem::logRfuDiagnostic(const std::string &message, bool essential) {
     rfuDiagnosticLogger_(message);
     if (rfuDiagnosticCount_ == MAX_RFU_DIAGNOSTICS)
         rfuDiagnosticLogger_("RFU trace limit reached; further SIO words suppressed");
+}
+
+// Opt-in trace records the bytes at each ownership boundary, not decoded
+// game state. It neither changes packet admission nor reads guest memory via
+// the timed CPU bus. Commercial-game traces must stay outside the repository.
+void GbaSystem::logRfuDataDiagnostic(
+    const char *boundary, uint32_t sequence, uint8_t payloadBytes,
+    const std::vector<uint32_t> &words, bool senderParent) {
+    if (!rfuDetailedDiagnostics_ || !rfuDiagnosticLogger_)
+        return;
+    constexpr char HEX[] = "0123456789ABCDEF";
+    std::string hex;
+    for (size_t index = 0; index < payloadBytes && index / 4 < words.size(); ++index) {
+        const uint8_t byte = static_cast<uint8_t>(words[index / 4] >> ((index % 4) * 8));
+        hex += HEX[byte >> 4];
+        hex += HEX[byte & 15];
+    }
+    char trace[384];
+    std::snprintf(trace, sizeof(trace),
+        "RFU payload: frame=%llu cycles=%llu boundary=%s seq=%u sender=%s "
+        "bytes=%u pc=%08X lr=%08X queued=%zu awaiting_reply=%u reply_ready=%u hex=",
+        static_cast<unsigned long long>(rfuGuestFrameCount_),
+        static_cast<unsigned long long>(emulatedCycles_), boundary, sequence,
+        senderParent ? "parent" : "child", unsigned(payloadBytes),
+        cpu_.programCounter(), cpu_.registerValue(14), rfuDataChannel_.queuedMessages(),
+        unsigned(rfuRadioAwaitingReply_), unsigned(rfuParentReplyReady_));
+    rfuDiagnosticLogger_(std::string(trace) + (hex.empty() ? "-" : hex));
+}
+
+bool GbaSystem::rfuParentCanDispatch() const {
+    if (rfuCompletionMode_ != RfuCompletionMode::GroupedCommands)
+        return !rfuRadioAwaitingReply_;
+    return rfuGroupedRounds_.size() < GbaRfuDataChannel::MAX_QUEUED_MESSAGES &&
+        rfuGroupedRounds_.size() + rfuDataChannel_.queuedMessages() <
+            GbaRfuDataChannel::MAX_QUEUED_MESSAGES &&
+        (rfuGroupedRounds_.empty() || rfuGroupedRounds_.back().buffered);
+}
+
+bool GbaSystem::dispatchRfuParent(uint32_t sequence, uint8_t payloadBytes,
+    const std::vector<uint32_t> &words, bool clockChange, bool buffered) {
+    if (!rfuParentCanDispatch()) return false;
+    rfuGroupedRounds_.push_back({sequence, clockChange, buffered});
+    rfuRadioAwaitingReply_ = true;
+    if (!sendRfuData_(sequence, payloadBytes, words)) {
+        rfuGroupedRounds_.pop_back();
+        rfuRadioAwaitingReply_ = !rfuGroupedRounds_.empty();
+        return false;
+    }
+    // Intentional compatibility behavior: a prefix's radio slot ACK means
+    // immutable local/transport storage, not remote receipt. The last block
+    // fragment and readiness/unknown commands fence all preceding replies.
+    // Guest NI/application ACK contents are never generated here.
+    // See docs/gba-rfu-protocol.md: Grouped command pipeline.
+    if (clockChange && buffered)
+        rfuParentReplyReady_ = true;
+    if (rfuDetailedDiagnostics_) {
+        char trace[160];
+        std::snprintf(trace, sizeof(trace), "RFU group dispatch: seq=%u completion=%s pending=%zu",
+                      sequence, buffered ? "buffered-prefix" : "peer-fence", rfuGroupedRounds_.size());
+        logRfuDiagnostic(trace, true);
+    }
+    logRfuDataDiagnostic("tx_dispatch", sequence, payloadBytes, words, true);
+    return true;
+}
+
+bool GbaSystem::rfuParentPollReady() const {
+    if (rfuCompletionMode_ == RfuCompletionMode::GroupedCommands)
+        return rfuIsParent_ && rfuParentAttemptPending_ && rfuParentReplyReady_;
+    return rfuIsParent_ && rfuCompletionMode_ != RfuCompletionMode::RemoteReply &&
+        rfuParentAttemptPending_ &&
+        (rfuCompletionMode_ != RfuCompletionMode::GuardedLocalPoll ||
+         !rfuGuestSyncRequired_ || rfuParentReplyReady_);
+}
+
+void GbaSystem::observeRfuSyncPayload(
+    bool senderParent, uint8_t payloadBytes, const std::vector<uint32_t> &words) {
+    if (rfuCompletionMode_ != RfuCompletionMode::GuardedLocalPoll || !payloadBytes)
+        return;
+    const auto byte = [&words](size_t index) {
+        return static_cast<uint8_t>(words[index / 4] >> ((index % 4) * 8));
+    };
+    const size_t headerBytes = senderParent ? 3u : 2u;
+    // A one-byte ghost send is no evidence of an application phase change.
+    if (senderParent && payloadBytes == 1)
+        return;
+    bool critical = false, ownKeys = false;
+    size_t offset = 0;
+    while (offset + headerBytes <= payloadBytes && words.size() * 4 >= payloadBytes) {
+        uint32_t header = 0;
+        for (size_t i = 0; i < headerBytes; ++i)
+            header |= uint32_t{byte(offset + i)} << (i * 8);
+        const size_t length = header & (senderParent ? 127u : 31u);
+        const unsigned state = (header >> (senderParent ? 14 : 10)) & 15;
+        offset += headerBytes;
+        if (offset + length > payloadBytes) { critical = true; break; }
+        if (state != 4 || length != (senderParent ? 70u : 14u)) {
+            critical = true; // NI and unrecognized data retain synchronous completion.
+        } else {
+            for (size_t row = 0; row < length / 14; ++row) {
+                const size_t at = offset + row * 14;
+                uint16_t command = static_cast<uint16_t>(byte(at) | (uint16_t{byte(at + 1)} << 8));
+                if (!senderParent) command &= 0xFF1F; // Child application sequence bits.
+                if (command && command != 0xBE00) critical = true;
+                if (senderParent && row == 0 && command == 0xBE00) ownKeys = true;
+            }
+        }
+        offset += length;
+    }
+    if (offset != payloadBytes) critical = true;
+    // Emerald's trade UI conditionally installs a standby callback only after
+    // its block sender is idle, then advances the UI unconditionally. Letting
+    // local fade frames outrun that callback loses the standby handoff.
+    // Keep the entire data phase synchronous, including idle gaps. Only an
+    // explicit parent-owned pure key stream opens local polling again.
+    // This profile-specific compatibility boundary is documented in
+    // docs/gba-rfu-protocol.md; it is not a hardware RFU timing claim.
+    const bool required = critical ? true : (ownKeys ? false : rfuGuestSyncRequired_);
+    if (required != rfuGuestSyncRequired_) {
+        rfuGuestSyncRequired_ = required;
+        logRfuDiagnostic(required ? "RFU sync boundary: data phase requires peer completion"
+                                  : "RFU sync boundary: pure key phase permits local polls", true);
+    }
+}
+
+void GbaSystem::logRfuFrameDiagnostic() {
+    if (!rfuDetailedDiagnostics_ || !rfuDiagnosticLogger_ || rfuGuestFrameCount_ % 60)
+        return;
+    size_t black = 0;
+    uint32_t hash = 2166136261u;
+    for (uint16_t pixel : frameBuffer_) {
+        if ((pixel & 0x7FFF) == 0) ++black;
+        hash = (hash ^ pixel) * 16777619u;
+    }
+    char trace[512];
+    std::snprintf(trace, sizeof(trace),
+        "RFU frame: frame=%llu cycles=%llu role=%s pc=%08X lr=%08X sp=%08X "
+        "dispcnt=%04X bldcnt=%04X bldalpha=%04X bldy=%04X black=%zu "
+        "pixels=%zu fb_hash=%08X siocnt=%04X ie=%04X if=%04X ime=%04X "
+        "queued=%zu next_rx=%u next_tx=%u awaiting_reply=%u reply_ready=%u sync_required=%u",
+        static_cast<unsigned long long>(rfuGuestFrameCount_),
+        static_cast<unsigned long long>(emulatedCycles_), rfuIsParent_ ? "parent" : "child",
+        cpu_.programCounter(), cpu_.registerValue(14), cpu_.registerValue(13),
+        loadIo16(REG_DISPCNT), loadIo16(0x04000050), loadIo16(0x04000052),
+        loadIo16(0x04000054), black, frameBuffer_.size(), hash, loadIo16(REG_SIOCNT),
+        loadIo16(REG_IE), loadIo16(REG_IF), loadIo16(REG_IME),
+        rfuDataChannel_.queuedMessages(), rfuDataChannel_.expectedSequence(),
+        rfuNextDataSequence_, unsigned(rfuRadioAwaitingReply_), unsigned(rfuParentReplyReady_),
+        unsigned(rfuGuestSyncRequired_));
+    rfuDiagnosticLogger_(trace);
 }
 
 void GbaSystem::logRfuDisconnectDiagnostic(uint8_t command) {
@@ -1489,19 +1654,45 @@ GbaSystem::RfuDataReceiveResult GbaSystem::receiveRemoteRfuData(
     const std::vector<uint32_t> &frameWords) {
     // A child stores one immutable reply snapshot separately from its live TX
     // register. A further exchange cannot overwrite a reply not yet dispatched.
-    if (remoteRfuEnabled_ && rfuConnected_ && !rfuIsParent_ && rfuPendingTxData_)
+    if (remoteRfuEnabled_ && rfuConnected_ && !rfuIsParent_ &&
+        (rfuPendingTxData_ ||
+         (rfuCompletionMode_ == RfuCompletionMode::GroupedCommands &&
+          (rfuPendingRadioEvents_ || rfuAdapterAwaitingAck_ ||
+           rfuPendingConsumedSequence_ || rfuDataChannel_.hasReceived()))))
         return RfuDataReceiveResult::QueueFull;
+    if (remoteRfuEnabled_ && rfuConnected_ && rfuIsParent_ &&
+        rfuCompletionMode_ == RfuCompletionMode::GroupedCommands &&
+        (rfuGroupedRounds_.empty() || rfuGroupedRounds_.front().sequence != sequence))
+        return RfuDataReceiveResult::UnexpectedSequence;
     const auto result = rfuDataChannel_.receive(sequence, payloadBytes, frameWords);
     if (result != RfuDataReceiveResult::Accepted)
         return result;
+    logRfuDataDiagnostic("rx_admit", sequence, payloadBytes, frameWords, !rfuIsParent_);
     if (rfuIsParent_) {
-        // This data is the child response to the parent's outstanding radio
-        // exchange, not an independent child transmission awaiting another
-        // parent send. Complete both directions at this boundary.
-        if (rfuRadioAwaitingReply_) {
+        observeRfuSyncPayload(false, payloadBytes, frameWords);
+        if (rfuCompletionMode_ == RfuCompletionMode::GroupedCommands) {
+            const auto round = rfuGroupedRounds_.front();
+            rfuGroupedRounds_.pop_front();
             rfuDataChannel_.advanceParentRadioCycle();
-            if (rfuRadioReplyClockChange_)
-                ++rfuPendingRadioEvents_;
+            rfuRadioAwaitingReply_ = !rfuGroupedRounds_.empty();
+            if (!round.buffered) {
+                if (round.clockChange) {
+                    rfuParentReplyReady_ = true;
+                    rfuCommandGroup_.completeFence();
+                }
+                // An ordinary 0x24 never entered the command-group planner.
+                // Its reply must preserve a newer queued 0x25 initializer.
+            }
+        } else if (rfuRadioAwaitingReply_) {
+            // The reference model completes both directions at this real
+            // child-reply boundary, rather than pipelining buffered prefixes.
+            rfuDataChannel_.advanceParentRadioCycle();
+            if (rfuRadioReplyClockChange_) {
+                if (rfuCompletionMode_ != RfuCompletionMode::RemoteReply)
+                    rfuParentReplyReady_ = true;
+                else
+                    ++rfuPendingRadioEvents_;
+            }
             rfuRadioAwaitingReply_ = false;
             rfuRadioReplyClockChange_ = false;
         }
@@ -1517,6 +1708,7 @@ GbaSystem::RfuDataReceiveResult GbaSystem::receiveRemoteRfuData(
         // by retransmitting an already selected child slot on every cycle.
         rfuRetainedTxData_.reset();
         if (sendRfuData_(rfuNextDataSequence_, count, reply)) {
+            logRfuDataDiagnostic("tx_dispatch", rfuNextDataSequence_, count, reply, false);
             ++rfuNextDataSequence_;
         } else {
             rfuPendingTxData_ = RemoteRfuData{rfuNextDataSequence_, count, reply};
@@ -1558,6 +1750,14 @@ void GbaSystem::receiveRemoteRfuDisconnect() {
     rfuRetainedTxData_.reset();
     rfuPendingTxData_.reset();
     rfuPendingTxClockChange_ = false;
+    rfuGuestSyncRequired_ = true;
+    rfuGroupedRounds_.clear();
+    rfuCommandGroup_.reset();
+    rfuPendingTxBuffered_ = false;
+    rfuParentAttemptPending_ = false;
+    rfuParentReplyReady_ = false;
+    if (!rfuAdapterAwaitingAck_)
+        rfuDataAckPayloadPending_ = false;
     rfuRadioAwaitingReply_ = false;
     rfuRadioReplyClockChange_ = false;
     rfuMasterSwitchPending_ = false;
@@ -1572,6 +1772,13 @@ void GbaSystem::disconnectRemoteRfuLink() {
     rfuRetainedTxData_.reset();
     rfuPendingTxData_.reset();
     rfuPendingTxClockChange_ = false;
+    rfuGuestSyncRequired_ = true;
+    rfuGroupedRounds_.clear();
+    rfuCommandGroup_.reset();
+    rfuPendingTxBuffered_ = false;
+    rfuParentAttemptPending_ = false;
+    rfuParentReplyReady_ = false;
+    rfuDataAckPayloadPending_ = false;
     rfuRadioAwaitingReply_ = false;
     rfuRadioReplyClockChange_ = false;
     rfuPendingRadioEvents_ = 0;
@@ -1757,6 +1964,13 @@ void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
         rfuAdapterClockMaster_ = false;
         rfuAdapterAwaitingAck_ = false;
         rfuAdapterEventCommand_ = 0;
+        rfuGuestSyncRequired_ = true;
+        rfuGroupedRounds_.clear();
+        rfuCommandGroup_.reset();
+        rfuPendingTxBuffered_ = false;
+        rfuParentAttemptPending_ = false;
+        rfuParentReplyReady_ = false;
+        rfuDataAckPayloadPending_ = false;
         rfuDisconnectEventPending_ = false;
         rfuDisconnectPayloadPending_ = false;
         rfuSiLineHigh_ = false;
@@ -1957,6 +2171,13 @@ void GbaSystem::answerEmeraldRfuRequest(
         rfuDataChannel_.disconnect();
         rfuPendingTxData_.reset();
         rfuPendingTxClockChange_ = false;
+        rfuGuestSyncRequired_ = true;
+        rfuGroupedRounds_.clear();
+        rfuCommandGroup_.reset();
+        rfuPendingTxBuffered_ = false;
+        rfuParentAttemptPending_ = false;
+        rfuParentReplyReady_ = false;
+        rfuDataAckPayloadPending_ = false;
         rfuRadioAwaitingReply_ = false;
         rfuRadioReplyClockChange_ = false;
         rfuConnected_ = false;
@@ -2096,15 +2317,48 @@ void GbaSystem::answerEmeraldRfuRequest(
         accepted = remoteRfuEnabled_ && rfuConnected_ && sendRfuData_ &&
             (!rfuIsParent_ || !rfuPendingTxData_ || !rfuPendingTxClockChange_) &&
             !request.payload.empty() &&
-            request.payload.size() <= GbaRfuRequestDecoder::MAX_PAYLOAD_WORDS;
+            request.payload.size() <= GbaRfuRequestDecoder::MAX_PAYLOAD_WORDS &&
+            !(rfuIsParent_ && rfuCompletionMode_ != RfuCompletionMode::RemoteReply &&
+              request.command == 0x25 &&
+              ((rfuCompletionMode_ == RfuCompletionMode::GroupedCommands
+                    ? (!rfuGroupedRounds_.empty() && rfuGroupedRounds_.back().clockChange &&
+                       !rfuGroupedRounds_.back().buffered)
+                    : (rfuRadioAwaitingReply_ && rfuRadioReplyClockChange_)) ||
+               rfuParentReplyReady_ || rfuParentAttemptPending_ ||
+               (rfuPendingTxData_ && rfuPendingTxClockChange_)));
         if (accepted) {
             const uint32_t txSequence = rfuNextDataSequence_;
             const auto admit = [this, &request](uint8_t bytes,
                                                 const std::vector<uint32_t> &words) {
+                logRfuDataDiagnostic("tx_write", rfuNextDataSequence_, bytes, words, rfuIsParent_);
+                if (rfuIsParent_)
+                    observeRfuSyncPayload(true, bytes, words);
                 // A child send only writes its live TX register. The next
                 // parent-triggered exchange selects and returns a snapshot.
                 if (!rfuIsParent_)
                     return true;
+                const bool grouped = rfuCompletionMode_ == RfuCompletionMode::GroupedCommands;
+                const bool prefix = grouped && request.command == 0x25 &&
+                    rfuCommandGroup_.append(bytes, words) ==
+                        GbaRfuCommandGroup::Decision::BufferedPrefix;
+                // Reserve the last RX/round slot for a peer-confirmed event.
+                // Otherwise all slots can hold late prefix replies while the
+                // guest waits for a new send's ACK before it can read 0x26.
+                // That event lets the guest consume RX without dropping data.
+                const bool buffered = prefix &&
+                    rfuGroupedRounds_.size() + rfuDataChannel_.queuedMessages() + 1 <
+                        GbaRfuDataChannel::MAX_QUEUED_MESSAGES;
+                if (grouped) {
+                    if (dispatchRfuParent(rfuNextDataSequence_, bytes, words,
+                                          request.command == 0x25, buffered)) {
+                        ++rfuNextDataSequence_;
+                        return true;
+                    }
+                    rfuPendingTxData_ = RemoteRfuData{rfuNextDataSequence_, bytes, words};
+                    rfuPendingTxClockChange_ = request.command == 0x25;
+                    rfuPendingTxBuffered_ = buffered;
+                    return true;
+                }
                 if (rfuPendingTxData_) {
                     rfuPendingTxData_->payloadBytes = bytes;
                     rfuPendingTxData_->frameWords = words;
@@ -2118,6 +2372,7 @@ void GbaSystem::answerEmeraldRfuRequest(
                     rfuRadioAwaitingReply_ = true;
                     rfuRadioReplyClockChange_ = request.command == 0x25;
                     if (sendRfuData_(rfuNextDataSequence_, bytes, words)) {
+                        logRfuDataDiagnostic("tx_dispatch", rfuNextDataSequence_, bytes, words, true);
                         ++rfuNextDataSequence_;
                         return true;
                     }
@@ -2198,8 +2453,12 @@ void GbaSystem::answerEmeraldRfuRequest(
             } else {
                 accepted = false;
             }
-            if (request.command == 0x25)
+            if (request.command == 0x25) {
                 rfuMasterSwitchPending_ = accepted;
+                if (accepted && rfuIsParent_ &&
+                    rfuCompletionMode_ != RfuCompletionMode::RemoteReply)
+                    rfuParentAttemptPending_ = true;
+            }
         }
         break;
     case 0x26: // Receive queued link-layer data; empty polls keep later data.
@@ -2212,6 +2471,8 @@ void GbaSystem::answerEmeraldRfuRequest(
             if (!message)
                 throw std::logic_error("RFU receive queue changed unexpectedly");
             const uint32_t sequence = message->sequence;
+            logRfuDataDiagnostic("rx_read", sequence, message->payloadBytes,
+                                 message->frameWords, !rfuIsParent_);
             // DATA_RX_REQ returns an RfuPacket body, not a bare LLSF frame.
             // Emerald's parser reads the receive byte budget from data[0]
             // (packet offset 4) and starts LLSF data at packet offset 8. The
@@ -2258,6 +2519,16 @@ void GbaSystem::answerEmeraldRfuRequest(
         if (accepted)
             rfuMasterSwitchPending_ = true;
         break;
+    case 0x37: // Resume an outstanding parent exchange, without resending it.
+        accepted = noParameters() && remoteRfuEnabled_ && rfuConnected_ &&
+            rfuIsParent_ && rfuCompletionMode_ != RfuCompletionMode::RemoteReply &&
+            (rfuRadioAwaitingReply_ || rfuParentReplyReady_ ||
+             (rfuPendingTxData_ && rfuPendingTxClockChange_));
+        if (accepted) {
+            rfuParentAttemptPending_ = true;
+            rfuMasterSwitchPending_ = true;
+        }
+        break;
     case 0x30: // Disconnect.
         accepted = request.payload.size() == 1;
         if (accepted) {
@@ -2297,9 +2568,17 @@ void GbaSystem::answerEmeraldRfuRequest(
 
 void GbaSystem::servicePendingEmeraldRfuTransmit() {
     if (!rfuPendingTxData_ || !remoteRfuEnabled_ || !rfuConnected_ ||
-        (rfuIsParent_ && rfuRadioAwaitingReply_))
+        (rfuIsParent_ && !rfuParentCanDispatch()))
         return;
     const auto packet = *rfuPendingTxData_;
+    if (rfuIsParent_ && rfuCompletionMode_ == RfuCompletionMode::GroupedCommands) {
+        if (!dispatchRfuParent(packet.sequence, packet.payloadBytes, packet.frameWords,
+                               rfuPendingTxClockChange_, rfuPendingTxBuffered_)) return;
+        ++rfuNextDataSequence_;
+        rfuPendingTxData_.reset(); rfuPendingTxClockChange_ = false;
+        rfuPendingTxBuffered_ = false;
+        return;
+    }
     if (rfuIsParent_) {
         rfuRadioAwaitingReply_ = true;
         rfuRadioReplyClockChange_ = rfuPendingTxClockChange_;
@@ -2311,6 +2590,8 @@ void GbaSystem::servicePendingEmeraldRfuTransmit() {
         }
         return;
     }
+    logRfuDataDiagnostic("tx_dispatch", packet.sequence, packet.payloadBytes,
+                         packet.frameWords, rfuIsParent_);
     ++rfuNextDataSequence_;
     char trace[128];
     std::snprintf(trace, sizeof(trace), "RFU local TX dispatched: seq=%u", packet.sequence);
@@ -2325,9 +2606,10 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
     if (rfuAdapterClockMaster_ && !rfuAdapterAwaitingAck_ &&
         remoteRfuEnabled_ && rfuConnected_ &&
         (loadIo16(REG_SIOCNT) & 1) == 0 &&
-        rfuPendingRadioEvents_ == 0) {
-        // The adapter clocks exactly one event for each completed radio
-        // cycle. Child TX scheduling alone is not a cycle; a parent send is.
+        rfuPendingRadioEvents_ == 0 &&
+        !rfuParentPollReady()) {
+        // Wait for a real cycle, or an explicitly armed local parent poll.
+        // Merely scheduling a child TX cannot create an adapter event.
         return;
     }
     if (cycles < normalSerialCycles_) {
@@ -2362,7 +2644,22 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
                     "RFU adapter clocked DISCONNECTED_AND_CHANGE_REQ (0x29)");
             } else {
                 rfuAdapterEventCommand_ = 0x28;
-                adapterWord = makeGbaRfuCommandHeader(0x28, 0);
+                // Compatibility: finish a local attempt without inventing a
+                // peer ACK. Emerald's empty 0x28 implies all slots succeeded;
+                // an explicit mask of zero instead selects its 0x37 retry
+                // path and releases the main loop while WAN delivery waits.
+                // See docs/gba-rfu-protocol.md: Local parent completion polls.
+                const bool localPoll = rfuIsParent_ &&
+                    rfuCompletionMode_ != RfuCompletionMode::RemoteReply &&
+                    rfuParentAttemptPending_;
+                rfuDataAckPayloadPending_ = localPoll;
+                rfuDataAckMask_ = rfuParentReplyReady_
+                    ? static_cast<uint8_t>(1u << rfuConnectedSlot_) : 0;
+                if (localPoll) {
+                    rfuParentAttemptPending_ = false;
+                    rfuParentReplyReady_ = false;
+                }
+                adapterWord = makeGbaRfuCommandHeader(0x28, localPoll ? 1 : 0);
                 logRfuDiagnostic(
                     "RFU adapter clocked DATA_READY_AND_CHANGE_REQ (0x28)", true);
             }
@@ -2373,6 +2670,11 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
             adapterWord = static_cast<uint32_t>(rfuDisconnectEventSlotMask_) |
                 (static_cast<uint32_t>(rfuDisconnectEventReason_) << 8);
             rfuDisconnectPayloadPending_ = false;
+        } else if (rfuDataAckPayloadPending_) {
+            // Snapshot at the event header: a reply arriving between header
+            // and body belongs to the next poll, not this half-sent event.
+            adapterWord = rfuDataAckMask_;
+            rfuDataAckPayloadPending_ = false;
         } else {
             const uint32_t expectedAck = makeGbaRfuResponseHeader(
                 rfuAdapterEventCommand_, 0);
@@ -2392,7 +2694,7 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
             }
         }
         if (startingEvent && rfuAdapterEventCommand_ == 0x28 &&
-            guestWord == makeGbaRfuResponseHeader(0x28, 0)) {
+            !rfuDataAckPayloadPending_ && guestWord == makeGbaRfuResponseHeader(0x28, 0)) {
             // Retained as a compatibility allowance for the simultaneous
             // full-duplex word shape; normal decompiled flow ACKs next.
             rfuAdapterClockMaster_ = false;
@@ -2471,7 +2773,8 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
         }
         if (rfuMasterSwitchPending_ &&
             (exchange.adapterWord == makeGbaRfuResponseHeader(0x27, 0) ||
-             exchange.adapterWord == makeGbaRfuResponseHeader(0x25, 0))) {
+             exchange.adapterWord == makeGbaRfuResponseHeader(0x25, 0) ||
+             exchange.adapterWord == makeGbaRfuResponseHeader(0x37, 0))) {
             rfuMasterSwitchPending_ = false;
             rfuAdapterClockMaster_ = true;
             rfuAdapterAwaitingAck_ = false;
@@ -3622,8 +3925,10 @@ GbaSystem::FrameResult GbaSystem::runFrame() {
     remoteFrameCycles_ = 0;
     remoteFrameStalled_ = false;
     remoteInputLatch_ = 0;
-    if (remoteRfuEnabled_)
+    if (remoteRfuEnabled_) {
         ++rfuGuestFrameCount_;
+        logRfuFrameDiagnostic();
+    }
     if (remoteLinkEnabled_) {
         ++remoteFrameCount_;
         if (remoteLinkConnected_ && sendRemoteFrame_ && remoteLocalReady_)

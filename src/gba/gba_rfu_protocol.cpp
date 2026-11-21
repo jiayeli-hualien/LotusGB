@@ -130,6 +130,63 @@ std::vector<uint32_t> GbaRfuDataChannel::disconnect() {
     return sequences;
 }
 
+GbaRfuCommandGroup::Decision GbaRfuCommandGroup::append(
+    uint8_t payloadBytes, const std::vector<uint32_t> &words) {
+    const auto wait = [this] {
+        active_ = false; fence_ = true;
+        return Decision::WaitForPeer;
+    };
+    if (fence_) return Decision::WaitForPeer;
+    if (words.size() != (payloadBytes + 3u) / 4u) return wait();
+    const auto byte = [&words](size_t at) {
+        return static_cast<uint8_t>(words[at / 4] >> ((at % 4) * 8));
+    };
+    if (active_ && ++commands_ >= MAX_COMMANDS) return wait();
+    if (payloadBytes == 0 || payloadBytes == 1)
+        return active_ ? Decision::BufferedPrefix : wait();
+    if (payloadBytes != 73) return wait();
+    const uint32_t header = uint32_t{byte(0)} | (uint32_t{byte(1)} << 8) |
+                            (uint32_t{byte(2)} << 16);
+    if ((header & 127) != 70 || ((header >> 14) & 15) != 4)
+        return wait(); // UNI only; NI keeps its guest-generated ACK contract.
+    uint16_t command = 0, argument = 0, owner = 0;
+    for (size_t row = 0; row < 5; ++row) {
+        const size_t at = 3 + row * 14;
+        const uint16_t cmd = static_cast<uint16_t>(byte(at) | (uint16_t{byte(at + 1)} << 8));
+        if (row == 0) {
+            command = cmd;
+            argument = static_cast<uint16_t>(byte(at + 2) | (uint16_t{byte(at + 3)} << 8));
+            owner = static_cast<uint16_t>(byte(at + 4) | (uint16_t{byte(at + 5)} << 8));
+        } else if (cmd && cmd != 0xBE00 && (cmd & 0xFF00) != 0x8800 &&
+                   (cmd & 0xFF00) != 0x8900)
+            return wait(); // Readiness/disconnect/unknown peer commands fence the stream.
+    }
+    if (command == 0x8800) {
+        if (!argument || argument > MAX_BLOCKS || owner != 0x80) return wait();
+        if (!active_) { active_ = true; blocks_ = argument; next_ = 0; commands_ = 1; }
+        else if (next_ != 0 || argument != blocks_) return wait();
+        return Decision::BufferedPrefix;
+    }
+    if ((command & 0xFF00) == 0x8900) {
+        const unsigned index = command & 255;
+        if (!active_ || index != next_) return wait();
+        ++next_;
+        return next_ == blocks_ ? wait() : Decision::BufferedPrefix;
+    }
+    // Idle/key traffic outside an explicit block group must complete remotely.
+    // An unbounded stream of speculative successes can fill RX while the guest
+    // is waiting for the next radio completion before issuing another 0x26.
+    if (command == 0 || command == 0xBE00)
+        return active_ ? Decision::BufferedPrefix : wait();
+    return wait();
+}
+void GbaRfuCommandGroup::completeFence() { reset(); }
+void GbaRfuCommandGroup::reset() {
+    active_ = fence_ = false;
+    blocks_ = next_ = 0;
+    commands_ = 0;
+}
+
 uint32_t makeGbaRfuCommandHeader(uint8_t command, uint8_t payloadWords) {
     if (payloadWords > GbaRfuRequestDecoder::MAX_PAYLOAD_WORDS)
         throw std::invalid_argument("RFU payload exceeds packet capacity");

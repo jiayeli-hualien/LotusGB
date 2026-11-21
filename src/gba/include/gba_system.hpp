@@ -108,14 +108,23 @@ public:
     bool receiveRemoteMultiplayerDataBlock(
         uint32_t sequence, const MultiplayerDataWords &words,
         uint16_t checksum);
+    // RemoteReply models one completed network exchange per parent event.
+    // LocalPoll also reports unsuccessful attempts with an explicit zero ACK
+    // mask, permitting guest 0x37 retries while preserving real peer delivery.
+    // Unguarded LocalPoll is a reference mode: application handoffs can race.
+    // GuardedLocalPoll retains data-phase synchronization; GroupedCommands
+    // pipelines bounded UNI prefixes and waits at peer-confirmed group fences.
+    enum class RfuCompletionMode { RemoteReply, LocalPoll, GuardedLocalPoll, GroupedCommands };
     void configureRemoteRfuLink(uint16_t localId, uint16_t peerId,
                                 RfuAdvertisementSender sendAdvertisement,
                                 RfuConnectionSender sendConnection,
                                 RfuDataSender sendData,
                                 RfuDataAcceptedSender sendDataAccepted = {},
-                                RfuDisconnectSender sendDisconnect = {});
+                                RfuDisconnectSender sendDisconnect = {},
+                                RfuCompletionMode completionMode =
+                                    RfuCompletionMode::RemoteReply);
     void setRfuDiagnosticLogger(
-        std::function<void(const std::string &)> logger);
+        std::function<void(const std::string &)> logger, bool detailed = false);
     bool receiveRemoteRfuAdvertisement(uint32_t sequence, uint16_t id,
                                        const RfuAdvertisement &data);
     bool receiveRemoteRfuConnectionRequest(uint32_t sequence,
@@ -247,6 +256,18 @@ private:
     void servicePendingEmeraldRfuTransmit();
     void logRfuDiagnostic(const std::string &message, bool essential = false);
     void logRfuDisconnectDiagnostic(uint8_t command);
+    void logRfuDataDiagnostic(const char *boundary, uint32_t sequence,
+                              uint8_t payloadBytes,
+                              const std::vector<uint32_t> &words,
+                              bool senderParent);
+    void logRfuFrameDiagnostic();
+    void observeRfuSyncPayload(bool senderParent, uint8_t payloadBytes,
+                               const std::vector<uint32_t> &words);
+    bool rfuParentPollReady() const;
+    bool rfuParentCanDispatch() const;
+    bool dispatchRfuParent(uint32_t sequence, uint8_t payloadBytes,
+                           const std::vector<uint32_t> &words,
+                           bool clockChange, bool buffered);
     void abortMultiplayerTransfer();
     void beginRemoteMultiplayerTransfer();
     void beginRemoteBufferedChildTransfer();
@@ -380,6 +401,7 @@ private:
     GbaRfuCommandSession rfuCommandSession_;
     std::optional<uint32_t> rfuPendingConsumedSequence_;
     std::function<void(const std::string &)> rfuDiagnosticLogger_;
+    bool rfuDetailedDiagnostics_ = false;
     uint32_t rfuTransferCount_ = 0;
     uint32_t rfuDiagnosticCount_ = 0;
     std::deque<std::string> rfuRecentDiagnostics_;
@@ -425,6 +447,16 @@ private:
     // Child: immutable reply snapshot; live scheduled TX is retained above.
     std::optional<RemoteRfuData> rfuPendingTxData_;
     bool rfuPendingTxClockChange_ = false;
+    bool rfuPendingTxBuffered_ = false;
+    struct RfuRadioRound { uint32_t sequence; bool clockChange; bool buffered; };
+    std::deque<RfuRadioRound> rfuGroupedRounds_;
+    GbaRfuCommandGroup rfuCommandGroup_;
+    RfuCompletionMode rfuCompletionMode_ = RfuCompletionMode::RemoteReply;
+    bool rfuGuestSyncRequired_ = true;
+    bool rfuParentAttemptPending_ = false;
+    bool rfuParentReplyReady_ = false;
+    bool rfuDataAckPayloadPending_ = false;
+    uint8_t rfuDataAckMask_ = 0;
     bool rfuRadioAwaitingReply_ = false;
     bool rfuRadioReplyClockChange_ = false;
     uint32_t rfuPendingRadioEvents_ = 0;

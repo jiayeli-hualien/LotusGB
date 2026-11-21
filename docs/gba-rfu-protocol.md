@@ -13,6 +13,12 @@ this document describes implementation contracts and reproducible tests.
 The synthetic guest driver is original test code, not the commercial ROM or
 execution of its RFU library.
 
+The current grouped-command frontend has a bounded private English Emerald
+trade checkpoint: both endpoints completed a trade over a relay with reported
+ping above 100 ms, without a reported communication error. Leader movement
+and menus remain visibly slow. This is evidence for that trade, not general
+WAN compatibility, high-latency battle acceptance or smooth gameplay.
+
 ## STWI serial transaction
 
 Emerald uses 32-bit normal-mode SIO words. A request starts with
@@ -56,14 +62,14 @@ captured trace before treating the test as proof of correct timing.
 | `1C`–`1E` | Start, poll and end parent search. | Mapped to network advertisement and parent discovery. |
 | `1F`–`21` | Start, poll and finalize connection to selected parent. | Mapped to a two-peer network connection. Multi-child slot allocation is not modeled. |
 | `24` | Send RFU link-layer data. Variable request body starts with role-specific byte metadata, then LLSF bytes. | Parent initiates an exchange; child updates its scheduled TX register. LLSF is passed intact for the ROM to parse. |
-| `25` | Send data, then change the SIO clock role. | Accepts local TX and changes SIO role after ACK. Parent completion awaits the child radio reply. |
+| `25` | Send data, then change the SIO clock role. | Accepts local TX and changes SIO role after ACK. Buffered group prefixes may report local slot success; group fences wait for the child reply. Reference local-poll modes can report unsuccessful attempts with ACK mask zero. |
 | `26` | Receive link-layer data. Response body is one role-specific receive-metadata word followed by LLSF bytes; empty poll has no body. | Returns completed adapter RX data. Transport credit follows bounded adapter admission, not ROM consumption. |
 | `27` | Change SIO clock role, no request body. | Changes the SIO role after its ACK. |
 | `28` | Adapter-to-guest data-ready-and-change event; normally no body, with an optional one-word form in the library API. Guest ACK is `A8`. | Synthesizes the event when the current scheduling condition is met. |
 | `29` | Adapter-to-guest disconnected-and-change event with one packed slot/reason word; guest ACK is `A9`. | A network disconnect with adapter clock ownership and no event already in flight sends `0x29`, the slot/reason word, then waits for `0xA9` before restoring the guest clock. Other disconnect timing clears connection state directly. |
 | `30` | Disconnect request with one slot bitmask word. | Clears local connection state and notifies the network peer. |
 | `31`–`36` | Test/recovery and undocumented commands. `32`–`34` are child recovery; `35`/`36` have special clock/event behavior. | Not implemented. Emerald's ordinary profile disables link recovery, but these paths are not generally supported. |
-| `37` | Parent resume-retransmit-and-change request. | Not implemented. |
+| `37` | Parent resume-retransmit-and-change request. | In local-poll mode, rechecks the retained outstanding exchange without adding a network copy; rejects requests without an exchange. |
 | `3D` | Stop mode, no body. Emerald also sends it during normal RFU initialization. | ACKed and ends local search activity; it preserves the LAN peer session. |
 
 IDs are defined in `librfu.h`. Request builders and word counts are in
@@ -123,9 +129,10 @@ by itself identify the original failure.
 
 ## What the current emulator does not establish
 
-The remote path uses `LotusGBA-emerald-rfu-v9`; both endpoints require the
-same protocol version. Parent `0x24`/`0x25` initiates an exchange with one
-immutable network snapshot in flight. A later parent write may update the local
+The remote path uses `LotusGBA-emerald-rfu-v12`; both endpoints require the
+same protocol version. The reference modes keep one immutable network snapshot
+in flight; the grouped frontend mode below uses a bounded ordered pipeline.
+A later parent write may update the local
 register awaiting admission, but cannot mutate that snapshot. This TX-register
 update rule is a documented emulator compatibility choice, not hardware proof
 that every uncompleted command may be overwritten arbitrarily.
@@ -134,16 +141,19 @@ A child `0x24`/`0x25` schedules local TX only. When a parent packet arrives, the
 child selects that uplink once and returns an immutable reply snapshot. If no
 uplink is scheduled, an empty reply still completes the exchange. Guest writes
 can prepare the next uplink while a selected reply waits for transport credit;
-they cannot change the selected reply. Parent RX and, for `0x25`, its `0x28`
-completion become available when the child reply arrives. This keeps the two
+they cannot change the selected reply. Parent RX becomes available when the
+child reply arrives. Group prefixes may report local slot success earlier;
+group fences and reference successful polls require the real reply. Local
+unsuccessful polls may also restore the clock earlier (see below). This keeps the two
 directions in the same parent-triggered exchange instead of accumulating two
 independent streams of radio packets.
 
 Command ACKs establish local acceptance. Network credit establishes bounded
 receiver-adapter admission. ROM `0x26` consumption and NI ACKs are independent.
 A full receiver/reply slot returns backpressure without falsely acknowledging
-unbuffered data. There is one network snapshot in flight per direction and no
-frontend FIFO of unsent parent snapshots. Parent writes awaiting admission
+unbuffered data. Reference modes retain one snapshot in flight; grouped mode
+bounds outstanding rounds plus parent RX storage to 32 entries, with an equally
+bounded frontend deferred window. Parent writes awaiting admission
 update a bounded local register; child reply snapshots remain immutable.
 Disconnect clears pending local state. Exact adapter hardware timings,
 connection-generation handling across every reset race, general recovery,
@@ -178,6 +188,146 @@ neither test establishes that Emerald accepts the resulting LLSF contents.
 - [`librfu_rfu.c`](https://github.com/pret/pokeemerald/blob/master/src/librfu_rfu.c): search/connect/data commands, LLSF construction and receive parser.
 - [`AgbRfu_LinkManager.c`](https://github.com/pret/pokeemerald/blob/master/src/AgbRfu_LinkManager.c): parent/child callbacks and link-manager sequencing.
 - [`link_rfu_2.c`](https://github.com/pret/pokeemerald/blob/master/src/link_rfu_2.c) and [`link_rfu_3.c`](https://github.com/pret/pokeemerald/blob/master/src/link_rfu_3.c): Emerald gameplay queues, VBlank flow and fatal full-queue check.
+
+## Local parent completion polls
+
+`RfuCompletionMode::GuardedLocalPoll` is the conservative reference policy.
+The current frontend selects `GroupedCommands`, described below. The public
+system interface retains `RemoteReply` as its default reference behavior.
+The reference policies keep one immutable network exchange outstanding; NI ACKs and
+application data remain guest-owned.
+
+In the reference library, `rfu_UNI_PARENT_getDRAC_ACK` interprets a zero-length
+`0x28` as success for all connected slots. A one-word event instead supplies
+an explicit slot ACK mask. `RfuMain2_Parent` waits for the MSC callback before
+returning to the main loop; a missing slot ACK selects the next frame's
+`rfu_REQ_PARENT_resumeRetransmitAndChange` (`0x37`) path. These source contracts
+allow an emulator compatibility policy that avoids holding the leader's main
+loop for every WAN round trip:
+
+1. Accept `0x25` locally and retain its immutable network snapshot.
+2. Complete a local attempt with `0x99660128`, then a mask word, then the
+   guest's subsequent-transfer A8. Mask zero means no remote success yet.
+3. On `0x37`, poll the same exchange locally. Do not send another copy or
+   overwrite its TX data. A new `0x25` is rejected until the old exchange's
+   successful completion has been reported. The first `0x25` may queue behind
+   an ordinary pre-finalization `0x24`; that older reply cannot acknowledge the
+   queued clock-changing cycle.
+4. A real child reply admits RX data and latches the connected slot's ACK.
+   The next local event reports that ACK exactly once. Its mask is fixed at
+   the event header, even if a reply arrives between header and body. RX may
+   be read by `0x26` before the successful poll without losing the ACK latch.
+5. Disconnect clears pending local attempts and success state. If a peer
+   disconnects during an event body, finish that immutable event's body/A8;
+   a full system reset discards the serial transaction.
+
+This schedules local *unsuccessful attempts* independently of WAN delivery;
+it does not predict peer data or manufacture an NI ACK. It is an intentional
+emulator policy, not measured adapter radio timing. It can release main-loop
+callbacks while communication waits, but does not remove the round trips
+needed to exchange data. Actual animation smoothness, input response and
+transfer duration still require private game-level measurements.
+
+Focused original two-system fixtures cover eight local attempts during one
+held exchange, delayed ordered bidirectional streams, jitter/credit delay,
+immutable event masks across a late reply, early RX consumption, disconnect
+and NI identity under the new policy. The helpers drive SIO through CPU frames;
+local-attempt counts are not measurements of commercial-game visual FPS.
+
+## Guarded application synchronization boundary
+
+Unrestricted local polling (`LocalPoll`, retained as a focused reference mode)
+can violate application timing assumptions even when it never invents a peer
+or NI ACK. The source's trade flow starts a block transfer and advances a local
+fade timer. `CB_WaitToStartRfuTrade` calls `SetLinkStandbyCallback`, then advances
+the UI unconditionally. `Rfu_SetLinkStandbyCallback` installs the standby callback
+only if the previous transfer callback is already idle. If local fade frames
+outrun WAN block delivery, standby installation can be skipped. The later
+callback-idle check cannot distinguish that from a completed standby barrier.
+
+`GuardedLocalPoll` starts conservatively and keeps the entire data phase
+synchronous. NI, unrecognized/malformed frames and non-key UNI commands in either
+direction require a real peer reply before the parent's event. Idle slots and
+ghost sends retain that boundary, including gaps between blocks and readiness
+commands. Only a parent-owned `0xBE00` key command in an otherwise pure key UNI
+frame reopens local polling; a relayed child's keys cannot do so. No application
+readiness command is manufactured, and existing immutable TX/credit/NI rules
+remain unchanged. This is an Emerald-profile compatibility policy, not hardware
+RFU behavior or a general game-independent packet classifier.
+
+The original two-system `trade_handoff_guarded` and `trade_handoff_idle_gap`
+fixtures model a busy block callback, fixed local fade budget, conditional
+standby installation and unconditional UI transition. Both fail with unrestricted
+completion and pass with guarded completion; `trade_handoff_reference` covers
+the original remote-wait behavior. These are source-derived guest drivers, not
+commercial-ROM execution or an exact measurement of the ROM's frame budget.
+`guarded_phase_boundaries` and `guarded_peer_boundary` cover conservative startup,
+idle-gap retention, peer data, mixed player rows and explicit key-phase recovery.
+
+The guarded data phase can still visibly wait for network round trips. This
+change protects application synchronization; it does not establish smooth trade
+animations, fast lobby movement or WAN compatibility. Real-game acceptance
+remains separate and private.
+
+## Grouped command pipeline
+
+The experimental v12 frontend selects `GroupedCommands`. A group begins with
+the parent's own UNI `0x8800` block initializer, followed by contiguous
+`0x8900 | index` fragments. Up to 20 data fragments and 28 total commands
+(including repeated initialization/idle slots) enter a group. Excessive,
+unknown, malformed or out-of-order content falls back to a peer fence.
+Readiness, disconnect and other non-block/non-key commands also fence the
+stream, including such commands in relayed player rows.
+
+**Intentional ACK semantic divergence:** a buffered prefix reports slot ACK
+mask 1 after its immutable bytes are accepted by the bounded local/transport
+window. This is not proof of remote receipt. Unlike zero-mask polling, this
+also advances the guest's block-send callback along with local UI frames.
+The last fragment waits for its real child reply. Ordered reply ownership
+makes that final reply a cumulative fence for all earlier commands. Ordinary
+transport admission credits still exist per packet; they do not hold the
+producer at every command while window capacity remains. Idle/key traffic
+outside an explicit block group waits for a peer reply; only gaps within an
+active, bounded block group may complete as prefixes. NI frames and application
+readiness contents are never generated or predicted by the emulator.
+
+The parent tracks each outstanding round's sequence, clock mode and completion
+policy. A late reply to an already completed prefix cannot complete another
+command. An ordinary `0x24` may remain in flight while the first clock-changing
+`0x25` is queued. Its reply releases transport ownership without acknowledging
+that newer radio event or clearing its group initializer. The
+`grouped_clock_transition` fixture covers this transition through serial I/O.
+Outstanding rounds plus queued parent RX never exceed 32 entries;
+when capacity or transport credit is unavailable, local STWI acceptance may
+retain one pending immutable write, but radio success waits for actual storage.
+The last available RX/round slot always uses a real peer fence, even inside
+a block group. This reserves a completion that lets a guest waiting on radio
+success reach its next `0x26` read. Without this rule, late prefix replies can
+fill RX while the next buffered send waits for the guest to free that same RX.
+This is explicit profile-specific buffering, not an assertion of hardware RFU
+slot ACK behavior or a general solution to all application timing assumptions.
+
+A grouped child admits the next parent message only after the previous event,
+A8 and RX transaction have released ownership. This prevents a burst from
+queuing events that would otherwise be cleared by the first A8. The frontend
+retains deferred messages in order within the same bounded window. Child
+replies preserve the selected scheduled uplink; no application payload is
+dropped or deduplicated to make the pipeline fit. Reset/disconnect clears
+both round ownership and unfinished grouping state.
+
+Original fixtures cover the prefix producer running before any delivery,
+real final-fence waits, exact ordered bidirectional data, repeated initializer
+plus a 17-fragment block, delayed admission credits, a two-entry transport
+window, a full 32-entry RX window with a reserved completion fence, immutable
+writes, unrelated replies,
+unreachable peers, disconnect and NI identity. The source-derived standby
+handoff model is also exercised in grouped mode. `grouped_wait_budget`
+compares service ticks for the same ordered stream with and without per-command
+waits; it is not measured network RTT or commercial-game frame rate.
+`grouped_receive_pressure` models a long key stream followed by repeated block
+groups, nonempty child replies, and one parent receive per completed command;
+it checks that RX pressure cannot prevent the guest reaching its next receive.
+See [Scope and evidence](#scope-and-evidence) for the bounded game checkpoint.
 
 ## Connection and acknowledgement contracts
 
@@ -293,6 +443,8 @@ There are no wall-clock sleeps. A single case can be selected, for example:
 | `paced_lost_ni_ack`, `lost_ni_ack` | Ignore one NI ACK, retry, complete without duplicate byte copies |
 | `jitter` | Deterministic per-message delay variation |
 | `wrong_serial` | Finish NI transfer but reject the identity's serial number |
+| `local_poll_progress`, `local_poll_reply_race`, `local_poll_disconnect`, `local_poll_credit` | Local attempt completion, explicit ACK ownership, event immutability, reset and transport-credit separation |
+| `local_poll_stream`, `local_poll_stream_jitter`, `local_poll_ni_identity` | Ordered delayed streams and NI identity with the local-poll policy |
 | `bounded_timeout` | No false success when all delivery is beyond the finite service deadline |
 
 The SIO bridge suite additionally checks immutable in-flight parent snapshots,
@@ -302,3 +454,24 @@ consumption, no duplicate credit at `0x26`, empty replies, subsequent-transfer
 A8 and disconnect cancellation. The NI gate is included in the normal GBA test
 target. Keep commercial ROMs, saves, captures and session logs outside the
 repository and CI.
+
+## Opt-in RFU diagnostics
+
+Set `LOTUSGBA_RFU_TRACE=1` in the RetroArch process environment to enable the
+extended trace. Tracing does not change the selected exchange/completion policy.
+`RFU payload` records frame/cycle, local PC/LR, direction, sequence, byte count
+and exact bytes at TX writes, immutable TX dispatch, peer RX admission and
+ROM `0x26` reads. Compare dispatch/admission by sender and sequence; a local
+TX write may be replaced before dispatch and is not proof of wire delivery.
+The trace does not stop after the initial SIO-word logging limit.
+
+Once per 60 guest frames, `RFU frame` records PC/LR/SP, display/blend registers,
+black-pixel count and framebuffer hash, interrupt state and RFU queue/progress
+state. A black core framebuffer and a frontend displaying black are distinct
+observations. These samples do not establish a game's internal task state.
+The original `diagnostics_observational` fixture checks unchanged guest cycles,
+SIO state and pixels with tracing enabled, payload ownership boundaries, and
+white forced blank versus an actually black framebuffer.
+
+Trace files from commercial games contain game-derived data; keep them and
+any game-specific decoding scripts outside this repository and CI.
