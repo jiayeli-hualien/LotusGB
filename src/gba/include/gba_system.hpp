@@ -114,7 +114,8 @@ public:
     // Unguarded LocalPoll is a reference mode: application handoffs can race.
     // GuardedLocalPoll retains data-phase synchronization; GroupedCommands
     // pipelines bounded UNI prefixes and waits at peer-confirmed group fences.
-    enum class RfuCompletionMode { RemoteReply, LocalPoll, GuardedLocalPoll, GroupedCommands };
+    // AsyncAdapter has independent TX/RX streams and locally owned TX completion.
+    enum class RfuCompletionMode { RemoteReply, LocalPoll, GuardedLocalPoll, GroupedCommands, AsyncAdapter };
     void configureRemoteRfuLink(uint16_t localId, uint16_t peerId,
                                 RfuAdvertisementSender sendAdvertisement,
                                 RfuConnectionSender sendConnection,
@@ -125,6 +126,7 @@ public:
                                     RfuCompletionMode::RemoteReply);
     void setRfuDiagnosticLogger(
         std::function<void(const std::string &)> logger, bool detailed = false);
+    void setRemoteRfuEventPump(std::function<void()> pump);
     bool receiveRemoteRfuAdvertisement(uint32_t sequence, uint16_t id,
                                        const RfuAdvertisement &data);
     bool receiveRemoteRfuConnectionRequest(uint32_t sequence,
@@ -268,6 +270,8 @@ private:
     bool dispatchRfuParent(uint32_t sequence, uint8_t payloadBytes,
                            const std::vector<uint32_t> &words,
                            bool clockChange, bool buffered);
+    bool dispatchRfuAsync(uint32_t sequence, uint8_t payloadBytes,
+                           const std::vector<uint32_t> &words, bool clockChange);
     void abortMultiplayerTransfer();
     void beginRemoteMultiplayerTransfer();
     void beginRemoteBufferedChildTransfer();
@@ -402,6 +406,7 @@ private:
     std::optional<uint32_t> rfuPendingConsumedSequence_;
     std::function<void(const std::string &)> rfuDiagnosticLogger_;
     bool rfuDetailedDiagnostics_ = false;
+    std::function<void()> rfuNetworkPump_;
     uint32_t rfuTransferCount_ = 0;
     uint32_t rfuDiagnosticCount_ = 0;
     std::deque<std::string> rfuRecentDiagnostics_;

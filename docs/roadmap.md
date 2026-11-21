@@ -68,18 +68,20 @@ implementation when a concrete Emerald or licensed homebrew discrepancy is
 reproduced, rather than adding speculative timing changes.
 
 The GBA core has separate multiplayer SIO and experimental RFU paths.
-The RFU Netpacket transport keeps each guest running independently and models
-parent-triggered radio exchanges. Original two-system tests cover NI identity,
+The RFU Netpacket transport keeps each guest running independently, with
+parent-triggered reference modes and an asynchronous adapter frontend.
+Original two-system tests cover NI identity,
 local adapter IDs, delayed traffic/credit, retries and immutable packet
 snapshots. These tests do not establish general game or WAN compatibility.
 Reset/reconnect races, recovery and measured network timeout budgets remain
 open; see the [RFU design and reproducible test scope](gba-rfu-protocol.md).
 Commercial-game session records remain private. GBA save states remain deferred.
 
-The grouped RFU frontend has a bounded English Emerald relay trade checkpoint
-above 100 ms reported ping; leader movement and menus still stall. Keep
-latency optimization separate from data integrity and callback/barrier
-correctness. See the [canonical scope and evidence](gba-rfu-protocol.md#scope-and-evidence).
+The async RFU frontend has a bounded English Emerald trade checkpoint with
+fixed LAN delay and substantially reduced stutter; Ubuntu input responsiveness
+remains to be investigated. Keep latency optimization separate from data
+integrity and callback/barrier correctness. See the
+[canonical scope and evidence](gba-rfu-protocol.md#scope-and-evidence).
 
 Deferred frontend follow-up: remove unnecessary guest restarts when starting
 or cancelling a network link. Audit both endpoints' ROM-driven Wireless

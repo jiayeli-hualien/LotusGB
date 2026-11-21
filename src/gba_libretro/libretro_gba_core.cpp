@@ -253,7 +253,7 @@ uint16_t readPressedButtons(unsigned port) {
     return pressed;
 }
 
-constexpr char NETPACKET_PROTOCOL_VERSION[] = "LotusGBA-emerald-rfu-v12";
+constexpr char NETPACKET_PROTOCOL_VERSION[] = "LotusGBA-emerald-rfu-v13-async";
 constexpr uint8_t PACKET_MAGIC[] = {'L', 'G', 'B', 'A'};
 enum class PacketType : uint8_t {
     Startup, Ready, TransferStart, TransferWord, FrameProgress, DataBlock,
@@ -725,7 +725,8 @@ void startRemoteEmulation() {
     gbaSystem->configureRemoteRfuLink(
         rfuId(net.localId), rfuId(net.peerId), sendRfuAdvertisement,
         sendRfuConnectionRequest, sendRfuData, sendRfuDataAccepted,
-        sendRfuDisconnect, GbaSystem::RfuCompletionMode::GroupedCommands);
+        sendRfuDisconnect, GbaSystem::RfuCompletionMode::AsyncAdapter);
+    gbaSystem->setRemoteRfuEventPump(netpacketPoll);
     const char *detailedTrace = std::getenv("LOTUSGBA_RFU_TRACE");
     gbaSystem->setRfuDiagnosticLogger([](const std::string &message) {
         logMessage(RETRO_LOG_INFO, message.c_str());

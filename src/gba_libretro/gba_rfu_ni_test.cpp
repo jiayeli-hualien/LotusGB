@@ -910,6 +910,120 @@ void groupedClockTransition() {
             "ordinary reply erased the new block group");
     require(finishParentEvent(*pair.parent) == 1, "non-final fragment lost buffered completion");
 }
+void asyncUplink() {
+    Pair pair({5, 7, 2}, GbaSystem::RfuCompletionMode::AsyncAdapter);
+    pair.up.window = 2;
+    const auto send = [&](uint32_t token) {
+        return command(*pair.child, 0x24, {4u << 8, token}).ack;
+    };
+    require(send(0x12345678) == 0x996600A4, "async uplink rejected");
+    require(pair.up.packets.size() == 1 && pair.down.packets.empty(),
+            "child uplink still depends on a parent exchange");
+    require(send(0x87654321) == 0x996600A4, "second async uplink rejected");
+    require(pair.up.packets.size() == 2 && pair.up.packets.front().data == std::vector<uint32_t>{0x12345678},
+            "async uplink snapshot mutated");
+    pair.up.tick(*pair.parent, 7);
+    require(receive(*pair.parent, true) == bytes({0x12345678}, 4), "unsolicited uplink lost");
+    pair.up.tick(*pair.parent, 8);
+    require(receive(*pair.parent, true) == bytes({0x87654321}, 4), "uplink sequence coupled to parent TX");
+    require(pair.down.packets.empty(), "unsolicited uplink generated a synthetic parent reply");
+}
+void asyncCompletionAndPressure() {
+    Pair pair({4, 6, 1}, GbaSystem::RfuCompletionMode::AsyncAdapter);
+    pair.down.window = 2;
+    require(command(*pair.child, 0x27).ack == 0x996600A7, "async child clock failed"); arm(*pair.child);
+    const std::vector<Bytes> frames{blockInit(2), parentUni(0x8900, 0x1234), parentUni(0x8901, 0x5678)};
+    for (unsigned i = 0; i < 2; ++i) {
+        require(command(*pair.parent, 0x25, parentParameters(frames[i])).ack == 0x996600A5,
+                "async parent admission failed");
+        require(parentPoll(*pair.parent) == 1, "local adapter completion held for WAN");
+        require(receive(*pair.parent, true).empty(), "local completion fabricated peer data");
+    }
+    require(command(*pair.parent, 0x25, parentParameters(frames[2])).ack == 0x996600A5,
+            "pending immutable write rejected");
+    arm(*pair.parent); step(*pair.parent);
+    require(pair.parent->read16(CONTROL) & 0x80, "unowned TX received local success");
+    unsigned delivered = 0; bool completed = false;
+    for (unsigned tick = 4; tick < 40; ++tick) {
+        pair.down.now = pair.up.now = tick;
+        pair.down.tick(*pair.child, tick); pair.up.tick(*pair.parent, tick);
+        step(*pair.child); step(*pair.parent);
+        if (event(*pair.child)) {
+            require(delivered < frames.size() && receive(*pair.child, false) == frames[delivered++],
+                    "async pressure lost or reordered a block fragment");
+            require(command(*pair.child, 0x27).ack == 0x996600A7, "async child rearm failed"); arm(*pair.child);
+        }
+        if (!completed && !(pair.parent->read16(CONTROL) & 0x80)) {
+            require(finishParentEvent(*pair.parent) == 1, "returned credit did not release local completion");
+            completed = true;
+        }
+        if (delivered == frames.size() && completed) {
+            require(pair.up.packets.empty(), "parent RX generated fake child payload");
+            require(pair.down.peak == 2, "async transport exceeded bounded ownership"); return;
+        }
+    }
+    throw std::runtime_error("async pressure did not recover");
+}
+void asyncReadinessBarrier() {
+    Pair pair({4, 7, 1}, GbaSystem::RfuCompletionMode::AsyncAdapter);
+    pair.down.window = pair.up.window = 32;
+    require(command(*pair.child, 0x27).ack == 0x996600A7, "barrier child clock failed"); arm(*pair.child);
+    const std::vector<Bytes> frames{blockInit(2), parentUni(0x8900, 0x1234),
+        parentUni(0x8901, 0x5678), parentUni(0x6600, 3)};
+    for (const auto &frame : frames) {
+        require(command(*pair.parent, 0x25, parentParameters(frame)).ack == 0x996600A5, "barrier send failed");
+        require(parentPoll(*pair.parent) == 1, "adapter completion held application progress");
+        require(receive(*pair.parent, true).empty(), "peer readiness invented before delivery");
+    }
+    unsigned received = 0; bool ready = false;
+    Bytes readyPayload(14, 0); readyPayload[1] = 0x66; readyPayload[2] = 3;
+    const Bytes peerReady = encode({4, 0, 0, false, readyPayload}, false);
+    for (unsigned tick = 0; tick < 40; ++tick) {
+        pair.down.now = pair.up.now = tick;
+        pair.down.tick(*pair.child, tick); pair.up.tick(*pair.parent, tick);
+        step(*pair.child); step(*pair.parent);
+        if (event(*pair.child)) {
+            require(received < frames.size() && receive(*pair.child, false) == frames[received++],
+                    "barrier overtook block data");
+            if (received == frames.size()) {
+                auto tx = words(peerReady); tx.insert(tx.begin(), static_cast<uint32_t>(peerReady.size()) << 8);
+                require(command(*pair.child, 0x25, tx).ack == 0x996600A5, "peer readiness send failed");
+            } else require(command(*pair.child, 0x27).ack == 0x996600A7, "barrier child rearm failed");
+            arm(*pair.child);
+        }
+        const auto rx = receive(*pair.parent, true);
+        if (!rx.empty()) {
+            require(received == frames.size() && rx == peerReady, "barrier completed without actual matching peer data");
+            ready = true; break;
+        }
+    }
+    require(ready, "application readiness never arrived");
+    pair.parent->receiveRemoteRfuDisconnect();
+    require(receive(*pair.parent, true).empty(), "barrier data leaked after disconnect");
+}
+void asyncPump() {
+    Pair pair({}, GbaSystem::RfuCompletionMode::AsyncAdapter);
+    require(command(*pair.child, 0x24, {4u << 8, 0x12345678}).ack == 0x996600A4,
+            "pump uplink admission failed");
+    unsigned polls = 0;
+    pair.parent->setRemoteRfuEventPump([&] {
+        if (++polls == 2)
+            pair.up.tick(*pair.parent, 1);
+    });
+    step(*pair.parent);
+    require(polls >= 2 && polls <= 9, "RFU receive is still polled only at frontend frame boundaries");
+    pair.parent->setRemoteRfuEventPump({});
+    require(receive(*pair.parent, true) == bytes({0x12345678}, 4), "in-frame packet was not published");
+}
+void asyncPumpDisconnect() {
+    Pair pair({}, GbaSystem::RfuCompletionMode::AsyncAdapter);
+    unsigned polls = 0;
+    pair.parent->setRemoteRfuEventPump([&] {
+        ++polls; pair.parent->setRemoteRfuEventPump({}); pair.parent->receiveRemoteRfuDisconnect();
+    });
+    step(*pair.parent); step(*pair.parent);
+    require(polls == 1, "disconnect left a live or reentrant network pump");
+}
 void localPollStream(Scenario scenario) {
     Pair pair(scenario, GbaSystem::RfuCompletionMode::LocalPoll);
     require(command(*pair.child, 0x27).ack == 0x996600A7, "child clock change failed");
@@ -1066,6 +1180,19 @@ int main(int argc, char **argv) {
     run("local_poll_credit", localPollCredit);
     run("local_poll_clock_transition", localPollClockTransition);
     run("grouped_clock_transition", groupedClockTransition);
+    run("async_uplink", asyncUplink);
+    run("async_local_completion", asyncCompletionAndPressure);
+    run("async_readiness_barrier", asyncReadinessBarrier);
+    run("async_receive_pump", asyncPump);
+    run("async_pump_disconnect", asyncPumpDisconnect);
+    run("async_ni_identity", [] {
+        const Scenario s{1, 2, 1, 0, 480, false, 8};
+        Pair pair(s, GbaSystem::RfuCompletionMode::AsyncAdapter); pair.exchange(s, identity());
+    });
+    run("async_ni_lost_ack", [] {
+        const Scenario s{1, 2, 1, 0, 480, true, 8};
+        Pair pair(s, GbaSystem::RfuCompletionMode::AsyncAdapter); pair.exchange(s, identity());
+    });
     run("local_poll_stream", [] { localPollStream({2, 5, 0, 0}); });
     run("local_poll_stream_jitter", [] { localPollStream({1, 3, 4, 2}); });
     run("local_poll_ni_identity", [] {

@@ -1378,6 +1378,12 @@ void GbaSystem::setRfuDiagnosticLogger(
     rfuRecentDiagnostics_.clear();
 }
 
+void GbaSystem::setRemoteRfuEventPump(std::function<void()> pump) {
+    if (!remoteRfuEnabled_)
+        throw std::logic_error("GBA has no remote RFU link");
+    rfuNetworkPump_ = std::move(pump);
+}
+
 void GbaSystem::logRfuDiagnostic(const std::string &message, bool essential) {
     constexpr uint32_t MAX_RFU_DIAGNOSTICS = 4096;
     if (!rfuDiagnosticLogger_)
@@ -1438,6 +1444,19 @@ bool GbaSystem::rfuParentCanDispatch() const {
         (rfuGroupedRounds_.empty() || rfuGroupedRounds_.back().buffered);
 }
 
+bool GbaSystem::dispatchRfuAsync(uint32_t sequence, uint8_t payloadBytes,
+    const std::vector<uint32_t> &words, bool clockChange) {
+    if (!sendRfuData_(sequence, payloadBytes, words)) return false;
+    // Intentional adapter compatibility policy: immutable local transport
+    // ownership completes TX; independent peer packets publish RX later.
+    // No NI ACK, application block, or readiness payload is synthesized.
+    // Unlike grouped prefixes, this policy has no per-round reply pairing.
+    // See docs/gba-rfu-protocol.md: Asynchronous adapter experiment.
+    if (rfuIsParent_ && clockChange) rfuParentReplyReady_ = true;
+    logRfuDataDiagnostic("tx_dispatch", sequence, payloadBytes, words, rfuIsParent_);
+    return true;
+}
+
 bool GbaSystem::dispatchRfuParent(uint32_t sequence, uint8_t payloadBytes,
     const std::vector<uint32_t> &words, bool clockChange, bool buffered) {
     if (!rfuParentCanDispatch()) return false;
@@ -1466,7 +1485,8 @@ bool GbaSystem::dispatchRfuParent(uint32_t sequence, uint8_t payloadBytes,
 }
 
 bool GbaSystem::rfuParentPollReady() const {
-    if (rfuCompletionMode_ == RfuCompletionMode::GroupedCommands)
+    if (rfuCompletionMode_ == RfuCompletionMode::GroupedCommands ||
+        rfuCompletionMode_ == RfuCompletionMode::AsyncAdapter)
         return rfuIsParent_ && rfuParentAttemptPending_ && rfuParentReplyReady_;
     return rfuIsParent_ && rfuCompletionMode_ != RfuCompletionMode::RemoteReply &&
         rfuParentAttemptPending_ &&
@@ -1652,11 +1672,13 @@ bool GbaSystem::receiveRemoteRfuConnectionResult(
 GbaSystem::RfuDataReceiveResult GbaSystem::receiveRemoteRfuData(
     uint32_t sequence, uint8_t payloadBytes,
     const std::vector<uint32_t> &frameWords) {
-    // A child stores one immutable reply snapshot separately from its live TX
-    // register. A further exchange cannot overwrite a reply not yet dispatched.
+    // Reference children retain an immutable reply; async children retain an
+    // immutable pending uplink. Neither can admit new RX over unfinished TX
+    // or lose an event by admitting another packet during its A8/0x26 cycle.
     if (remoteRfuEnabled_ && rfuConnected_ && !rfuIsParent_ &&
         (rfuPendingTxData_ ||
-         (rfuCompletionMode_ == RfuCompletionMode::GroupedCommands &&
+         ((rfuCompletionMode_ == RfuCompletionMode::GroupedCommands ||
+           rfuCompletionMode_ == RfuCompletionMode::AsyncAdapter) &&
           (rfuPendingRadioEvents_ || rfuAdapterAwaitingAck_ ||
            rfuPendingConsumedSequence_ || rfuDataChannel_.hasReceived()))))
         return RfuDataReceiveResult::QueueFull;
@@ -1668,6 +1690,14 @@ GbaSystem::RfuDataReceiveResult GbaSystem::receiveRemoteRfuData(
     if (result != RfuDataReceiveResult::Accepted)
         return result;
     logRfuDataDiagnostic("rx_admit", sequence, payloadBytes, frameWords, !rfuIsParent_);
+    if (rfuCompletionMode_ == RfuCompletionMode::AsyncAdapter) {
+        // Independent ordered streams: a client write is not the reply to a
+        // particular parent packet. Local TX completion never creates RX.
+        if (rfuIsParent_) rfuDataChannel_.advanceParentRadioCycle();
+        else ++rfuPendingRadioEvents_;
+        if (sendRfuDataAccepted_) sendRfuDataAccepted_(sequence);
+        return result;
+    }
     if (rfuIsParent_) {
         observeRfuSyncPayload(false, payloadBytes, frameWords);
         if (rfuCompletionMode_ == RfuCompletionMode::GroupedCommands) {
@@ -1764,6 +1794,7 @@ void GbaSystem::receiveRemoteRfuDisconnect() {
 }
 
 void GbaSystem::disconnectRemoteRfuLink() {
+    rfuNetworkPump_ = {};
     remoteRfuEnabled_ = false;
     rfuConnected_ = false;
     rfuConnectionPending_ = false;
@@ -2315,6 +2346,7 @@ void GbaSystem::answerEmeraldRfuRequest(
     case 0x24: // Send link-layer data.
     case 0x25: // Send data and switch clock role.
         accepted = remoteRfuEnabled_ && rfuConnected_ && sendRfuData_ &&
+            !(rfuCompletionMode_ == RfuCompletionMode::AsyncAdapter && rfuPendingTxData_) &&
             (!rfuIsParent_ || !rfuPendingTxData_ || !rfuPendingTxClockChange_) &&
             !request.payload.empty() &&
             request.payload.size() <= GbaRfuRequestDecoder::MAX_PAYLOAD_WORDS &&
@@ -2331,6 +2363,15 @@ void GbaSystem::answerEmeraldRfuRequest(
             const auto admit = [this, &request](uint8_t bytes,
                                                 const std::vector<uint32_t> &words) {
                 logRfuDataDiagnostic("tx_write", rfuNextDataSequence_, bytes, words, rfuIsParent_);
+                if (rfuCompletionMode_ == RfuCompletionMode::AsyncAdapter) {
+                    if (dispatchRfuAsync(rfuNextDataSequence_, bytes, words, request.command == 0x25)) {
+                        ++rfuNextDataSequence_;
+                    } else {
+                        rfuPendingTxData_ = RemoteRfuData{rfuNextDataSequence_, bytes, words};
+                        rfuPendingTxClockChange_ = request.command == 0x25;
+                    }
+                    return true;
+                }
                 if (rfuIsParent_)
                     observeRfuSyncPayload(true, bytes, words);
                 // A child send only writes its live TX register. The next
@@ -2571,6 +2612,13 @@ void GbaSystem::servicePendingEmeraldRfuTransmit() {
         (rfuIsParent_ && !rfuParentCanDispatch()))
         return;
     const auto packet = *rfuPendingTxData_;
+    if (rfuCompletionMode_ == RfuCompletionMode::AsyncAdapter) {
+        if (!dispatchRfuAsync(packet.sequence, packet.payloadBytes, packet.frameWords,
+                               rfuPendingTxClockChange_)) return;
+        ++rfuNextDataSequence_;
+        rfuPendingTxData_.reset(); rfuPendingTxClockChange_ = false;
+        return;
+    }
     if (rfuIsParent_ && rfuCompletionMode_ == RfuCompletionMode::GroupedCommands) {
         if (!dispatchRfuParent(packet.sequence, packet.payloadBytes, packet.frameWords,
                                rfuPendingTxClockChange_, rfuPendingTxBuffered_)) return;
@@ -3865,7 +3913,17 @@ GbaSystem::FrameResult GbaSystem::runFrame() {
     servicePendingEmeraldRfuTransmit();
     initializeScanlineOam();
     uint32_t elapsed = 0;
+    uint32_t nextRfuPoll = 0;
     while (remoteFrameCycles_ < CYCLES_PER_FRAME) {
+        if (remoteRfuEnabled_ && rfuConnected_ && rfuNetworkPump_ &&
+            remoteFrameCycles_ >= nextRfuPoll) {
+            nextRfuPoll += CYCLES_PER_FRAME / 8;
+            // A receive callback can disconnect and clear the installed pump.
+            // Keep this invocation alive and re-check state after it returns.
+            const auto pump = rfuNetworkPump_;
+            pump();
+            servicePendingEmeraldRfuTransmit();
+        }
         beginRemoteMultiplayerTransfer();
         applyPendingRemoteWord();
 

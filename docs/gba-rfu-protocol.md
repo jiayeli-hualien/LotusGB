@@ -13,11 +13,14 @@ this document describes implementation contracts and reproducible tests.
 The synthetic guest driver is original test code, not the commercial ROM or
 execution of its RFU library.
 
-The current grouped-command frontend has a bounded private English Emerald
-trade checkpoint: both endpoints completed a trade over a relay with reported
-ping above 100 ms, without a reported communication error. Leader movement
-and menus remain visibly slow. This is evidence for that trade, not general
-WAN compatibility, high-latency battle acceptance or smooth gameplay.
+The v13 async frontend has a bounded private English Emerald trade checkpoint
+over LAN with a fixed 65 ms delay in each direction (130 ms added RTT). Both
+endpoints completed the trade without a reported communication error; the user
+reported substantially reduced stutter. Ubuntu input feel remained less
+responsive, without a measured cause. An earlier v12 grouped frontend also
+completed a relay trade above 100 ms reported ping, but leader movement and
+menus were visibly slow. These checkpoints do not establish general game/WAN
+compatibility or high-latency battle acceptance.
 
 ## STWI serial transaction
 
@@ -61,8 +64,8 @@ captured trace before treating the test as proof of correct timing.
 | `19`–`1B` | Start, poll and end child search. | Mapped to network advertisement and connection state. |
 | `1C`–`1E` | Start, poll and end parent search. | Mapped to network advertisement and parent discovery. |
 | `1F`–`21` | Start, poll and finalize connection to selected parent. | Mapped to a two-peer network connection. Multi-child slot allocation is not modeled. |
-| `24` | Send RFU link-layer data. Variable request body starts with role-specific byte metadata, then LLSF bytes. | Parent initiates an exchange; child updates its scheduled TX register. LLSF is passed intact for the ROM to parse. |
-| `25` | Send data, then change the SIO clock role. | Accepts local TX and changes SIO role after ACK. Buffered group prefixes may report local slot success; group fences wait for the child reply. Reference local-poll modes can report unsuccessful attempts with ACK mask zero. |
+| `24` | Send RFU link-layer data. Variable request body starts with role-specific byte metadata, then LLSF bytes. | Reference modes use a parent-triggered exchange and scheduled child TX; the async experiment immediately offers either endpoint's TX. LLSF remains intact for the ROM to parse. |
+| `25` | Send data, then change the SIO clock role. | Accepts local TX and changes SIO role after ACK. Completion follows the selected policy: remote reply, explicit local attempts, grouped prefixes/fences, or async local transport ownership. |
 | `26` | Receive link-layer data. Response body is one role-specific receive-metadata word followed by LLSF bytes; empty poll has no body. | Returns completed adapter RX data. Transport credit follows bounded adapter admission, not ROM consumption. |
 | `27` | Change SIO clock role, no request body. | Changes the SIO role after its ACK. |
 | `28` | Adapter-to-guest data-ready-and-change event; normally no body, with an optional one-word form in the library API. Guest ACK is `A8`. | Synthesizes the event when the current scheduling condition is met. |
@@ -129,15 +132,17 @@ by itself identify the original failure.
 
 ## What the current emulator does not establish
 
-The remote path uses `LotusGBA-emerald-rfu-v12`; both endpoints require the
-same protocol version. The reference modes keep one immutable network snapshot
+The experimental async frontend uses `LotusGBA-emerald-rfu-v13-async`; both
+endpoints require the same protocol version. It cannot connect to the stable
+`LotusGBA-emerald-rfu-v12` checkpoint. The reference modes keep one immutable network snapshot
 in flight; the grouped frontend mode below uses a bounded ordered pipeline.
 A later parent write may update the local
 register awaiting admission, but cannot mutate that snapshot. This TX-register
 update rule is a documented emulator compatibility choice, not hardware proof
 that every uncompleted command may be overwritten arbitrarily.
 
-A child `0x24`/`0x25` schedules local TX only. When a parent packet arrives, the
+In the parent-triggered reference/grouped modes, a child `0x24`/`0x25`
+schedules local TX only. When a parent packet arrives, the
 child selects that uplink once and returns an immutable reply snapshot. If no
 uplink is scheduled, an empty reply still completes the exchange. Guest writes
 can prepare the next uplink while a selected reply waits for transport credit;
@@ -192,7 +197,7 @@ neither test establishes that Emerald accepts the resulting LLSF contents.
 ## Local parent completion polls
 
 `RfuCompletionMode::GuardedLocalPoll` is the conservative reference policy.
-The current frontend selects `GroupedCommands`, described below. The public
+The stable trade checkpoint used `GroupedCommands`, described below. The public
 system interface retains `RemoteReply` as its default reference behavior.
 The reference policies keep one immutable network exchange outstanding; NI ACKs and
 application data remain guest-owned.
@@ -271,7 +276,7 @@ remains separate and private.
 
 ## Grouped command pipeline
 
-The experimental v12 frontend selects `GroupedCommands`. A group begins with
+The v12 frontend selects `GroupedCommands`. A group begins with
 the parent's own UNI `0x8800` block initializer, followed by contiguous
 `0x8900 | index` fragments. Up to 20 data fragments and 28 total commands
 (including repeated initialization/idle slots) enter a group. Excessive,
@@ -328,6 +333,53 @@ waits; it is not measured network RTT or commercial-game frame rate.
 groups, nonempty child replies, and one parent receive per completed command;
 it checks that RX pressure cannot prevent the guest reaching its next receive.
 See [Scope and evidence](#scope-and-evidence) for the bounded game checkpoint.
+
+## Asynchronous adapter experiment
+
+The v13 frontend selects `AsyncAdapter`; its bounded trade checkpoint is
+described in [Scope and evidence](#scope-and-evidence). The reference modes remain
+available to original two-system fixtures. This experiment changes only the
+adapter and transport, without replacing guest functions or modifying ROM bytes.
+
+TX and RX are independent ordered streams. A child `0x24`/`0x25` immediately
+offers an immutable uplink to the bounded transport, rather than waiting for
+the next parent packet to select it. A parent `0x25` completes locally once
+its immutable TX is owned by that transport; its explicit slot mask is local
+adapter success, not proof of peer receipt or application completion. Remote
+packets later populate RX independently. Parent data arrival never creates a
+synthetic child reply, and no NI ACK or application readiness is generated.
+
+Unavailable transport capacity retains one immutable pending write and holds
+its radio completion; further writes cannot overwrite it. RX admission uses
+the existing bounded queues and credits. Unlike a lossy radio model, this
+experiment uses backpressure instead of discarding application packets. A
+child cannot admit the next packet before the previous event/A8/`0x26`
+transaction releases ownership. These differences require separate latency
+and game acceptance checks, rather than assuming equivalence with other cores.
+
+An installed frontend pump receives and drains deferred packets up to eight
+times per emulated frame. This reduces the extra frame boundary delay when a
+child's receive transaction completes within a frame. Pump callbacks may
+disconnect the link, so invocation retains its own callable and re-checks
+connection state on subsequent polls. Exceptions reach the frontend ABI error
+boundary; the core does not run guest CPUs recursively during a receive callback.
+
+The strategy was researched against David Guillen Fandos's
+[RFU write-up](https://www.davidgf.net/2024/01/13/gba-wireless-adapter/) and
+[gpSP's adapter implementation](https://github.com/libretro/gpsp/blob/5819380c2ffb0900219d700a382ee68c464ebb99/rfu.c).
+Behavior requirements and synthetic tests were implemented independently;
+gpSP code is not incorporated or translated. Relevant distinctions include
+proactive client sending, polling during an adapter wait, and bounded receive
+storage; gpSP also permits packet loss and uses its own timed completion policy.
+
+Original `async_uplink`, `async_local_completion`, `async_readiness_barrier`,
+`async_receive_pump` and `async_pump_disconnect` fixtures cover unsolicited
+ordered uplinks, immutable writes under delayed credit, local completion with
+empty RX, actual peer readiness arriving after ordered block data, bounded
+in-frame polling and reentrant disconnection. The readiness fixture is a
+synthetic guest contract, not execution of Emerald's callback state machine.
+`async_ni_identity` and `async_ni_lost_ack` check guest-owned NI recovery.
+These service-tick tests do not measure visual FPS or establish a completed trade.
 
 ## Connection and acknowledgement contracts
 
