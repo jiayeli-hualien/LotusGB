@@ -40,7 +40,6 @@ constexpr uint64_t REMOTE_LINK_MAX_FRAME_LEAD = 2;
 constexpr uint64_t REMOTE_LINK_HOT_WINDOW_FRAMES = 8;
 constexpr size_t REMOTE_LINK_MAX_QUEUED_STARTS = 64;
 constexpr size_t REMOTE_LINK_MAX_QUEUED_WORDS = 64;
-constexpr size_t REMOTE_LINK_MAX_QUEUED_DATA_BLOCKS = 64;
 constexpr uint32_t EMERALD_LINK_TIMER3_CYCLES = 197 * 64;
 constexpr uint32_t CYCLES_PER_SCANLINE = 1232;
 constexpr uint32_t HDRAW_CYCLES = 960;
@@ -693,6 +692,9 @@ void GbaSystem::write8Impl(uint32_t address, uint8_t value) {
         return;
     }
     if (address >= 0x04000000 && address < 0x04000400) {
+        if ((address & ~1u) == REG_SIOMLT_SEND && remoteLinkChild_ &&
+            remoteBufferedProtocolActive_)
+            remoteChildAwaitingSend_ = false;
         if ((address & ~1u) == REG_SIOCNT || (address & ~1u) == REG_RCNT) {
             const uint32_t aligned = address & ~1u;
             const unsigned shift = (address & 1u) * 8;
@@ -970,11 +972,13 @@ void GbaSystem::configureRemoteMultiplayerLink(
     remotePredictedWords_.clear();
     remotePendingWords_.clear();
     remotePendingDataBlocks_.clear();
+    remotePendingLocalDataBlock_.reset();
     remoteActiveDataBlock_ = {};
     remoteOutgoingDataWords_ = {};
     remoteNextDataBlockSequence_ = 1;
     remoteExpectedDataBlockSequence_ = 1;
     remotePreviousDataChecksum_ = 0;
+    remoteBufferedChecksumValid_ = false;
     remoteNextChildPulseCycle_ = 0;
     remoteStreamWordIndex_ = 0;
     remoteChildPulseIndex_ = 0;
@@ -983,10 +987,12 @@ void GbaSystem::configureRemoteMultiplayerLink(
     remoteBufferedSwitchAfterTransfer_ = false;
     remoteActiveDataBlockValid_ = false;
     remoteBufferedWordPending_ = false;
+    remoteChildAwaitingSend_ = false;
     remotePeerWordReady_ = false;
     remoteReplySent_ = false;
     remotePendingStarts_.clear();
     remoteTransferSequence_ = 0;
+    remoteRawTransferSequence_ = 0;
     remoteActiveSequence_ = 0;
     remoteFrameCount_ = 0;
     remotePeerFrameCount_ = 0;
@@ -1125,16 +1131,30 @@ bool GbaSystem::receiveRemoteMultiplayerStart(uint32_t sequence,
                                               uint8_t baudIndex,
                                               uint64_t elapsedCycles) {
     if (!remoteLinkEnabled_ || !remoteLinkChild_ || !remoteLinkConnected_ ||
-        remoteBufferedProtocolActive_ ||
-        !inMultiplayerMode() ||
-        sequence != remoteTransferSequence_ + 1 || !sendRemoteWord_ ||
+        (!inMultiplayerMode() && !remoteBufferedProtocolRequested_) ||
+        sequence != remoteRawTransferSequence_ + 1 || !sendRemoteWord_ ||
         baudIndex >= 4 ||
         remotePendingStarts_.size() >= REMOTE_LINK_MAX_QUEUED_STARTS) {
         multiplayerError_ = true;
         return false;
     }
-    remoteTransferSequence_ = sequence;
+    remoteRawTransferSequence_ = sequence;
+    ++remoteTransferSequence_;
     markRemoteLinkActivity();
+    if (remoteBufferedProtocolRequested_) {
+        // Emerald's discovery polls can arrive while the other guest is
+        // probing a different device. Complete them as an open cable slot
+        // so the initiating guest can continue its discovery loop.
+        if (!inMultiplayerMode() || remoteBufferedProtocolActive_) {
+            sendRemoteWord_(sequence, 0xFFFF);
+        } else {
+            // The two games can enter discovery independently. The sender's
+            // time since entry does not define a date on the receiver's clock.
+            remotePendingStarts_.push_back({sequence, parentWord, baudIndex,
+                                           emulatedCycles_});
+        }
+        return true;
+    }
     // Transfer starts are scheduled on the child's guest clock relative to
     // each game's entry into multiplayer mode. This retains sub-frame SIO
     // ordering even though the packet itself is delivered between frontend
@@ -1203,7 +1223,7 @@ void GbaSystem::beginRemoteMultiplayerTransfer() {
 }
 
 void GbaSystem::beginRemoteBufferedChildTransfer() {
-    if (multiplayerBusy_ || !remoteLinkConnected_ ||
+    if (multiplayerBusy_ || remoteChildAwaitingSend_ || !remoteLinkConnected_ ||
         !inMultiplayerMode() || emulatedCycles_ < remoteNextChildPulseCycle_)
         return;
     ++remoteTransferSequence_;
@@ -1219,11 +1239,17 @@ void GbaSystem::beginRemoteBufferedChildTransfer() {
         storeIo16(REG_SIOMULTI0 + 2 * slot, 0xFFFF);
 
     if (++remoteChildPulseIndex_ < 9) {
-        remoteNextChildPulseCycle_ += EMERALD_LINK_TIMER3_CYCLES;
+        // Emerald arms Timer 3 after completing the serial callback. Include
+        // local wire time and never catch up missed pulses in a burst.
+        remoteNextChildPulseCycle_ = emulatedCycles_ + multiplayerCycles_ +
+            EMERALD_LINK_TIMER3_CYCLES;
     } else {
         remoteChildPulseIndex_ = 0;
-        remoteNextChildPulseCycle_ += CYCLES_PER_FRAME -
-            8 * EMERALD_LINK_TIMER3_CYCLES;
+        const uint32_t vblankOffset = SCREEN_HEIGHT * CYCLES_PER_SCANLINE;
+        uint32_t untilVBlank = (vblankOffset + CYCLES_PER_FRAME - frameCycle_) %
+            CYCLES_PER_FRAME;
+        if (!untilVBlank) untilVBlank = CYCLES_PER_FRAME;
+        remoteNextChildPulseCycle_ = emulatedCycles_ + untilVBlank;
     }
 }
 
@@ -1295,25 +1321,58 @@ bool GbaSystem::receiveRemoteMultiplayerWord(uint32_t sequence,
 bool GbaSystem::receiveRemoteMultiplayerDataBlock(
     uint32_t sequence, const MultiplayerDataWords &words,
     uint16_t checksum) {
-    if (!remoteLinkEnabled_ || !remoteLinkConnected_ ||
-        !remoteBufferedProtocolRequested_ ||
-        sequence != remoteExpectedDataBlockSequence_ ||
-        remotePendingDataBlocks_.size() >=
-            REMOTE_LINK_MAX_QUEUED_DATA_BLOCKS) {
-        multiplayerError_ = true;
-        return false;
-    }
+    return receiveRemoteMultiplayerDataBlockDetailed(sequence, words,
+                                                      checksum).accepted();
+}
+
+GbaSystem::RemoteMultiplayerDataBlockResult
+GbaSystem::receiveRemoteMultiplayerDataBlockDetailed(
+    uint32_t sequence, const MultiplayerDataWords &words,
+    uint16_t checksum) {
+    RemoteMultiplayerDataBlockResult result;
+    result.expectedSequence = remoteExpectedDataBlockSequence_;
+    result.queuedBlocks = remotePendingDataBlocks_.size();
+    result.activeBlock = remoteActiveDataBlockValid_;
     uint16_t calculatedChecksum = 0;
     for (uint16_t word : words)
         calculatedChecksum = static_cast<uint16_t>(calculatedChecksum + word);
-    if (calculatedChecksum != checksum) {
-        multiplayerError_ = true;
-        return false;
+    result.calculatedChecksum = calculatedChecksum;
+
+    const auto reject = [this, &result](
+                            RemoteMultiplayerDataBlockRejectReason reason) {
+        if (reason != RemoteMultiplayerDataBlockRejectReason::QueueFull)
+            multiplayerError_ = true;
+        result.reason = reason;
+        return result;
+    };
+    if (!remoteLinkEnabled_)
+        return reject(RemoteMultiplayerDataBlockRejectReason::LinkNotConfigured);
+    if (!remoteLinkConnected_)
+        return reject(RemoteMultiplayerDataBlockRejectReason::LinkDisconnected);
+    if (!remoteBufferedProtocolRequested_)
+        return reject(RemoteMultiplayerDataBlockRejectReason::
+                          BufferedProtocolNotRequested);
+    if (sequence != remoteExpectedDataBlockSequence_)
+        return reject(RemoteMultiplayerDataBlockRejectReason::SequenceMismatch);
+    if (remotePendingDataBlocks_.size() >=
+        REMOTE_MULTIPLAYER_DATA_BLOCK_QUEUE_LIMIT)
+        return reject(RemoteMultiplayerDataBlockRejectReason::QueueFull);
+    if (calculatedChecksum != checksum)
+        return reject(RemoteMultiplayerDataBlockRejectReason::ChecksumMismatch);
+
+    result.reason = RemoteMultiplayerDataBlockRejectReason::None;
+    if (!remoteBufferedProtocolActive_) {
+        // Reliable ordered packets retain session-wide sequence numbers across
+        // guest serial resets. Consume late old-attempt packets without
+        // delivering them to the reset parser. New commands follow that
+        // sender's handshake completion, so they cannot overtake the boundary.
+        ++remoteExpectedDataBlockSequence_;
+        return result;
     }
     remotePendingDataBlocks_.push_back({sequence, words, checksum});
     ++remoteExpectedDataBlockSequence_;
     markRemoteLinkActivity();
-    return true;
+    return result;
 }
 
 void GbaSystem::configureRemoteRfuLink(
@@ -1827,6 +1886,24 @@ void GbaSystem::disconnectRemoteRfuLink() {
     sendRfuDisconnect_ = {};
 }
 
+void GbaSystem::resetRemoteBufferedProtocol() {
+    abortMultiplayerTransfer();
+    remoteBufferedProtocolActive_ = false;
+    remoteBufferedSwitchAfterTransfer_ = false;
+    remoteBufferedWordPending_ = false;
+    remoteChildAwaitingSend_ = false;
+    remotePendingDataBlocks_.clear();
+    remoteActiveDataBlock_ = {};
+    remoteActiveDataBlockValid_ = false;
+    remoteOutgoingDataWords_.fill(0);
+    remoteStreamWordIndex_ = 0;
+    remotePreviousDataChecksum_ = 0;
+    remoteBufferedChecksumValid_ = false;
+    remoteNextChildPulseCycle_ = 0;
+    remoteChildPulseIndex_ = 0;
+    multiplayerError_ = false;
+}
+
 void GbaSystem::activateRemoteBufferedProtocol() {
     if (!remoteBufferedProtocolRequested_ || remoteBufferedProtocolActive_)
         return;
@@ -1836,10 +1913,16 @@ void GbaSystem::activateRemoteBufferedProtocol() {
     remoteStreamWordIndex_ = 0;
     remoteOutgoingDataWords_.fill(0);
     remotePreviousDataChecksum_ = 0;
+    remoteBufferedChecksumValid_ = false;
     remoteActiveDataBlock_ = {};
     remoteActiveDataBlockValid_ = false;
 
     if (remoteLinkChild_) {
+        // Wait for the handshake callback's SEND publication before starting
+        // local cadence. Subsequently SerialCB calls DoRecv before DoSend:
+        // that next SEND write marks the receive registers consumed, even if
+        // IF was acknowledged much earlier in the interrupt dispatcher.
+        remoteChildAwaitingSend_ = true;
         // Emerald's remote station receives nine serial interrupts per link
         // command group: one VBlank start followed by the master's Timer 3
         // retries. Recreate that local cadence without waiting for packets.
@@ -1878,32 +1961,52 @@ uint16_t GbaSystem::prepareRemoteBufferedTransferWord() {
 
 void GbaSystem::finishRemoteBufferedTransferWord() {
     const uint8_t wordIndex = remoteStreamWordIndex_;
-    if (wordIndex < remoteOutgoingDataWords_.size()) {
-        remoteOutgoingDataWords_[wordIndex] = remoteLinkChild_
-            ? multiplayerWords_[1] : multiplayerWords_[0];
+    const uint16_t local = multiplayerWords_[remoteLinkChild_ ? 1 : 0];
+    if (wordIndex == 0) {
+        // The guest checks the previous group's combined checksum first,
+        // then receives eight words. Each local virtual cable includes its
+        // own outgoing words and the actual queued peer words it delivered.
+        // This guest checksum is distinct from a packet's own-payload sum.
+        if (remoteBufferedChecksumValid_ && local != remotePreviousDataChecksum_)
+            multiplayerError_ = true;
+        remotePreviousDataChecksum_ = 0;
+    } else {
+        remoteOutgoingDataWords_[wordIndex - 1] = local;
+        remotePreviousDataChecksum_ = static_cast<uint16_t>(remotePreviousDataChecksum_ +
+            multiplayerWords_[0] + multiplayerWords_[1]);
     }
     if (wordIndex == 8) {
+        const bool nonempty = std::any_of(remoteOutgoingDataWords_.begin(),
+            remoteOutgoingDataWords_.end(), [](uint16_t w) { return w != 0; });
         uint16_t checksum = 0;
-        for (uint16_t word : remoteOutgoingDataWords_)
-            checksum = static_cast<uint16_t>(checksum + word);
-        const uint16_t transmittedChecksum = remoteLinkChild_
-            ? multiplayerWords_[1] : multiplayerWords_[0];
-        if (transmittedChecksum != checksum) {
-            multiplayerError_ = true;
-            remoteStreamWordIndex_ = 0;
-            remoteActiveDataBlockValid_ = false;
-            return;
+        for (uint16_t w : remoteOutgoingDataWords_) checksum = static_cast<uint16_t>(checksum + w);
+        // Zero command slots carry no application message. Generate their
+        // local wire cadence without filling the peer queue with idle frames.
+        if (nonempty && sendRemoteDataBlock_) {
+            remotePendingLocalDataBlock_ = RemoteMultiplayerDataBlock{
+                remoteNextDataBlockSequence_, remoteOutgoingDataWords_, checksum};
+            servicePendingRemoteDataBlock();
         }
-        if (sendRemoteDataBlock_)
-            sendRemoteDataBlock_(remoteNextDataBlockSequence_++,
-                                 remoteOutgoingDataWords_,
-                                 transmittedChecksum);
-        remotePreviousDataChecksum_ = remoteActiveDataBlock_.checksum;
+        remoteBufferedChecksumValid_ = true;
         remoteActiveDataBlockValid_ = false;
         remoteStreamWordIndex_ = 0;
     } else {
         ++remoteStreamWordIndex_;
     }
+}
+
+bool GbaSystem::servicePendingRemoteDataBlock() {
+    if (!remotePendingLocalDataBlock_)
+        return true;
+    if (!sendRemoteDataBlock_)
+        return false;
+    const auto &pending = *remotePendingLocalDataBlock_;
+    if (!sendRemoteDataBlock_(pending.sequence, pending.words,
+                              pending.checksum))
+        return false;
+    ++remoteNextDataBlockSequence_;
+    remotePendingLocalDataBlock_.reset();
+    return true;
 }
 
 void GbaSystem::applyPendingRemoteWord() {
@@ -1928,15 +2031,16 @@ void GbaSystem::applyPendingRemoteWord() {
 void GbaSystem::disconnectRemoteMultiplayerLink() {
     if (!remoteLinkEnabled_)
         return;
+    remoteLinkConnected_ = false;
     abortMultiplayerTransfer();
     remoteLinkEnabled_ = false;
     remoteLinkChild_ = false;
-    remoteLinkConnected_ = false;
     remoteBufferedProtocolRequested_ = false;
     remoteBufferedProtocolActive_ = false;
     remoteBufferedSwitchAfterTransfer_ = false;
     remoteBufferedWordPending_ = false;
     remotePendingDataBlocks_.clear();
+    remotePendingLocalDataBlock_.reset();
     remoteActiveDataBlockValid_ = false;
     remotePeerReady_ = false;
     remotePeerWordReady_ = false;
@@ -2016,6 +2120,12 @@ void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
         rfuSiLineHigh_ = guestClock ? !guestReady : guestReady;
     }
     const bool isMultiplayer = inMultiplayerMode();
+    // Emerald DisableSerial/EnableSerial reset the guest parser with this
+    // write while retaining multiplayer mode. Re-enter raw discovery and stop
+    // autonomous child pulses; a mode-change check alone misses this boundary.
+    if (remoteLinkEnabled_ && remoteBufferedProtocolRequested_ &&
+        address == REG_SIOCNT && value == 0x2000)
+        resetRemoteBufferedProtocol();
     if (remoteLinkEnabled_ && remoteLinkConnected_ &&
         wasMultiplayer != isMultiplayer)
         notifyRemoteReadiness(isMultiplayer);
@@ -2111,7 +2221,8 @@ void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
         }
         if (!sendRemoteStart_)
             throw std::runtime_error("GBA remote link has no start sender");
-        remoteActiveSequence_ = ++remoteTransferSequence_;
+        ++remoteTransferSequence_;
+        remoteActiveSequence_ = ++remoteRawTransferSequence_;
         sendRemoteStart_(remoteActiveSequence_, multiplayerWords_[0],
                          static_cast<uint8_t>(value & 3),
                          remoteElapsedCycles());
@@ -2121,6 +2232,16 @@ void GbaSystem::writeSerialControl(uint32_t address, uint16_t value) {
 void GbaSystem::abortMultiplayerTransfer() {
     const bool hadPendingWork = multiplayerBusy_ ||
         !remotePendingStarts_.empty();
+    if (remoteBufferedProtocolRequested_ && !remoteBufferedProtocolActive_ &&
+        remoteLinkChild_ && remoteLinkConnected_ && sendRemoteWord_) {
+        // A guest switching away from multiplayer cannot complete a discovery
+        // transfer. Resolve it as an open slot instead of leaving the other
+        // guest waiting for a reply that will never come.
+        if (multiplayerBusy_ && !remoteReplySent_)
+            sendRemoteWord_(remoteActiveSequence_, 0xFFFF);
+        for (const auto &start : remotePendingStarts_)
+            sendRemoteWord_(start.sequence, 0xFFFF);
+    }
     remotePendingStarts_.clear();
     remotePredictedWords_.clear();
     remotePendingWords_.clear();
@@ -2142,6 +2263,8 @@ void GbaSystem::abortMultiplayerTransfer() {
 
 void GbaSystem::completeMultiplayerTransfer() {
     multiplayerCycles_ = 0;
+    if (remoteLinkChild_ && remoteBufferedProtocolActive_)
+        remoteChildAwaitingSend_ = true;
     if (linkPeer_) {
         for (GbaSystem *endpoint : {this, linkPeer_}) {
             endpoint->storeIo16(REG_SIOMULTI0,
@@ -3913,16 +4036,23 @@ GbaSystem::FrameResult GbaSystem::runFrame() {
     servicePendingEmeraldRfuTransmit();
     initializeScanlineOam();
     uint32_t elapsed = 0;
-    uint32_t nextRfuPoll = 0;
+    uint32_t nextNetworkPoll = 0;
     while (remoteFrameCycles_ < CYCLES_PER_FRAME) {
-        if (remoteRfuEnabled_ && rfuConnected_ && rfuNetworkPump_ &&
-            remoteFrameCycles_ >= nextRfuPoll) {
-            nextRfuPoll += CYCLES_PER_FRAME / 8;
+        const bool rfuPump = remoteRfuEnabled_ && rfuConnected_ && rfuNetworkPump_;
+        const bool cablePump = remoteLinkEnabled_ && remoteLinkConnected_ &&
+            remoteBufferedProtocolRequested_ && remoteEventPump_;
+        if ((rfuPump || cablePump) && remoteFrameCycles_ >= nextNetworkPoll) {
+            nextNetworkPoll += CYCLES_PER_FRAME / 8;
             // A receive callback can disconnect and clear the installed pump.
             // Keep this invocation alive and re-check state after it returns.
-            const auto pump = rfuNetworkPump_;
+            const auto pump = rfuPump ? rfuNetworkPump_ : remoteEventPump_;
             pump();
             servicePendingEmeraldRfuTransmit();
+        }
+        if (remoteLinkEnabled_ && remoteBufferedProtocolRequested_ &&
+            !servicePendingRemoteDataBlock()) {
+            remoteFrameStalled_ = true;
+            return {true, elapsed};
         }
         beginRemoteMultiplayerTransfer();
         applyPendingRemoteWord();

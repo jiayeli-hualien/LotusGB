@@ -68,6 +68,9 @@ enum class BiosStartupMode {
 };
 
 constexpr const char *BIOS_MODE_OPTION = "lotusgba_bios_mode";
+constexpr const char *LINK_DEVICE_OPTION = "lotusgba_link_device";
+enum class LinkDevice : uint8_t { WirelessAdapter, LinkCable };
+LinkDevice loadedLinkDevice = LinkDevice::WirelessAdapter;
 
 void registerCoreOptions() {
     if (!environmentCallback)
@@ -75,6 +78,8 @@ void registerCoreOptions() {
     retro_variable options[] = {
         {BIOS_MODE_OPTION,
          "GBA BIOS startup (restart content to apply); Automatic|Use BIOS|Skip BIOS"},
+        {LINK_DEVICE_OPTION,
+         "Link device (restart content to apply); Wireless Adapter|Link Cable"},
         {nullptr, nullptr},
     };
     environmentCallback(RETRO_ENVIRONMENT_SET_VARIABLES, options);
@@ -103,6 +108,15 @@ BiosStartupMode readBiosStartupMode() {
     logMessage(RETRO_LOG_WARN,
                "Unknown BIOS startup option; using Automatic mode");
     return BiosStartupMode::Automatic;
+}
+
+LinkDevice readLinkDevice() {
+    retro_variable option{LINK_DEVICE_OPTION, nullptr};
+    if (!environmentCallback || !environmentCallback(RETRO_ENVIRONMENT_GET_VARIABLE, &option) ||
+        !option.value || std::string(option.value) == "Wireless Adapter")
+        return LinkDevice::WirelessAdapter;
+    if (std::string(option.value) == "Link Cable") return LinkDevice::LinkCable;
+    throw std::runtime_error("Unknown GBA link device option");
 }
 
 std::vector<uint8_t> loadBios(BiosStartupMode mode) {
@@ -253,18 +267,19 @@ uint16_t readPressedButtons(unsigned port) {
     return pressed;
 }
 
-constexpr char NETPACKET_PROTOCOL_VERSION[] = "LotusGBA-emerald-rfu-v13-async";
+constexpr char NETPACKET_PROTOCOL_VERSION[] = "LotusGBA-pokemon-link-v16";
 constexpr uint8_t PACKET_MAGIC[] = {'L', 'G', 'B', 'A'};
 enum class PacketType : uint8_t {
     Startup, Ready, TransferStart, TransferWord, FrameProgress, DataBlock,
     RfuAdvertisement, RfuConnectionRequest, RfuConnectionResult, RfuData,
-    RfuDataAccepted, RfuDisconnect
+    RfuDataAccepted, RfuDisconnect, DataBlockAccepted
 };
 
 // Grouped commands retain a bounded immutable pipeline. Transport credits
 // mean adapter admission; the final radio fence additionally waits for all
 // ordered replies. Neither kind of credit synthesizes a guest NI ACK.
 constexpr size_t RFU_DATA_WINDOW = LOTUSGBA::GbaRfuDataChannel::MAX_QUEUED_MESSAGES;
+constexpr size_t DATA_BLOCK_WINDOW = 32;
 
 void netpacketPoll();
 void clearRfuSendWindow();
@@ -293,6 +308,7 @@ struct RemoteNetplay {
     uint16_t lastSioControl = 0;
     uint16_t lastSioRc = 0;
     std::deque<uint32_t> inFlightRfuData;
+    std::deque<uint32_t> inFlightDataBlocks;
     struct DeferredRfuData {
         uint32_t sequence;
         uint8_t payloadBytes;
@@ -300,6 +316,13 @@ struct RemoteNetplay {
     };
     std::deque<DeferredRfuData> deferredRfuData;
     uint32_t expectedRfuDataAccepted = 1;
+    struct DeferredDataBlock {
+        uint32_t sequence;
+        GbaSystem::MultiplayerDataWords words;
+        uint16_t checksum;
+    };
+    std::deque<DeferredDataBlock> deferredDataBlocks;
+    uint32_t expectedDataBlockAccepted = 1;
     unsigned sioStateLogCount = 0;
     uint64_t packetsSent = 0;
     uint64_t bytesSent = 0;
@@ -411,6 +434,7 @@ void sendPacket(const std::vector<uint8_t> &packet) {
         case PacketType::TransferStart: ++net.transferStartsSent; break;
         case PacketType::TransferWord: ++net.transferWordsSent; break;
         case PacketType::DataBlock: ++net.dataBlocksSent; break;
+        case PacketType::DataBlockAccepted: break;
         case PacketType::RfuAdvertisement:
         case PacketType::RfuConnectionRequest:
         case PacketType::RfuConnectionResult:
@@ -485,14 +509,17 @@ void sendStartup() {
     appendInteger(packet, static_cast<uint64_t>(net.epoch), 8);
     appendInteger(packet, save ? save->size() : 0, 4);
     appendInteger(packet, rtc ? rtc->size() : 0, 1);
+    packet.push_back(static_cast<uint8_t>(loadedLinkDevice));
     sendPacket(packet);
     net.sentStartup = true;
 }
 
 void receiveStartup(const uint8_t *data, size_t size) {
-    if (size != 21 || net.receivedStartup ||
+    if (size != 22 || net.receivedStartup ||
         readInteger(data, 8) != romFingerprint())
         throw std::runtime_error("GBA Netplay requires the same GBA ROM on both peers");
+    if (data[21] != static_cast<uint8_t>(loadedLinkDevice))
+        throw std::runtime_error("GBA Netplay link device mismatch; select the same device on both peers");
     const uint64_t epoch = readInteger(data + 8, 8);
     // Restrict the shared startup timestamp to the cartridge's supported era.
     if (epoch < 946684800 || epoch >= 4102444800 ||
@@ -565,14 +592,16 @@ void receiveStartup(const uint8_t *data, size_t size) {
     sendPacket(packet);
 }
 
-[[maybe_unused]] void sendRemoteDataBlock(
+[[maybe_unused]] bool sendRemoteDataBlock(
     uint32_t sequence, const GbaSystem::MultiplayerDataWords &words,
     uint16_t checksum) {
+    if (net.inFlightDataBlocks.size() >= DATA_BLOCK_WINDOW)
+        return false;
     if (sequence <= 16 || sequence % 256 == 0) {
         char message[128];
         std::snprintf(message, sizeof(message),
-                      "GBA Netplay Emerald block sent: seq=%u checksum=%04X",
-                      sequence, checksum);
+                      "GBA Netplay Emerald block sent: seq=%u checksum=%04X cmd=%04X",
+                      sequence, checksum, words[0]);
         logMessage(RETRO_LOG_INFO, message);
     }
     auto packet = makePacket(PacketType::DataBlock);
@@ -580,8 +609,32 @@ void receiveStartup(const uint8_t *data, size_t size) {
     for (uint16_t word : words)
         appendInteger(packet, word, 2);
     appendInteger(packet, checksum, 2);
+    net.inFlightDataBlocks.push_back(sequence);
+    sendPacket(packet);
+    return true;
+}
+
+void sendDataBlockAccepted(uint32_t sequence) {
+    auto packet = makePacket(PacketType::DataBlockAccepted);
+    appendInteger(packet, sequence, 4);
     sendPacket(packet);
 }
+
+void receiveDataBlockAccepted(const uint8_t *data, size_t size) {
+    if (size != 4 || !net.linkConfigured)
+        throw std::runtime_error("Invalid GBA Netplay data-block admission ACK");
+    const uint32_t sequence = static_cast<uint32_t>(readInteger(data, 4));
+    if (sequence < net.expectedDataBlockAccepted)
+        return;
+    if (net.inFlightDataBlocks.empty() ||
+        net.inFlightDataBlocks.front() != sequence ||
+        sequence != net.expectedDataBlockAccepted)
+        throw std::runtime_error("Unexpected GBA Netplay data-block admission ACK");
+    net.inFlightDataBlocks.pop_front();
+    ++net.expectedDataBlockAccepted;
+}
+
+void drainDeferredDataBlocks();
 
 void sendRfuAdvertisement(uint32_t sequence, uint16_t id,
                           const GbaSystem::RfuAdvertisement &data) {
@@ -710,14 +763,31 @@ bool hasEmeraldRfuGameCode() {
 }
 
 void startRemoteEmulation() {
-    if (!hasEmeraldRfuGameCode()) {
-        failNetplay("Remote GBA Netplay currently targets Japanese/English Emerald RFU; remote cable SIO is deferred");
+    const bool cable = loadedLinkDevice == LinkDevice::LinkCable;
+    const bool englishEmerald = loadedRom.size() > 0xAF &&
+        std::equal(loadedRom.begin() + 0xAC, loadedRom.begin() + 0xB0, "BPEE");
+    if ((cable && !englishEmerald) || (!cable && !hasEmeraldRfuGameCode())) {
+        failNetplay(cable ? "Pokemon cable profile currently supports English Emerald only"
+                         : "Wireless Adapter requires a supported Emerald RFU profile");
         return;
     }
     auto local = std::make_unique<GbaSystem>(
         loadedRom, loadedBios, gbaSystem->getSaveRamStorage(),
         gbaSystem->getRtcStorage(), net.epoch);
     gbaSystem = std::move(local);
+    gbaSystem->setRfuAdapterEnabled(!cable);
+    if (cable) {
+        gbaSystem->configureRemoteMultiplayerLink(!net.host(), true,
+            sendRemoteTransferStart, sendRemoteTransferWord, sendRemoteReady,
+            sendRemoteFrameProgress, {}, sendRemoteDataBlock);
+        gbaSystem->setRemoteMultiplayerBufferedProtocol(true);
+        gbaSystem->setRemoteMultiplayerEventPump(netpacketPoll);
+        net.linkConfigured = true;
+        net.guestFrameMeasurementStart = std::chrono::steady_clock::now();
+        net.guestFrameMeasurementStarted = true;
+        logMessage(RETRO_LOG_INFO, "GBA Netplay started buffered Pokemon cable (English Emerald)");
+        return;
+    }
     const auto rfuId = [](uint16_t clientId) {
         return clientId == 0xFFFF ? uint16_t{1}
                                   : static_cast<uint16_t>(clientId + 1);
@@ -821,16 +891,81 @@ void receiveDataBlock(const uint8_t *data, size_t size) {
         words[index] = static_cast<uint16_t>(readInteger(data + 4 + index * 2, 2));
     const uint16_t checksum = static_cast<uint16_t>(
         readInteger(data + 4 + words.size() * 2, 2));
-    if (!gbaSystem->receiveRemoteMultiplayerDataBlock(sequence, words,
-                                                       checksum))
-        throw std::runtime_error("GBA rejected Emerald data block");
+    if (!net.deferredDataBlocks.empty()) {
+        const uint32_t expected = net.deferredDataBlocks.back().sequence + 1;
+        if (sequence != expected ||
+            net.deferredDataBlocks.size() >= DATA_BLOCK_WINDOW)
+            throw std::runtime_error("GBA Netplay deferred data-block window overflow or sequence gap");
+        net.deferredDataBlocks.push_back({sequence, words, checksum});
+        return;
+    }
+    const auto result = gbaSystem->receiveRemoteMultiplayerDataBlockDetailed(
+        sequence, words, checksum);
+    if (result.reason == GbaSystem::RemoteMultiplayerDataBlockRejectReason::QueueFull) {
+        net.deferredDataBlocks.push_back({sequence, words, checksum});
+        return;
+    }
+    if (!result.accepted()) {
+        const char *reason = "unknown";
+        switch (result.reason) {
+        case GbaSystem::RemoteMultiplayerDataBlockRejectReason::None:
+            reason = "none";
+            break;
+        case GbaSystem::RemoteMultiplayerDataBlockRejectReason::LinkNotConfigured:
+            reason = "link-not-configured";
+            break;
+        case GbaSystem::RemoteMultiplayerDataBlockRejectReason::LinkDisconnected:
+            reason = "link-disconnected";
+            break;
+        case GbaSystem::RemoteMultiplayerDataBlockRejectReason::
+                 BufferedProtocolNotRequested:
+            reason = "buffered-protocol-not-requested";
+            break;
+        case GbaSystem::RemoteMultiplayerDataBlockRejectReason::SequenceMismatch:
+            reason = "sequence-mismatch";
+            break;
+        case GbaSystem::RemoteMultiplayerDataBlockRejectReason::QueueFull:
+            reason = "queue-full";
+            break;
+        case GbaSystem::RemoteMultiplayerDataBlockRejectReason::ChecksumMismatch:
+            reason = "payload-checksum-mismatch";
+            break;
+        }
+        char message[256];
+        std::snprintf(message, sizeof(message),
+                      "GBA rejected Emerald data block: reason=%s seq=%u expected=%u queue=%zu/%zu active=%u checksum=%04X calculated=%04X",
+                      reason, sequence, result.expectedSequence,
+                      result.queuedBlocks,
+                      GbaSystem::REMOTE_MULTIPLAYER_DATA_BLOCK_QUEUE_LIMIT,
+                      result.activeBlock ? 1u : 0u, checksum,
+                      result.calculatedChecksum);
+        throw std::runtime_error(message);
+    }
+    sendDataBlockAccepted(sequence);
     ++net.dataBlocksReceived;
     if (sequence <= 16 || sequence % 256 == 0) {
         char message[128];
         std::snprintf(message, sizeof(message),
-                      "GBA Netplay Emerald block received: seq=%u checksum=%04X",
-                      sequence, checksum);
+                      "GBA Netplay Emerald block received: seq=%u checksum=%04X cmd=%04X",
+                      sequence, checksum, words[0]);
         logMessage(RETRO_LOG_INFO, message);
+    }
+}
+
+void drainDeferredDataBlocks() {
+    if (!gbaSystem || !net.linkConfigured)
+        return;
+    while (!net.deferredDataBlocks.empty()) {
+        const auto &pending = net.deferredDataBlocks.front();
+        const auto result = gbaSystem->receiveRemoteMultiplayerDataBlockDetailed(
+            pending.sequence, pending.words, pending.checksum);
+        if (result.reason == GbaSystem::RemoteMultiplayerDataBlockRejectReason::QueueFull)
+            return;
+        if (!result.accepted())
+            throw std::runtime_error("GBA rejected deferred Emerald data block");
+        sendDataBlockAccepted(pending.sequence);
+        ++net.dataBlocksReceived;
+        net.deferredDataBlocks.pop_front();
     }
 }
 
@@ -1040,6 +1175,9 @@ void netpacketReceive(const void *data, size_t size, uint16_t clientId) try {
     case PacketType::DataBlock:
         receiveDataBlock(bytes + 5, size - 5);
         break;
+    case PacketType::DataBlockAccepted:
+        receiveDataBlockAccepted(bytes + 5, size - 5);
+        break;
     case PacketType::RfuAdvertisement:
         receiveRfuAdvertisement(bytes + 5, size - 5);
         break;
@@ -1070,6 +1208,7 @@ void netpacketPoll() try {
     if (net.send && net.pollReceive && net.connected && !net.failed)
         net.pollReceive();
     drainDeferredRfuData();
+    drainDeferredDataBlocks();
     if (net.send && net.connected && !net.failed) {
         if (!net.sentStartup && (net.host() || net.receivedStartup))
             sendStartup();
@@ -1262,6 +1401,7 @@ bool retro_load_game(const retro_game_info *game) {
     try {
         auto candidate = copyRom(*game);
         auto candidateBios = loadBios(readBiosStartupMode());
+        const LinkDevice candidateDevice = readLinkDevice();
         std::shared_ptr<std::vector<uint8_t>> candidateSaveFlash;
         std::shared_ptr<std::vector<uint8_t>> candidateRtc;
         if (gbaSystem && loadedRom == candidate) {
@@ -1271,10 +1411,12 @@ bool retro_load_game(const retro_game_info *game) {
         auto candidateSystem = std::make_unique<GbaSystem>(
             candidate, candidateBios, std::move(candidateSaveFlash),
             std::move(candidateRtc));
+        candidateSystem->setRfuAdapterEnabled(candidateDevice == LinkDevice::WirelessAdapter);
         linkChild.reset();
         loadedRom = std::move(candidate);
         loadedBios = std::move(candidateBios);
         gbaSystem = std::move(candidateSystem);
+        loadedLinkDevice = candidateDevice;
         coreFaulted = false;
         if (net.sentStartup || net.receivedStartup)
             failNetplay("GBA content changed during Netplay. Restart the session.");
@@ -1297,12 +1439,16 @@ bool retro_load_game_special(unsigned type, const retro_game_info *games, size_t
         return false;
     try {
         const auto bios = loadBios(readBiosStartupMode());
+        const LinkDevice device = readLinkDevice();
         auto parent = std::make_unique<GbaSystem>(copyRom(games[0]), bios);
         auto child = std::make_unique<GbaSystem>(copyRom(games[1]), bios);
+        parent->setRfuAdapterEnabled(device == LinkDevice::WirelessAdapter);
+        child->setRfuAdapterEnabled(device == LinkDevice::WirelessAdapter);
         parent->connectLinkChild(*child);
         retro_unload_game();
         gbaSystem = std::move(parent);
         linkChild = std::move(child);
+        loadedLinkDevice = device;
         return true;
     } catch (const std::exception &error) {
         logMessage(RETRO_LOG_ERROR, error.what());

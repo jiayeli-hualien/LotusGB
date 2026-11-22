@@ -77,6 +77,11 @@ Reset/reconnect races, recovery and measured network timeout budgets remain
 open; see the [RFU design and reproducible test scope](gba-rfu-protocol.md).
 Commercial-game session records remain private. GBA save states remain deferred.
 
+The [Pokémon cable experiment](gba-pokemon-cable.md) adds an explicit device
+choice and a buffered English Emerald protocol profile. Component and frontend
+contracts are tested; a bounded localhost Netpacket trade checkpoint is recorded
+in that document. Cross-device, delay and battle checks remain open.
+
 The async RFU frontend has a bounded English Emerald trade checkpoint with
 fixed LAN delay and substantially reduced stutter; Ubuntu input responsiveness
 remains to be investigated. Keep latency optimization separate from data

@@ -40,6 +40,8 @@ std::vector<std::string> logMessages;
 std::string systemDirectoryPath;
 std::string biosStartupMode = "Automatic";
 bool biosOptionRegistered = false;
+std::string linkDeviceOption = "Wireless Adapter";
+bool linkDeviceOptionRegistered = false;
 
 void inputPoll() {}
 
@@ -101,9 +103,12 @@ bool environment(unsigned command, void *data) {
     }
     if (command == RETRO_ENVIRONMENT_SET_VARIABLES) {
         const auto *options = static_cast<const retro_variable *>(data);
-        for (size_t index = 0; options[index].key; ++index)
+        for (size_t index = 0; options[index].key; ++index) {
             biosOptionRegistered |=
                 std::string(options[index].key) == "lotusgba_bios_mode";
+            linkDeviceOptionRegistered |=
+                std::string(options[index].key) == "lotusgba_link_device";
+        }
         return true;
     }
     if (command == RETRO_ENVIRONMENT_GET_LOG_INTERFACE) {
@@ -112,6 +117,9 @@ bool environment(unsigned command, void *data) {
     }
     if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
         auto *option = static_cast<retro_variable *>(data);
+        if (option && option->key && std::string(option->key) == "lotusgba_link_device") {
+            option->value = linkDeviceOption.c_str(); return true;
+        }
         if (option && option->key &&
             std::string(option->key) == "lotusgba_bios_mode") {
             option->value = biosStartupMode.c_str();
@@ -386,6 +394,7 @@ void runRemoteBufferedEmeraldLinkCheck() {
             parentChecksums.push_back(checksum);
             assert(child.receiveRemoteMultiplayerDataBlock(sequence, words,
                                                            checksum));
+            return true;
         });
     child.configureRemoteMultiplayerLink(
         true, true, {},
@@ -403,6 +412,7 @@ void runRemoteBufferedEmeraldLinkCheck() {
             childChecksums.push_back(checksum);
             assert(parent.receiveRemoteMultiplayerDataBlock(sequence, words,
                                                            checksum));
+            return true;
         });
     parent.setRemoteMultiplayerBufferedProtocol(true);
     child.setRemoteMultiplayerBufferedProtocol(true);
@@ -425,24 +435,25 @@ void runRemoteBufferedEmeraldLinkCheck() {
     parent.write16(send, 0);
     child.write16(send, 0);
     const uint64_t childTransfersBefore = child.remoteSioTransferCount();
-    for (uint8_t frame = 0;
-         frame < 3 && child.remoteSioTransferCount() <
-             childTransfersBefore + 9;
-         ++frame)
-        assert(child.runFrame().success);
-    assert(child.remoteSioTransferCount() >= childTransfersBefore + 9);
+    for (unsigned phase = 0; phase < 9; ++phase) {
+        // This fixture has no serial callback. Publish each next word just as
+        // the guest's DoSend would, after consuming the previous result.
+        child.write16(send, 0);
+        const auto before = child.remoteSioTransferCount();
+        for (unsigned frame = 0; frame < 3 && child.remoteSioTransferCount() == before; ++frame)
+            assert(child.runFrame().success);
+        assert(child.remoteSioTransferCount() == before + 1);
+    }
+    assert(child.remoteSioTransferCount() == childTransfersBefore + 9);
     assert((child.read16(irqFlags) & 0x0080) != 0);
     assert((child.read16(control) & 0x40) == 0);
-    assert(!childBlocks.empty());
-    assert(childChecksums.front() == 0);
-    for (uint16_t word : childBlocks.front())
-        assert(word == 0);
+    assert(childBlocks.empty()); // Local idle IRQ groups are not network messages.
 
     const GbaSystem::MultiplayerDataWords outgoing =
         {1, 2, 3, 4, 5, 6, 7, 8};
     const uint16_t expectedChecksum = 36;
     const std::array<uint16_t, 9> transferWords =
-        {1, 2, 3, 4, 5, 6, 7, 8, expectedChecksum};
+        {0, 1, 2, 3, 4, 5, 6, 7, 8};
     const uint64_t childFrameCountBeforeParentStream = child.remoteFrameCount();
     const uint64_t parentFrameCountBeforeStream = parent.remoteFrameCount();
     for (uint16_t word : transferWords) {
@@ -1873,17 +1884,95 @@ void runRemoteNetplaySioCheck() {
     assert(netpacket->connected(1));
     retro_run();
     assert(sentNetpackets.size() == 1); // Startup shares metadata, not SRAM.
-    assert(sentNetpackets.front().size() == 26);
+    assert(sentNetpackets.front().size() == 27);
     assert(sentNetpackets.front()[4] == 0);
     auto startup = sentNetpackets.front();
     netpacket->receive(startup.data(), startup.size(), 1);
-    retro_run(); // Cable-only ROMs remain out of the RFU-first network scope.
+    retro_run(); // Unknown games do not acquire a guessed compatibility profile.
     assert(std::any_of(logMessages.begin(), logMessages.end(), [](const auto &message) {
-        return message.find("remote cable SIO is deferred") != std::string::npos;
+        return message.find("Wireless Adapter requires") != std::string::npos;
     }));
     netpacket->stop();
     retro_unload_game();
     biosStartupMode = "Automatic";
+}
+
+void runPokemonCableSelectionCheck() {
+    assert(linkDeviceOptionRegistered);
+    // Original ARM guest probes adapter presence through the public subsystem.
+    // It stores the first RFU login reply byte in each cartridge's SRAM.
+    std::vector<uint32_t> code;
+    std::vector<std::pair<size_t, uint32_t>> literals;
+    const auto load = [&](unsigned reg, uint32_t value) {
+        literals.emplace_back(code.size(), value);
+        code.push_back(0xE59F0000 | (reg << 12));
+    };
+    load(0, 0x04000134);
+    for (uint16_t value : std::array<uint16_t, 4>{0x8000, 0x80A0, 0x80A2, 0x80A0}) {
+        load(1, value); code.push_back(0xE1C010B0); // strh r1, [r0]
+    }
+    load(2, 0x04000128); load(1, 0x5003); code.push_back(0xE1C210B0);
+    load(1, 0); code.push_back(0xE1C010B0);
+    load(3, 0x04000120); load(1, 0x7FFF494E); code.push_back(0xE5831000);
+    load(1, 0x5083); code.push_back(0xE1C210B0);
+    code.push_back(0xE1D210B0); code.push_back(0xE3110080); code.push_back(0x1AFFFFFC);
+    code.push_back(0xE5931000); load(4, 0x0E000000); code.push_back(0xE5C41000);
+    code.push_back(0xEAFFFFFE);
+    for (const auto &[index, value] : literals) {
+        code[index] |= static_cast<uint32_t>((code.size() - index) * 4 - 8);
+        code.push_back(value);
+    }
+    std::vector<uint8_t> adapterProbe(0xC0, 0);
+    adapterProbe[0] = 0x2E; adapterProbe[3] = 0xEA;
+    adapterProbe[0xAC] = 'B'; adapterProbe[0xAD] = 'P'; adapterProbe[0xAE] = 'E'; adapterProbe[0xAF] = 'E';
+    for (uint32_t word : code)
+        for (unsigned byte = 0; byte < 4; ++byte)
+            adapterProbe.push_back(static_cast<uint8_t>(word >> (8 * byte)));
+    constexpr char saveMarker[] = "SRAM_V113";
+    adapterProbe.insert(adapterProbe.end(), std::begin(saveMarker), std::end(saveMarker));
+    const retro_game_info pair[] = {
+        {"adapter-presence.gba", adapterProbe.data(), adapterProbe.size(), nullptr},
+        {"adapter-presence.gba", adapterProbe.data(), adapterProbe.size(), nullptr}};
+    biosStartupMode = "Skip BIOS";
+    for (const char *device : {"Link Cable", "Wireless Adapter"}) {
+        linkDeviceOption = device;
+        assert(retro_load_game_special(linkSubsystem->id, pair, 2));
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            if (pass) retro_reset();
+            for (unsigned player = 0; player < 2; ++player) {
+                auto *save = static_cast<uint8_t *>(retro_get_memory_data(linkSubsystem->roms[player].memory[0].type));
+                assert(save); save[0] = 0x5A;
+            }
+            for (unsigned frame = 0; frame < 3; ++frame) retro_run();
+            for (unsigned player = 0; player < 2; ++player) {
+                const auto *save = static_cast<uint8_t *>(retro_get_memory_data(linkSubsystem->roms[player].memory[0].type));
+                assert(save[0] == (std::string(device) == "Link Cable" ? 0xFF : 0));
+            }
+        }
+        retro_unload_game();
+    }
+    auto rom = makeMultiplayerProbe(0x001F, 1, 0x1234, 0x6003);
+    rom[0xAC] = 'B'; rom[0xAD] = 'P'; rom[0xAE] = 'E'; rom[0xAF] = 'E';
+    const retro_game_info game{"original-cable-profile-probe.gba", rom.data(), rom.size(), nullptr};
+    for (bool mismatch : {false, true}) {
+        linkDeviceOption = "Link Cable"; biosStartupMode = "Skip BIOS";
+        assert(retro_load_game(&game));
+        sentNetpackets.clear(); logMessages.clear();
+        netpacket->start(0, [](int, const void *data, size_t len, uint16_t) {
+            const auto *bytes = static_cast<const uint8_t *>(data);
+            sentNetpackets.emplace_back(bytes, bytes + len);
+        }, nullptr);
+        assert(netpacket->connected(1)); retro_run();
+        assert(sentNetpackets.size() == 1 && sentNetpackets.front().size() == 27);
+        auto startup = sentNetpackets.front(); assert(startup.back() == 1);
+        if (mismatch) startup.back() = 0;
+        netpacket->receive(startup.data(), startup.size(), 1); retro_run();
+        assert(std::any_of(logMessages.begin(), logMessages.end(), [mismatch](const auto &s) {
+            return s.find(mismatch ? "link device mismatch" : "buffered Pokemon cable") != std::string::npos;
+        }));
+        netpacket->stop(); retro_unload_game();
+    }
+    linkDeviceOption = "Wireless Adapter"; biosStartupMode = "Automatic";
 }
 
 void runRemoteEmeraldRfuNetpacketCheck(char region) {
@@ -1905,7 +1994,7 @@ void runRemoteEmeraldRfuNetpacketCheck(char region) {
     retro_run();
     assert(sentNetpackets.size() == 1);
     const auto startup = sentNetpackets.front();
-    assert(startup.size() == 26 && startup[4] == 0);
+    assert(startup.size() == 27 && startup[4] == 0 && startup.back() == 0);
     netpacket->receive(startup.data(), startup.size(), 1);
     retro_run();
     assert(std::any_of(logMessages.begin(), logMessages.end(), [](const auto &message) {
@@ -2615,6 +2704,7 @@ int main() {
     runHleNestedSerialInterruptCheck();
     runLocalLinkSubsystemCheck();
     runRemoteNetplaySioCheck();
+    runPokemonCableSelectionCheck();
     runRemoteEmeraldRfuNetpacketCheck('J');
     runRemoteEmeraldRfuNetpacketCheck('E');
 

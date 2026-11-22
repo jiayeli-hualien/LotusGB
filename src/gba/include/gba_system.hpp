@@ -31,6 +31,7 @@ public:
     static constexpr size_t FLASH1M_SIZE = 128 * 1024;
     static constexpr size_t EEPROM512_SIZE = 512;
     static constexpr size_t EEPROM_SIZE = 8 * 1024;
+    static constexpr size_t REMOTE_MULTIPLAYER_DATA_BLOCK_QUEUE_LIMIT = 64;
     static constexpr unsigned AUDIO_SAMPLE_RATE = GbaAudio::SAMPLE_RATE;
 
     struct FrameResult {
@@ -65,8 +66,29 @@ public:
                                               uint16_t localWord)>;
     using MultiplayerDataWords = std::array<uint16_t, 8>;
     using MultiplayerDataBlockSender =
-        std::function<void(uint32_t sequence, const MultiplayerDataWords &words,
+        std::function<bool(uint32_t sequence, const MultiplayerDataWords &words,
                            uint16_t checksum)>;
+    enum class RemoteMultiplayerDataBlockRejectReason {
+        None,
+        LinkNotConfigured,
+        LinkDisconnected,
+        BufferedProtocolNotRequested,
+        SequenceMismatch,
+        QueueFull,
+        ChecksumMismatch,
+    };
+    struct RemoteMultiplayerDataBlockResult {
+        RemoteMultiplayerDataBlockRejectReason reason =
+            RemoteMultiplayerDataBlockRejectReason::None;
+        uint32_t expectedSequence = 0;
+        size_t queuedBlocks = 0;
+        bool activeBlock = false;
+        uint16_t calculatedChecksum = 0;
+
+        bool accepted() const {
+            return reason == RemoteMultiplayerDataBlockRejectReason::None;
+        }
+    };
     using RfuAdvertisement = std::array<uint32_t, 6>;
     using RfuDataReceiveResult = GbaRfuDataChannel::ReceiveResult;
     using RfuAdvertisementSender = std::function<void(
@@ -106,6 +128,9 @@ public:
                                        uint64_t elapsedCycles = 0);
     bool receiveRemoteMultiplayerWord(uint32_t sequence, uint16_t childWord);
     bool receiveRemoteMultiplayerDataBlock(
+        uint32_t sequence, const MultiplayerDataWords &words,
+        uint16_t checksum);
+    RemoteMultiplayerDataBlockResult receiveRemoteMultiplayerDataBlockDetailed(
         uint32_t sequence, const MultiplayerDataWords &words,
         uint16_t checksum);
     // RemoteReply models one completed network exchange per parent event.
@@ -167,10 +192,11 @@ public:
     bool hasBios() const override { return !bios_.empty(); }
     uint64_t emulatedCycles() const { return emulatedCycles_; }
     bool hasEmeraldRfuProfile() const {
-        return rom_.size() > 0xAF && rom_[0xAC] == 'B' &&
+        return rfuAdapterEnabled_ && rom_.size() > 0xAF && rom_[0xAC] == 'B' &&
             rom_[0xAD] == 'P' && rom_[0xAE] == 'E' &&
             (rom_[0xAF] == 'J' || rom_[0xAF] == 'E');
     }
+    void setRfuAdapterEnabled(bool enabled) { rfuAdapterEnabled_ = enabled; }
     void beginCpuStep() override;
     uint32_t endCpuStep(uint32_t baseCycles) override;
 
@@ -276,6 +302,8 @@ private:
     void beginRemoteMultiplayerTransfer();
     void beginRemoteBufferedChildTransfer();
     void activateRemoteBufferedProtocol();
+    void resetRemoteBufferedProtocol();
+    bool servicePendingRemoteDataBlock();
     uint16_t prepareRemoteBufferedTransferWord();
     void finishRemoteBufferedTransferWord();
     void applyPendingRemoteWord();
@@ -357,6 +385,7 @@ private:
     std::deque<RemoteMultiplayerStart> remotePendingStarts_;
     std::deque<RemoteMultiplayerWord> remotePendingWords_;
     uint32_t remoteTransferSequence_ = 0;
+    uint32_t remoteRawTransferSequence_ = 0;
     uint32_t remoteActiveSequence_ = 0;
     MultiplayerStartSender sendRemoteStart_;
     MultiplayerWordSender sendRemoteWord_;
@@ -367,6 +396,7 @@ private:
     MultiplayerDataBlockSender sendRemoteDataBlock_;
     std::unordered_map<uint32_t, uint16_t> remotePredictedWords_;
     std::deque<RemoteMultiplayerDataBlock> remotePendingDataBlocks_;
+    std::optional<RemoteMultiplayerDataBlock> remotePendingLocalDataBlock_;
     RemoteMultiplayerDataBlock remoteActiveDataBlock_{};
     MultiplayerDataWords remoteOutgoingDataWords_{};
     uint32_t remoteNextDataBlockSequence_ = 1;
@@ -381,6 +411,8 @@ private:
     bool remoteBufferedSwitchAfterTransfer_ = false;
     bool remoteActiveDataBlockValid_ = false;
     bool remoteBufferedWordPending_ = false;
+    bool remoteChildAwaitingSend_ = false;
+    bool remoteBufferedChecksumValid_ = false;
     bool multiplayerBusy_ = false;
     bool multiplayerError_ = false;
     uint32_t multiplayerCycles_ = 0;
@@ -406,6 +438,7 @@ private:
     std::optional<uint32_t> rfuPendingConsumedSequence_;
     std::function<void(const std::string &)> rfuDiagnosticLogger_;
     bool rfuDetailedDiagnostics_ = false;
+    bool rfuAdapterEnabled_ = true;
     std::function<void()> rfuNetworkPump_;
     uint32_t rfuTransferCount_ = 0;
     uint32_t rfuDiagnosticCount_ = 0;

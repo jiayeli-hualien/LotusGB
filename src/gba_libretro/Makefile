@@ -20,9 +20,10 @@ all: build
 
 build: $(build_dir)/lotusgba_libretro.so $(build_dir)/lotusgba_libretro.info $(macos_core)
 
-test: $(build_dir)/gba_rfu_ni_test $(build_dir)/gba_bios_sqrt_test $(build_dir)/gba_libretro_core_test $(build_dir)/gba_video_test \
+test: $(build_dir)/gba_pokemon_cable_test $(build_dir)/gba_rfu_ni_test $(build_dir)/gba_bios_sqrt_test $(build_dir)/gba_libretro_core_test $(build_dir)/gba_video_test \
 	$(build_dir)/gba_audio_test $(build_dir)/gba_rtc_test \
 	$(build_dir)/gba_rfu_protocol_test
+	$(build_dir)/gba_pokemon_cable_test
 	$(build_dir)/gba_rfu_ni_test
 	$(build_dir)/gba_bios_sqrt_test
 	$(build_dir)/gba_libretro_core_test
@@ -34,6 +35,15 @@ test: $(build_dir)/gba_rfu_ni_test $(build_dir)/gba_bios_sqrt_test $(build_dir)/
 $(build_dir)/gba_rfu_protocol_test: gba_rfu_protocol_test.cpp \
 		../gba/gba_rfu_protocol.cpp ../gba/include/gba_rfu_protocol.hpp | $(build_dir_stamp)
 	$(CXX) $(CPPFLAGS) -o $@ gba_rfu_protocol_test.cpp ../gba/gba_rfu_protocol.cpp
+
+.PHONY: test-pokemon-cable
+test-pokemon-cable: $(build_dir)/gba_pokemon_cable_test
+	$(build_dir)/gba_pokemon_cable_test
+
+$(build_dir)/gba_pokemon_cable_test: gba_pokemon_cable_test.cpp $(gba_sources) \
+        ../gba/include/gba_system.hpp ../gba/include/gba_rfu_protocol.hpp \
+        ../gba/include/arm7tdmi.hpp | $(build_dir_stamp)
+	$(CXX) $(CPPFLAGS) -o $@ gba_pokemon_cable_test.cpp $(gba_sources)
 
 $(build_dir)/lotusgba_libretro.so: libretro_gba_core.cpp $(gba_sources) \
 		../gba/include/arm7tdmi.hpp ../gba/include/gba_system.hpp \
