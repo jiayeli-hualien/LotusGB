@@ -112,6 +112,7 @@ public:
         return remoteBufferedProtocolActive_;
     }
     void setRemoteMultiplayerEventPump(RemoteMultiplayerEventPump pump);
+    void setRemoteBufferedChildHandshakeReady(std::function<bool()> ready);
     void setRemoteMultiplayerConnected(bool connected);
     void setRemoteMultiplayerReady(bool ready, uint64_t peerFrame = 0);
     bool receiveRemoteMultiplayerFrame(uint64_t peerFrame);
@@ -399,6 +400,7 @@ private:
     MultiplayerReadinessSender sendRemoteReady_;
     MultiplayerFrameSender sendRemoteFrame_;
     RemoteMultiplayerEventPump remoteEventPump_;
+    std::function<bool()> remoteBufferedChildHandshakeReady_;
     MultiplayerWordPredictor predictRemoteWord_;
     MultiplayerDataBlockSender sendRemoteDataBlock_;
     std::unordered_map<uint32_t, uint16_t> remotePredictedWords_;

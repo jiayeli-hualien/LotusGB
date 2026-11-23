@@ -1034,6 +1034,10 @@ void GbaSystem::setRemoteMultiplayerEventPump(
     remoteEventPump_ = std::move(pump);
 }
 
+void GbaSystem::setRemoteBufferedChildHandshakeReady(std::function<bool()> ready) {
+    remoteBufferedChildHandshakeReady_ = std::move(ready);
+}
+
 void GbaSystem::setRemoteMultiplayerConnected(bool connected) {
     if (!remoteLinkEnabled_)
         return;
@@ -1242,14 +1246,22 @@ void GbaSystem::beginRemoteBufferedChildTransfer() {
         !inMultiplayerMode() || emulatedCycles_ < remoteNextChildPulseCycle_)
         return;
     ++remoteTransferSequence_;
-    multiplayerWords_ = {prepareRemoteBufferedTransferWord(),
+    // The matched Emerald guest can reject the real handshake when its last
+    // discovery count differs. Repeat the already observed parent handshake
+    // locally until the guest enters its connected state. Do not consume a
+    // command or manufacture a network acknowledgement during this handoff.
+    const bool retryHandshake = remoteBufferedChildHandshakeReady_ &&
+        !remoteBufferedChildHandshakeReady_();
+    multiplayerWords_ = {retryHandshake ? uint16_t{0x8FFF} :
+                         prepareRemoteBufferedTransferWord(),
                          read16Impl(REG_SIOMLT_SEND)};
     const uint32_t baud = MULTIPLAYER_BAUD[remoteBufferedBaudIndex_];
     multiplayerCycles_ = (36 * CPU_CLOCK + baud - 1) / baud;
     multiplayerBusy_ = true;
     multiplayerError_ = false;
     remotePeerWordReady_ = true;
-    remoteBufferedWordPending_ = true;
+    remoteBufferedWordPending_ = !retryHandshake;
+    remoteReplySent_ = true;
     for (uint32_t slot = 0; slot < 4; ++slot)
         storeIo16(REG_SIOMULTI0 + 2 * slot, 0xFFFF);
 

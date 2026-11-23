@@ -315,6 +315,56 @@ void childReceiveLifetime() {
     const auto checksum = static_cast<uint16_t>(sum(local) + sum(peer));
     require(next(checksum) == checksum, "resumed child checksum diverged");
 }
+// DoHandshake can reject a matching word pair when the previous poll saw a
+// different player count. The next serial callback must still receive a
+// handshake word, rather than the first buffered command's zero checksum.
+void childHandshakeNeedsStablePlayerCount() {
+    GbaSystem child(probe());
+    bool accepted = false;
+    child.configureRemoteMultiplayerLink(true, true, {},
+        [](uint32_t, uint16_t) {}, {}, {}, {},
+        [](uint32_t, const Words &, uint16_t) { return true; });
+    child.setRemoteMultiplayerBufferedProtocol(true);
+    child.setRemoteBufferedChildHandshakeReady([&] { return accepted; });
+    child.setRemoteMultiplayerEventPump([] {});
+    child.write16(CONTROL, 0x6003);
+    child.setRemoteMultiplayerReady(true);
+    child.write16(SEND, 0xB9A0);
+    require(child.receiveRemoteMultiplayerStart(1, 0x8FFF, 3), "handshake start rejected");
+    require(child.runFrame().success && child.read16(DATA) == 0x8FFF,
+            "guest did not receive initial handshake");
+    // The guest's preceding discovery had a different player count: its
+    // callback republishes the slave handshake and remains in handshake state.
+    child.write16(SEND, 0xB9A0);
+    const auto before = child.remoteSioTransferCount();
+    for (unsigned i = 0; i < 4 && child.remoteSioTransferCount() == before; ++i)
+        require(child.runFrame().success, "waiting for next handshake failed");
+    require(child.remoteSioTransferCount() > before, "next handshake was not delivered");
+    require(child.read16(DATA) == 0x8FFF,
+            "child received buffered checksum before accepting handshake");
+    const Words peer{11, 22, 33, 44, 55, 66, 77, 88};
+    require(child.receiveRemoteMultiplayerDataBlock(1, peer, sum(peer)),
+            "peer command rejected while waiting for guest handshake");
+    child.write16(SEND, 0xB9A0);
+    const auto firstRetryCount = child.remoteSioTransferCount();
+    for (unsigned i = 0; i < 4 && child.remoteSioTransferCount() == firstRetryCount; ++i)
+        require(child.runFrame().success, "waiting for repeated handshake failed");
+    require(child.remoteSioTransferCount() > firstRetryCount && child.read16(DATA) == 0x8FFF,
+            "repeated handshake consumed buffered peer data");
+    accepted = true;
+    child.write16(SEND, 0);
+    const auto retryCount = child.remoteSioTransferCount();
+    for (unsigned i = 0; i < 4 && child.remoteSioTransferCount() == retryCount; ++i)
+        require(child.runFrame().success, "waiting for buffered checksum failed");
+    require(child.remoteSioTransferCount() > retryCount && child.read16(DATA) == 0,
+            "accepted handshake did not enter buffered checksum phase");
+    child.write16(SEND, 0);
+    const auto checksumCount = child.remoteSioTransferCount();
+    for (unsigned i = 0; i < 4 && child.remoteSioTransferCount() == checksumCount; ++i)
+        require(child.runFrame().success, "waiting for buffered data failed");
+    require(child.remoteSioTransferCount() > checksumCount && child.read16(DATA) == peer[0],
+            "handshake retry discarded or shifted the queued peer command");
+}
 void delayedHandshakeWithUninitializedPeer() {
     GbaSystem parent(probe()), child(probe());
     unsigned replies = 0;
@@ -562,6 +612,7 @@ int main(int argc, char **argv) {
     run("selected_device_and_reset", device);
     run("serial_restart_with_independent_clocks", serialRestart);
     run("child_receive_result_lifetime", childReceiveLifetime);
+    run("child_handshake_requires_stable_count", childHandshakeNeedsStablePlayerCount);
     run("independent_bootstrap_clocks", [] { bootstrapRace(false, false); });
     run("delayed_handshake_uninitialized_peer", delayedHandshakeWithUninitializedPeer);
     run("raw_master_no_peer_frame_gate", rawMasterDoesNotWaitOnPeerFrameWatermark);

@@ -65,8 +65,19 @@ state with buffered transport active, while the child game remained in
 handshake with buffered transport active; on the next sampled guest frame
 the child reported zero players. The game requires a stable player count
 before accepting the handshake, while the emulator switches on the
-`0x8FFF`/`0xB9A0` word pair. Early switching remains a hypothesis that
-needs a regression test. The tests do not establish a latency threshold.
+`0x8FFF`/`0xB9A0` word pair. The experimental English-ROM profile now observes
+the child's game link state and repeats the already observed parent handshake
+locally while that guest remains in handshake. These local transfers neither
+consume buffered groups nor acknowledge network delivery. Once the guest is
+connected, buffered checksum and data delivery starts. This is an intentional
+guest-visible compatibility behavior, not a hardware claim. A synthetic
+callback test covers the rejected-first-handshake case. In a subsequent
+manual two-host run with 100 ms added in each direction, the user reported a
+successful trade test. Both guests received player identities during the
+post-seat handshake and continued exchanging buffered blocks; neither log
+reported a core error or peer disconnect through the observed checkpoint.
+Independent save reload, broader disconnect behavior and repeated trials
+remain unverified. The tests do not establish a latency threshold.
 One manual two-host English Emerald session through a RetroArch relay reached
 the trade menu, exchanged two Pokémon, and retained both results after each
 isolated save was reopened. The peer disconnected after the trade menu was
