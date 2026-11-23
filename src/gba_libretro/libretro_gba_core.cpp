@@ -280,6 +280,8 @@ enum class PacketType : uint8_t {
 // ordered replies. Neither kind of credit synthesizes a guest NI ACK.
 constexpr size_t RFU_DATA_WINDOW = LOTUSGBA::GbaRfuDataChannel::MAX_QUEUED_MESSAGES;
 constexpr size_t DATA_BLOCK_WINDOW = 32;
+constexpr uint64_t POKEMON_EMERALD_US_ROM_FINGERPRINT = 0xf2380811e03f0662ull;
+constexpr size_t EMERALD_LINK_TRACE_CAPACITY = 48;
 
 void netpacketPoll();
 void clearRfuSendWindow();
@@ -332,6 +334,7 @@ struct RemoteNetplay {
     uint64_t transferStartsReceived = 0;
     uint64_t transferWordsSent = 0;
     uint64_t transferWordsReceived = 0;
+    uint64_t emeraldHandshakePredictions = 0;
     uint64_t dataBlocksSent = 0;
     uint64_t dataBlocksReceived = 0;
     uint64_t rfuMessagesSent = 0;
@@ -342,6 +345,36 @@ struct RemoteNetplay {
     uint64_t guestFpsWindowFrameStart = 0;
     bool guestFpsWindowStarted = false;
     bool statisticsLogged = false;
+    struct EmeraldLinkTraceSample {
+        uint64_t guestFrame = 0;
+        uint64_t guestCycles = 0;
+        uint64_t sioTransfers = 0;
+        uint32_t linkStatus = 0;
+        uint32_t errorBufferStatus = 0;
+        uint32_t linkHeader = 0;
+        uint32_t linkCounters = 0;
+        uint32_t linkErrors = 0;
+        uint32_t callback2 = 0;
+        uint16_t sioControl = 0;
+        uint16_t sioSend = 0;
+        uint16_t sioMulti0 = 0;
+        uint16_t sioMulti1 = 0;
+        uint16_t remoteCommand = 0;
+        uint8_t errorOccurred = 0;
+        uint8_t lastRecvQueue = 0;
+        uint8_t lastSendQueue = 0;
+        uint8_t disconnected = 0;
+        uint8_t vblanksWithoutSerial = 0;
+        uint8_t mainState = 0;
+    };
+    std::array<EmeraldLinkTraceSample, EMERALD_LINK_TRACE_CAPACITY>
+        emeraldLinkTrace{};
+    size_t emeraldLinkTraceNext = 0;
+    size_t emeraldLinkTraceSize = 0;
+    bool emeraldTraceEligibilityKnown = false;
+    bool emeraldTraceEligible = false;
+    bool emeraldTraceDumped = false;
+    bool emeraldPreCloseErrorLogged = false;
 
     bool host() const { return localId == 0; }
 };
@@ -403,6 +436,130 @@ uint64_t romFingerprint() {
     for (uint8_t byte : loadedRom)
         hash = (hash ^ byte) * 1099511628211ull;
     return hash;
+}
+
+void logEmeraldLinkErrorTrace() {
+    if (!net.linkConfigured || net.rfuConfigured || !gbaSystem ||
+        net.emeraldTraceDumped)
+        return;
+    if (!net.emeraldTraceEligibilityKnown) {
+        net.emeraldTraceEligible =
+            romFingerprint() == POKEMON_EMERALD_US_ROM_FINGERPRINT;
+        net.emeraldTraceEligibilityKnown = true;
+        if (net.emeraldTraceEligible)
+            logMessage(RETRO_LOG_INFO,
+                       "GBA Emerald cable diagnostic enabled for matching US ROM");
+    }
+    if (!net.emeraldTraceEligible)
+        return;
+
+    // Addresses come from the matching English Emerald symbol map. The ROM
+    // fingerprint gate above prevents interpreting unrelated games' RAM.
+    constexpr uint32_t LINK_STATUS = 0x030030E0;
+    constexpr uint32_t LINK_ERROR_OCCURRED = 0x0300306C;
+    constexpr uint32_t LINK_ERROR_BUFFER = 0x02022B00;
+    constexpr uint32_t LINK_STRUCT = 0x03003170;
+    constexpr uint32_t VBLANKS_WITHOUT_SERIAL = 0x03000D6C;
+    constexpr uint32_t MAIN_CALLBACK2 = 0x030022C4;
+    constexpr uint32_t MAIN_STATE = 0x030026F8;
+    constexpr uint32_t RECV_COMMANDS = 0x03003090;
+    constexpr uint32_t SIOCNT = 0x04000128;
+    constexpr uint32_t SIOMLT_SEND = 0x0400012A;
+    constexpr uint32_t SIOMULTI0 = 0x04000120;
+
+    auto &sample = net.emeraldLinkTrace[net.emeraldLinkTraceNext];
+    sample.guestFrame = gbaSystem->remoteGuestFrameCount();
+    sample.guestCycles = gbaSystem->emulatedCycles();
+    sample.sioTransfers = gbaSystem->remoteSioTransferCount();
+    sample.linkStatus = gbaSystem->read32(LINK_STATUS);
+    sample.errorBufferStatus = gbaSystem->read32(LINK_ERROR_BUFFER);
+    sample.linkHeader = gbaSystem->read32(LINK_STRUCT);
+    sample.linkCounters = gbaSystem->read32(LINK_STRUCT + 0x0C);
+    sample.linkErrors = gbaSystem->read32(LINK_STRUCT + 0x10);
+    sample.callback2 = gbaSystem->read32(MAIN_CALLBACK2) & ~uint32_t{1};
+    sample.sioControl = gbaSystem->read16(SIOCNT);
+    sample.sioSend = gbaSystem->read16(SIOMLT_SEND);
+    sample.sioMulti0 = gbaSystem->read16(SIOMULTI0);
+    sample.sioMulti1 = gbaSystem->read16(SIOMULTI0 + 2);
+    sample.errorOccurred = gbaSystem->read8(LINK_ERROR_OCCURRED);
+    sample.lastRecvQueue = gbaSystem->read8(LINK_ERROR_BUFFER + 4);
+    sample.lastSendQueue = gbaSystem->read8(LINK_ERROR_BUFFER + 5);
+    sample.disconnected = gbaSystem->read8(LINK_ERROR_BUFFER + 6);
+    sample.vblanksWithoutSerial = gbaSystem->read8(VBLANKS_WITHOUT_SERIAL);
+    sample.mainState = gbaSystem->read8(MAIN_STATE);
+    const uint8_t localId = static_cast<uint8_t>(sample.linkHeader >> 16);
+    if (localId < 2)
+        sample.remoteCommand = gbaSystem->read16(
+            RECV_COMMANDS + ((1u - localId) * 0x10));
+
+    net.emeraldLinkTraceNext =
+        (net.emeraldLinkTraceNext + 1) % EMERALD_LINK_TRACE_CAPACITY;
+    net.emeraldLinkTraceSize = std::min(
+        net.emeraldLinkTraceSize + 1, EMERALD_LINK_TRACE_CAPACITY);
+
+    const uint32_t guestErrorBits = (sample.linkStatus >> 12) & 0x7F;
+    const uint32_t savedErrorBits = (sample.errorBufferStatus >> 12) & 0x7F;
+    const bool onLinkErrorScreen = sample.callback2 == 0x0800AF30 ||
+                                   sample.callback2 == 0x0800B1A0;
+    if (guestErrorBits == 0 && savedErrorBits == 0 &&
+        !sample.errorOccurred && !onLinkErrorScreen)
+        return;
+
+    char header[192];
+    std::snprintf(header, sizeof(header),
+                  "GBA Emerald cable error trace: role=%s live=%u saved=%u gLinkErrorOccurred=%u callback2=%08X",
+                  net.host() ? "netplay-host" : "netplay-client",
+                  static_cast<unsigned>(guestErrorBits),
+                  static_cast<unsigned>(savedErrorBits),
+                  static_cast<unsigned>(sample.errorOccurred),
+                  static_cast<unsigned>(sample.callback2));
+    logMessage(RETRO_LOG_ERROR, header);
+
+    const size_t first = (net.emeraldLinkTraceNext + EMERALD_LINK_TRACE_CAPACITY -
+                          net.emeraldLinkTraceSize) % EMERALD_LINK_TRACE_CAPACITY;
+    for (size_t index = 0; index < net.emeraldLinkTraceSize; ++index) {
+        const auto &entry = net.emeraldLinkTrace[
+            (first + index) % EMERALD_LINK_TRACE_CAPACITY];
+        const uint8_t master = static_cast<uint8_t>(entry.linkHeader);
+        const uint8_t state = static_cast<uint8_t>(entry.linkHeader >> 8);
+        const uint8_t local = static_cast<uint8_t>(entry.linkHeader >> 16);
+        const uint8_t players = static_cast<uint8_t>(entry.linkHeader >> 24);
+        const uint8_t serialInterrupts = static_cast<uint8_t>(entry.linkCounters >> 8);
+        const uint8_t hardwareError = static_cast<uint8_t>(entry.linkErrors);
+        const uint8_t badChecksum = static_cast<uint8_t>(entry.linkErrors >> 8);
+        const uint8_t queueFull = static_cast<uint8_t>(entry.linkErrors >> 16);
+        const uint8_t lag = static_cast<uint8_t>(entry.linkErrors >> 24);
+        char line[384];
+        std::snprintf(line, sizeof(line),
+                      "Emerald trace: frame=%llu cycles=%llu sio_tx=%llu status=%08X errbuf=%08X flags=%02X/%02X/%02X/%02X master=%u state=%u id=%u players=%u irq_count=%d no_serial_vblanks=%u cmd=%04X siocnt=%04X send=%04X multi=%04X/%04X q=%u/%u/%u callback2=%08X main_state=%u",
+                      static_cast<unsigned long long>(entry.guestFrame),
+                      static_cast<unsigned long long>(entry.guestCycles),
+                      static_cast<unsigned long long>(entry.sioTransfers),
+                      static_cast<unsigned>(entry.linkStatus),
+                      static_cast<unsigned>(entry.errorBufferStatus),
+                      static_cast<unsigned>(hardwareError),
+                      static_cast<unsigned>(badChecksum),
+                      static_cast<unsigned>(queueFull),
+                      static_cast<unsigned>(lag),
+                      static_cast<unsigned>(master),
+                      static_cast<unsigned>(state),
+                      static_cast<unsigned>(local),
+                      static_cast<unsigned>(players),
+                      static_cast<int8_t>(serialInterrupts),
+                      static_cast<unsigned>(entry.vblanksWithoutSerial),
+                      static_cast<unsigned>(entry.remoteCommand),
+                      static_cast<unsigned>(entry.sioControl),
+                      static_cast<unsigned>(entry.sioSend),
+                      static_cast<unsigned>(entry.sioMulti0),
+                      static_cast<unsigned>(entry.sioMulti1),
+                      static_cast<unsigned>(entry.lastRecvQueue),
+                      static_cast<unsigned>(entry.lastSendQueue),
+                      static_cast<unsigned>(entry.disconnected),
+                      static_cast<unsigned>(entry.callback2),
+                      static_cast<unsigned>(entry.mainState));
+        logMessage(RETRO_LOG_ERROR, line);
+    }
+    net.emeraldTraceDumped = true;
 }
 
 void appendInteger(std::vector<uint8_t> &packet, uint64_t value, unsigned bytes) {
@@ -777,11 +934,74 @@ void startRemoteEmulation() {
     gbaSystem = std::move(local);
     gbaSystem->setRfuAdapterEnabled(!cable);
     if (cable) {
+        GbaSystem::MultiplayerWordPredictor predictEmeraldHandshakeReply;
+        if (romFingerprint() == POKEMON_EMERALD_US_ROM_FINGERPRINT) {
+            predictEmeraldHandshakeReply = [](uint32_t sequence,
+                                               uint16_t localWord)
+                -> std::optional<uint16_t> {
+                constexpr uint32_t LINK_STRUCT = 0x03003170;
+                constexpr uint8_t LINK_STATE_HANDSHAKE = 2;
+                constexpr uint8_t LINK_MASTER = 8;
+                if (!gbaSystem || !net.host() ||
+                    !net.localReadyKnown || !net.localReady ||
+                    !net.peerReadyKnown || !net.peerReady ||
+                    gbaSystem->read8(LINK_STRUCT) != LINK_MASTER ||
+                    gbaSystem->read8(LINK_STRUCT + 1) != LINK_STATE_HANDSHAKE ||
+                    gbaSystem->read8(LINK_STRUCT + 2) != 0 ||
+                    (localWord != 0xB9A0 && localWord != 0x8FFF))
+                    return std::nullopt;
+
+                // This experimental prediction can conflict with a valid
+                // initial zero from a peer that has not entered its guest
+                // handshake yet. Its real reply must match; see the cable
+                // evidence document for the observed relay failure.
+                if (++net.emeraldHandshakePredictions <= 8 ||
+                    sequence % 256 == 0) {
+                    char message[128];
+                    std::snprintf(message, sizeof(message),
+                        "GBA Emerald cable predicted slave handshake: seq=%u local=%04X predicted=B9A0",
+                        sequence, localWord);
+                    logMessage(RETRO_LOG_INFO, message);
+                }
+                return 0xB9A0;
+            };
+        }
         gbaSystem->configureRemoteMultiplayerLink(!net.host(), true,
             sendRemoteTransferStart, sendRemoteTransferWord, sendRemoteReady,
-            sendRemoteFrameProgress, {}, sendRemoteDataBlock);
+            sendRemoteFrameProgress, std::move(predictEmeraldHandshakeReply),
+            sendRemoteDataBlock);
         gbaSystem->setRemoteMultiplayerBufferedProtocol(true);
         gbaSystem->setRemoteMultiplayerEventPump(netpacketPoll);
+        if (romFingerprint() == POKEMON_EMERALD_US_ROM_FINGERPRINT) {
+            constexpr uint32_t MAIN_CALLBACK2 = 0x030022C4;
+            constexpr uint32_t LINK_STATUS = 0x030030E0;
+            constexpr uint32_t LINK_ERROR_CALLBACK = 0x0800AF30;
+            constexpr uint32_t LINK_ERROR_CALLBACK_ALT = 0x0800B1A0;
+            gbaSystem->setMemoryWriteObserver(
+                [](uint32_t address, uint32_t value, uint8_t width) {
+                    if (net.emeraldPreCloseErrorLogged || width != 4 ||
+                        address != MAIN_CALLBACK2)
+                        return;
+                    value &= ~uint32_t{1};
+                    if (value != LINK_ERROR_CALLBACK &&
+                        value != LINK_ERROR_CALLBACK_ALT)
+                        return;
+
+                    net.emeraldPreCloseErrorLogged = true;
+                    char message[256];
+                    std::snprintf(message, sizeof(message),
+                        "GBA Emerald pre-close error: role=%s callback2=%08X status=%08X sio_tx=%llu siocnt=%04X send=%04X multi=%04X/%04X",
+                        net.host() ? "netplay-host" : "netplay-client",
+                        static_cast<unsigned>(value),
+                        static_cast<unsigned>(gbaSystem->read32(LINK_STATUS)),
+                        static_cast<unsigned long long>(gbaSystem->remoteSioTransferCount()),
+                        static_cast<unsigned>(gbaSystem->read16(0x04000128)),
+                        static_cast<unsigned>(gbaSystem->read16(0x0400012A)),
+                        static_cast<unsigned>(gbaSystem->read16(0x04000120)),
+                        static_cast<unsigned>(gbaSystem->read16(0x04000122)));
+                    logMessage(RETRO_LOG_ERROR, message);
+                });
+        }
         net.linkConfigured = true;
         net.guestFrameMeasurementStart = std::chrono::steady_clock::now();
         net.guestFrameMeasurementStarted = true;
@@ -870,7 +1090,8 @@ void receiveTransferWord(const uint8_t *data, size_t size) {
     const uint32_t sequence = static_cast<uint32_t>(readInteger(data, 4));
     const uint16_t childWord = static_cast<uint16_t>(readInteger(data + 4, 2));
     if (!gbaSystem->receiveRemoteMultiplayerWord(sequence, childWord))
-        throw std::runtime_error("GBA rejected remote SIO transfer word");
+        throw std::runtime_error("GBA rejected remote SIO transfer word: " +
+                                 gbaSystem->remoteWordRejection());
     ++net.transferWordsReceived;
     if (sequence <= 32 || sequence % 256 == 0) {
         char message[128];
@@ -1358,6 +1579,7 @@ void retro_run(void) {
         }();
         logRemoteSioState();
         logRemoteGuestFrameRate();
+        logEmeraldLinkErrorTrace();
         if (!result.success) {
             const auto &fault = linkChild && gbaSystem->fault().empty()
                 ? linkChild->fault() : gbaSystem->fault();

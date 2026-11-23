@@ -673,6 +673,8 @@ uint32_t GbaSystem::read32(uint32_t address) const {
 
 void GbaSystem::write8(uint32_t address, uint8_t value) {
     recordCpuBusAccess(address, 1);
+    if (memoryWriteObserver_)
+        memoryWriteObserver_(address, value, 1);
     write8Impl(address, value);
 }
 
@@ -825,6 +827,8 @@ void GbaSystem::write8Impl(uint32_t address, uint8_t value) {
 void GbaSystem::write16(uint32_t address, uint16_t value) {
     address &= ~uint32_t{1};
     recordCpuBusAccess(address, 2);
+    if (memoryWriteObserver_)
+        memoryWriteObserver_(address, value, 2);
     write16Impl(address, value);
 }
 
@@ -868,6 +872,8 @@ void GbaSystem::write16Impl(uint32_t address, uint16_t value) {
 void GbaSystem::write32(uint32_t address, uint32_t value) {
     address &= ~uint32_t{3};
     recordCpuBusAccess(address, 4);
+    if (memoryWriteObserver_)
+        memoryWriteObserver_(address, value, 4);
     write16Impl(address, static_cast<uint16_t>(value));
     write16Impl(address + 2, static_cast<uint16_t>(value >> 16));
 }
@@ -985,6 +991,7 @@ void GbaSystem::configureRemoteMultiplayerLink(
     remoteBufferedBaudIndex_ = 3;
     remoteBufferedProtocolActive_ = false;
     remoteBufferedSwitchAfterTransfer_ = false;
+    remoteBufferedHandshakeStartsPending_ = 0;
     remoteActiveDataBlockValid_ = false;
     remoteBufferedWordPending_ = false;
     remoteChildAwaitingSend_ = false;
@@ -1014,6 +1021,7 @@ void GbaSystem::setRemoteMultiplayerBufferedProtocol(bool enabled) {
     if (!enabled) {
         remoteBufferedProtocolActive_ = false;
         remoteBufferedSwitchAfterTransfer_ = false;
+        remoteBufferedHandshakeStartsPending_ = 0;
         remotePendingDataBlocks_.clear();
         remoteActiveDataBlockValid_ = false;
     }
@@ -1150,6 +1158,10 @@ bool GbaSystem::receiveRemoteMultiplayerStart(uint32_t sequence,
         } else {
             // The two games can enter discovery independently. The sender's
             // time since entry does not define a date on the receiver's clock.
+            if (parentWord == 0x8FFF &&
+                remoteBufferedHandshakeStartsPending_ !=
+                    std::numeric_limits<uint32_t>::max())
+                ++remoteBufferedHandshakeStartsPending_;
             remotePendingStarts_.push_back({sequence, parentWord, baudIndex,
                                            emulatedCycles_});
         }
@@ -1255,28 +1267,40 @@ void GbaSystem::beginRemoteBufferedChildTransfer() {
 
 bool GbaSystem::receiveRemoteMultiplayerWord(uint32_t sequence,
                                              uint16_t childWord) {
+    const auto reject = [&](const char *reason, int predictedWord = -1) {
+        char detail[320];
+        std::snprintf(detail, sizeof(detail),
+                      "reason=%s seq=%u word=%04X predicted=%d active=%u enabled=%d child=%d connected=%d buffered=%d busy=%d peer_ready=%d pending=%zu predictions=%zu",
+                      reason, sequence, static_cast<unsigned>(childWord),
+                      predictedWord, remoteActiveSequence_, remoteLinkEnabled_,
+                      remoteLinkChild_, remoteLinkConnected_,
+                      remoteBufferedProtocolActive_, multiplayerBusy_,
+                      remotePeerWordReady_, remotePendingWords_.size(),
+                      remotePredictedWords_.size());
+        remoteWordRejection_ = detail;
+        multiplayerError_ = true;
+        return false;
+    };
     const auto predicted = remotePredictedWords_.find(sequence);
     if (predicted != remotePredictedWords_.end()) {
-        const bool matched = predicted->second == childWord;
+        const uint16_t predictedWord = predicted->second;
+        const bool matched = predictedWord == childWord;
         remotePredictedWords_.erase(predicted);
         if (!matched) {
-            multiplayerError_ = true;
-            return false;
+            return reject("prediction_mismatch", predictedWord);
         }
         markRemoteLinkActivity();
         return true;
     }
     if (!remoteLinkEnabled_ || remoteLinkChild_ || !remoteLinkConnected_ ||
         remoteBufferedProtocolActive_) {
-        multiplayerError_ = true;
-        return false;
+        return reject("link_state");
     }
     if (sequence > remoteActiveSequence_ ||
         (sequence == remoteActiveSequence_ && !multiplayerBusy_)) {
         if (sequence <= remoteActiveSequence_ ||
             sequence - remoteActiveSequence_ > REMOTE_LINK_MAX_QUEUED_WORDS) {
-            multiplayerError_ = true;
-            return false;
+            return reject("sequence_window");
         }
         const auto pending = std::find_if(
             remotePendingWords_.begin(), remotePendingWords_.end(),
@@ -1285,15 +1309,13 @@ bool GbaSystem::receiveRemoteMultiplayerWord(uint32_t sequence,
             });
         if (pending != remotePendingWords_.end()) {
             if (pending->word != childWord) {
-                multiplayerError_ = true;
-                return false;
+                return reject("duplicate_mismatch");
             }
             markRemoteLinkActivity();
             return true;
         }
         if (remotePendingWords_.size() >= REMOTE_LINK_MAX_QUEUED_WORDS) {
-            multiplayerError_ = true;
-            return false;
+            return reject("pending_full");
         }
         remotePendingWords_.push_back({sequence, childWord});
         markRemoteLinkActivity();
@@ -1301,8 +1323,7 @@ bool GbaSystem::receiveRemoteMultiplayerWord(uint32_t sequence,
     }
     if (!multiplayerBusy_ || sequence != remoteActiveSequence_ ||
         remotePeerWordReady_) {
-        multiplayerError_ = true;
-        return false;
+        return reject("unexpected_sequence_or_state");
     }
     markRemoteLinkActivity();
     multiplayerWords_[1] = childWord;
@@ -1364,9 +1385,14 @@ GbaSystem::receiveRemoteMultiplayerDataBlockDetailed(
     if (!remoteBufferedProtocolActive_) {
         // Reliable ordered packets retain session-wide sequence numbers across
         // guest serial resets. Consume late old-attempt packets without
-        // delivering them to the reset parser. New commands follow that
-        // sender's handshake completion, so they cannot overtake the boundary.
+        // delivering them to the reset parser. The child may hold blocks that
+        // follow a queued 0x8FFF handoff until its local serial callback
+        // confirms the same 0x8FFF/0xB9A0 transition.
         ++remoteExpectedDataBlockSequence_;
+        if (remoteLinkChild_ && remoteBufferedHandshakeStartsPending_ > 0) {
+            remotePendingDataBlocks_.push_back({sequence, words, checksum});
+            markRemoteLinkActivity();
+        }
         return result;
     }
     remotePendingDataBlocks_.push_back({sequence, words, checksum});
@@ -1890,6 +1916,7 @@ void GbaSystem::resetRemoteBufferedProtocol() {
     abortMultiplayerTransfer();
     remoteBufferedProtocolActive_ = false;
     remoteBufferedSwitchAfterTransfer_ = false;
+    remoteBufferedHandshakeStartsPending_ = 0;
     remoteBufferedWordPending_ = false;
     remoteChildAwaitingSend_ = false;
     remotePendingDataBlocks_.clear();
@@ -1909,6 +1936,7 @@ void GbaSystem::activateRemoteBufferedProtocol() {
         return;
     remoteBufferedProtocolActive_ = true;
     remoteBufferedSwitchAfterTransfer_ = false;
+    remoteBufferedHandshakeStartsPending_ = 0;
     remoteBufferedWordPending_ = false;
     remoteStreamWordIndex_ = 0;
     remoteOutgoingDataWords_.fill(0);
@@ -2038,6 +2066,7 @@ void GbaSystem::disconnectRemoteMultiplayerLink() {
     remoteBufferedProtocolRequested_ = false;
     remoteBufferedProtocolActive_ = false;
     remoteBufferedSwitchAfterTransfer_ = false;
+    remoteBufferedHandshakeStartsPending_ = 0;
     remoteBufferedWordPending_ = false;
     remotePendingDataBlocks_.clear();
     remotePendingLocalDataBlock_.reset();
@@ -2245,6 +2274,9 @@ void GbaSystem::abortMultiplayerTransfer() {
     remotePendingStarts_.clear();
     remotePredictedWords_.clear();
     remotePendingWords_.clear();
+    remoteBufferedHandshakeStartsPending_ = 0;
+    if (!remoteBufferedProtocolActive_)
+        remotePendingDataBlocks_.clear();
     remotePeerWordReady_ = false;
     if (!multiplayerBusy_) {
         if (hadPendingWork)
@@ -2262,6 +2294,13 @@ void GbaSystem::abortMultiplayerTransfer() {
 }
 
 void GbaSystem::completeMultiplayerTransfer() {
+    const bool completedBufferedHandshakeProbe =
+        remoteLinkEnabled_ && remoteLinkChild_ &&
+        remoteBufferedProtocolRequested_ && !remoteBufferedProtocolActive_ &&
+        remoteBufferedHandshakeStartsPending_ > 0 &&
+        multiplayerWords_[0] == 0x8FFF;
+    const bool acceptedBufferedHandshakeProbe =
+        completedBufferedHandshakeProbe && remoteBufferedSwitchAfterTransfer_;
     multiplayerCycles_ = 0;
     if (remoteLinkChild_ && remoteBufferedProtocolActive_)
         remoteChildAwaitingSend_ = true;
@@ -2285,6 +2324,12 @@ void GbaSystem::completeMultiplayerTransfer() {
             storeIo16(REG_IF, read16Impl(REG_IF) | IRQ_SERIAL);
     }
     remotePeerWordReady_ = false;
+    if (completedBufferedHandshakeProbe &&
+        !acceptedBufferedHandshakeProbe) {
+        --remoteBufferedHandshakeStartsPending_;
+        if (remoteBufferedHandshakeStartsPending_ == 0)
+            remotePendingDataBlocks_.clear();
+    }
 }
 
 void GbaSystem::tickMultiplayer(uint32_t cycles) {
@@ -4079,7 +4124,12 @@ GbaSystem::FrameResult GbaSystem::runFrame() {
                     multiplayerWords_[1] = *predicted;
                     remotePeerWordReady_ = true;
                     remotePredictionUsed_ = true;
+                    remoteBufferedSwitchAfterTransfer_ =
+                        remoteBufferedProtocolRequested_ && !remoteLinkChild_ &&
+                        multiplayerWords_[0] == 0x8FFF && *predicted == 0xB9A0;
                     completeMultiplayerTransfer();
+                    if (remoteBufferedSwitchAfterTransfer_)
+                        activateRemoteBufferedProtocol();
                     markRemoteLinkActivity();
                 }
             }

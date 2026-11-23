@@ -30,19 +30,38 @@ frontend work.
 
 ## Complete commands cross the network
 
-The game's cable handshake remains guest-owned. A matching `0x8FFF`/`0xB9A0`
-exchange activates the buffered protocol. Emerald checks that the player count
-matches the previous discovery poll before accepting the master's handshake.
-Discovery requests use the receiving guest's current cycle because each guest
-can enter discovery at a different time. If the receiver is outside multiplayer
-mode or leaves it before answering, the initiating guest gets an open slot
-(`0xFFFF`) and can retry. After the handshake, the network
-carries complete eight-word commands with sequence and payload checksum;
-it does not perform a remote request/reply for each SIO word. Local serial
-register updates, transfer timing and interrupts reconstruct the guest's wire
-interface. The child's local cadence follows Emerald's VBlank/Timer 3 schedule.
-This is a game-specific compatibility policy, not general cable hardware fidelity.
-No ROM instructions or high-level game callbacks are replaced.
+The game's cable handshake remains guest-owned. The current experimental
+English Emerald profile may predict the slave handshake as `0xB9A0` when both
+ends report multiplayer readiness and the local guest is the handshake master.
+The actual ordered reply must match or the session fails. This condition is
+known to be insufficient: a relay test observed an initial `0x0000` reply and
+the prediction caused a mismatch. A no-prediction experiment avoided that
+mismatch but fell to about 7.6 guest FPS during relay handshake and subsequently
+failed during trade. Neither approach has established reliable relay play.
+One manual two-host English Emerald session through a RetroArch relay reached
+the trade menu, exchanged two Pokémon, and retained both results after each
+isolated save was reopened. The peer disconnected after the trade menu was
+closed; normal Cable Club exit over the same connection remains unverified.
+Another relay session with the host and client reversed failed at the initial
+handshake because the real peer word differed from the prediction. These are
+bounded observations, not a general relay compatibility claim.
+Ordered data blocks that arrive after the child's queued `0x8FFF` transfer are
+held in its bounded receive queue until the child completes the matching local
+handshake. Earlier blocks from a prior parser attempt are still discarded.
+
+A matching `0x8FFF`/`0xB9A0` exchange activates the buffered protocol. Emerald
+checks that the player count matches the previous discovery poll before
+accepting the master's handshake. Discovery requests use the receiving guest's
+current cycle because each guest can enter discovery at a different time. If
+the receiver is outside multiplayer mode or leaves it before answering, the
+initiating guest gets an open slot (`0xFFFF`) and can retry. After the handshake,
+the network carries complete eight-word commands with sequence and payload
+checksum; it does not perform a remote request/reply for each SIO word. Local
+serial register updates, transfer timing and interrupts reconstruct the guest's
+wire interface. The child's local cadence follows Emerald's VBlank/Timer 3
+schedule. This is a game-specific compatibility policy, not general cable
+hardware fidelity. No ROM instructions or high-level game callbacks are
+replaced.
 
 Source contracts come from `SerialCB`, `DoRecv`, `DoSend` and `SendRecvDone` in
 [the matching pokeemerald link implementation](https://github.com/pret/pokeemerald/blob/9103e529c2fbdd7add4a1ff3350c6c1f92112c42/src/link.c).

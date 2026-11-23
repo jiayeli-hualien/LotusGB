@@ -313,6 +313,52 @@ void childReceiveLifetime() {
     const auto checksum = static_cast<uint16_t>(sum(local) + sum(peer));
     require(next(checksum) == checksum, "resumed child checksum diverged");
 }
+void delayedHandshakeWithUninitializedPeer() {
+    GbaSystem parent(probe()), child(probe());
+    unsigned replies = 0;
+    uint16_t reply = 0xFFFF;
+    parent.configureRemoteMultiplayerLink(false, true,
+        [&](uint32_t seq, uint16_t word, uint8_t baud, uint64_t elapsed) {
+            require(child.receiveRemoteMultiplayerStart(seq, word, baud, elapsed),
+                    "delayed handshake start rejected");
+        }, {}, {});
+    child.configureRemoteMultiplayerLink(true, true, {},
+        [&](uint32_t seq, uint16_t word) {
+            ++replies;
+            reply = word;
+            require(parent.receiveRemoteMultiplayerWord(seq, word),
+                    "actual delayed handshake word rejected");
+        }, {});
+    parent.setRemoteMultiplayerBufferedProtocol(true);
+    child.setRemoteMultiplayerBufferedProtocol(true);
+    parent.setRemoteMultiplayerEventPump([] {});
+    child.setRemoteMultiplayerEventPump([] {});
+    parent.write16(CONTROL, 0x6003);
+    child.write16(CONTROL, 0x6001);
+    parent.setRemoteMultiplayerReady(true);
+    child.setRemoteMultiplayerReady(true);
+    child.write16(SEND, 0);
+    parent.write16(SEND, 0xB9A0);
+    parent.write16(CONTROL, 0x6083);
+    for (unsigned i = 0; i < 4; ++i)
+        require(parent.runFrame().success, "waiting for delayed peer failed");
+    require((parent.read16(CONTROL) & 0x80) && replies == 0,
+            "ready peer fabricated a handshake reply before its transfer");
+    require(child.runFrame().success && parent.runFrame().success,
+            "real zero reply failed");
+    require(replies == 1 && reply == 0 && parent.read16(DATA + 2) == 0,
+            "guest did not receive the peer's real uninitialized word");
+    require(!(parent.read16(CONTROL) & 0xC0), "zero reply set serial error");
+    child.write16(SEND, 0xB9A0);
+    parent.write16(SEND, 0x8FFF);
+    parent.write16(CONTROL, 0x6083);
+    require(child.runFrame().success && parent.runFrame().success,
+            "later handshake failed");
+    require(replies == 2 && reply == 0xB9A0 &&
+            parent.remoteMultiplayerBufferedProtocolActive() &&
+            child.remoteMultiplayerBufferedProtocolActive(),
+            "confirmed handshake did not activate buffered protocol");
+}
 void bootstrapRace(bool cancel, bool peerOutsideMode) {
     GbaSystem parent(probe()), child(probe());
     unsigned replies = 0; uint16_t reply = 0;
@@ -375,6 +421,7 @@ int main(int argc, char **argv) {
     run("serial_restart_with_independent_clocks", serialRestart);
     run("child_receive_result_lifetime", childReceiveLifetime);
     run("independent_bootstrap_clocks", [] { bootstrapRace(false, false); });
+    run("delayed_handshake_uninitialized_peer", delayedHandshakeWithUninitializedPeer);
     run("cancelled_bootstrap_start", [] { bootstrapRace(true, false); });
     run("bootstrap_during_peer_probe", [] { bootstrapRace(false, true); });
     std::cout << "Cable tests: " << passed << " passed, " << failed << " failed\n";

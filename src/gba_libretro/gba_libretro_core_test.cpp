@@ -481,6 +481,85 @@ void runRemoteBufferedEmeraldLinkCheck() {
     assert((invalid.read16(control) & 0x40) != 0);
 }
 
+void runRemoteBufferedPredictedHandshakeCheck() {
+    using LOTUSGBA::GbaSystem;
+    constexpr uint32_t control = 0x04000128;
+    constexpr uint32_t send = 0x0400012A;
+    constexpr uint32_t multi0 = 0x04000120;
+
+    GbaSystem parent(makeGbaMode3BootRom());
+    GbaSystem child(makeGbaMode3BootRom());
+    uint32_t parentSequence = 0;
+    parent.configureRemoteMultiplayerLink(
+        false, true,
+        [&child, &parentSequence](uint32_t sequence, uint16_t word,
+                                  uint8_t baud, uint64_t elapsed) {
+            parentSequence = sequence;
+            assert(child.receiveRemoteMultiplayerStart(sequence, word, baud,
+                                                        elapsed));
+        },
+        {}, {}, {},
+        [](uint32_t, uint16_t localWord) -> std::optional<uint16_t> {
+            if (localWord == 0x8FFF)
+                return 0xB9A0;
+            return std::nullopt;
+        });
+    child.configureRemoteMultiplayerLink(
+        true, true, {},
+        [&parent](uint32_t sequence, uint16_t word) {
+            assert(parent.receiveRemoteMultiplayerWord(sequence, word));
+        }, {}, {});
+    parent.setRemoteMultiplayerBufferedProtocol(true);
+    child.setRemoteMultiplayerBufferedProtocol(true);
+    parent.setRemoteMultiplayerReady(true);
+    child.setRemoteMultiplayerReady(true);
+    parent.setRemoteMultiplayerEventPump([] {});
+    child.setRemoteMultiplayerEventPump([] {});
+
+    parent.write16(control, 0x2000);
+    child.write16(control, 0x6001);
+    parent.write16(send, 0x8FFF);
+    child.write16(send, 0xB9A0);
+    parent.write16(control, 0x6083);
+
+    // The parent finishes its local serial transaction before the child has
+    // run the queued transfer or supplied its real word.
+    assert(parent.runFrame().success);
+    assert(parentSequence == 1);
+    assert((parent.read16(control) & 0x80) == 0);
+    assert(parent.read32(multi0) == 0xB9A08FFF);
+    assert(parent.remoteMultiplayerBufferedProtocolActive());
+
+    const GbaSystem::MultiplayerDataWords earlyBlock =
+        {0x1234, 2, 3, 4, 5, 6, 7, 8};
+    assert(child.receiveRemoteMultiplayerDataBlock(
+        1, earlyBlock, 0x1257));
+
+    // The child's real response arrives later, validates the prediction, and
+    // activates the same buffered phase on the child. A block sent just after
+    // the predicted handoff remains queued until that local transition.
+    assert(child.runFrame().success);
+    assert(child.remoteMultiplayerBufferedProtocolActive());
+    assert(parent.remoteMultiplayerBufferedProtocolActive());
+    assert((parent.read16(control) & 0x40) == 0);
+    assert((child.read16(control) & 0x40) == 0);
+
+    const uint64_t beforePrefetchedGroup = child.remoteSioTransferCount();
+    child.write16(send, 0);
+    for (unsigned frame = 0; frame < 3 &&
+         child.remoteSioTransferCount() == beforePrefetchedGroup; ++frame)
+        assert(child.runFrame().success);
+    assert(child.remoteSioTransferCount() == beforePrefetchedGroup + 1);
+    assert(child.read16(multi0) == 0); // Initial guest checksum phase.
+
+    child.write16(send, 0);
+    for (unsigned frame = 0; frame < 3 &&
+         child.remoteSioTransferCount() == beforePrefetchedGroup + 1; ++frame)
+        assert(child.runFrame().success);
+    assert(child.remoteSioTransferCount() == beforePrefetchedGroup + 2);
+    assert(child.read16(multi0) == earlyBlock[0]);
+}
+
 void runLocalMultiplayerProbeRomCheck() {
     using LOTUSGBA::GbaSystem;
     constexpr size_t saveSize = 32 * 1024;
@@ -906,6 +985,8 @@ void runRemoteSioPredictionCheck() {
     system.write16(control, 0x6083);
     assert(system.runFrame().success);
     assert(!system.receiveRemoteMultiplayerWord(sequence, 0x2222));
+    assert(system.remoteWordRejection().find("reason=prediction_mismatch") != std::string::npos);
+    assert(system.remoteWordRejection().find("word=2222") != std::string::npos);
     assert((system.read16(control) & 0x40) != 0);
 }
 
@@ -2686,6 +2767,7 @@ int main() {
     runRemoteMultiplayerLatencyCheck();
     runRemoteMultiplayerWaitCheck();
     runRemoteBufferedEmeraldLinkCheck();
+    runRemoteBufferedPredictedHandshakeCheck();
     runRemoteFramePacingCheck();
     runRemoteSioPredictionCheck();
     runRemoteSioEventPumpCheck();

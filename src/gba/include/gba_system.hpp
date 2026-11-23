@@ -127,6 +127,7 @@ public:
                                        uint8_t baudIndex,
                                        uint64_t elapsedCycles = 0);
     bool receiveRemoteMultiplayerWord(uint32_t sequence, uint16_t childWord);
+    const std::string &remoteWordRejection() const { return remoteWordRejection_; }
     bool receiveRemoteMultiplayerDataBlock(
         uint32_t sequence, const MultiplayerDataWords &words,
         uint16_t checksum);
@@ -188,6 +189,11 @@ public:
     void write8(uint32_t address, uint8_t value) override;
     void write16(uint32_t address, uint16_t value) override;
     void write32(uint32_t address, uint32_t value) override;
+    using MemoryWriteObserver =
+        std::function<void(uint32_t address, uint32_t value, uint8_t width)>;
+    void setMemoryWriteObserver(MemoryWriteObserver observer) {
+        memoryWriteObserver_ = std::move(observer);
+    }
     void registerRamReset(uint8_t flags) override;
     bool hasBios() const override { return !bios_.empty(); }
     uint64_t emulatedCycles() const { return emulatedCycles_; }
@@ -374,6 +380,7 @@ private:
     std::array<uint8_t, 256 * 1024> externalWorkRam_{};
     std::array<uint8_t, 32 * 1024> internalWorkRam_{};
     std::array<uint8_t, 0x400> io_{};
+    MemoryWriteObserver memoryWriteObserver_;
     GbaSystem *linkPeer_ = nullptr;
     bool linkChild_ = false;
     bool remoteLinkEnabled_ = false;
@@ -395,6 +402,7 @@ private:
     MultiplayerWordPredictor predictRemoteWord_;
     MultiplayerDataBlockSender sendRemoteDataBlock_;
     std::unordered_map<uint32_t, uint16_t> remotePredictedWords_;
+    std::string remoteWordRejection_;
     std::deque<RemoteMultiplayerDataBlock> remotePendingDataBlocks_;
     std::optional<RemoteMultiplayerDataBlock> remotePendingLocalDataBlock_;
     RemoteMultiplayerDataBlock remoteActiveDataBlock_{};
@@ -409,6 +417,7 @@ private:
     bool remoteBufferedProtocolRequested_ = false;
     bool remoteBufferedProtocolActive_ = false;
     bool remoteBufferedSwitchAfterTransfer_ = false;
+    uint32_t remoteBufferedHandshakeStartsPending_ = 0;
     bool remoteActiveDataBlockValid_ = false;
     bool remoteBufferedWordPending_ = false;
     bool remoteChildAwaitingSend_ = false;
