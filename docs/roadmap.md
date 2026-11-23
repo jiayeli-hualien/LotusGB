@@ -80,11 +80,10 @@ Commercial-game session records remain private. GBA save states remain deferred.
 The [Pokémon cable experiment](gba-pokemon-cable.md) adds an explicit device
 choice and a buffered English Emerald protocol profile. Component and frontend
 contracts are tested; bounded cross-device LAN and relay trade observations
-are recorded in that document. LAN is the practical baseline and relay remains
-experimental: handshake prediction, reconnect, normal exit and repeated
-delayed sessions need work. The [cable investigation](gba-pokemon-cable.md#latency-and-next-investigation)
-defines fixed-delay tests and a handshake synchronization path; battle checks
-remain open.
+are recorded in that document. WAN behavior remains experimental: repeated
+delayed sessions, reconnect and battle checks need work. The
+[cable investigation](gba-pokemon-cable.md#latency-and-next-investigation)
+describes the current handshake, fixed-delay tests and open performance work.
 
 The async RFU frontend has a bounded English Emerald trade checkpoint with
 fixed LAN delay and substantially reduced stutter; Ubuntu input responsiveness
@@ -92,10 +91,79 @@ remains to be investigated. Keep latency optimization separate from data
 integrity and callback/barrier correctness. See the
 [canonical scope and evidence](gba-rfu-protocol.md#scope-and-evidence).
 
+### Link documentation, maintainability and validation
+
+Prioritize a dependable English Emerald Wireless Adapter experience over
+optimizing cable WAN latency. Keep cable usable for the validated Emerald
+scope; investigate Ruby and Sapphire separately, since those games require a
+cable and the current network profile does not support them. RFU or cable
+support for other games and languages needs its own evidence.
+
+Work in small, independently reviewable changes:
+
+1. **Clarify player-facing support.** Document device selection, supported
+   game versions, connection setup, and the practical distinction between LAN
+   and experimental relay play. Separate implementation, automated tests,
+   game checkpoints and hardware verification; link to the RFU and cable
+   evidence documents instead of duplicating status. Keep private session
+   procedures, saves and logs outside the public repository.
+2. **Make protocol documents easier to navigate.** Lead the RFU and cable
+   documents with current behavior, guest-visible compatibility decisions,
+   validation and limits. Preserve historical detail when it explains a
+   design choice; move personal operational notes out of the repository.
+3. **Improve code boundaries incrementally.** Review libretro packet
+   encoding, transport state and diagnostics for separation; then review GBA
+   cable and RFU state boundaries independently. Keep ROM-specific behavior
+   explicit. Do not combine broad file moves with protocol changes.
+4. **Protect and validate the current path.** Retain focused regressions for
+   handshake, queued data, reset and disconnect; run the appropriate suite
+   after each change. Repeat representative RFU trade/battle and normal exit
+   and reconnect checks; validate cable LAN and relay after changes affecting
+   its behavior. Confirm save persistence when testing trades.
+5. **Defer link performance work until the acceptance gates below pass.**
+   Then establish comparable fixed-delay baselines and test any optimization
+   against guest-visible ordering, late packets, resets, disconnects and role
+   reversal before a relay trial. Do not claim general WAN or game
+   compatibility from one run.
+
+### Deferred link validation — save independence before performance (2026-11-23)
+
+Keep the current connection mechanism while functional acceptance is in
+progress. This is pending work, not a claim that save independence or full
+link functionality has passed. Execute these gates in order:
+
+1. **Pass reproducible real socket/LAN functional acceptance.** Verify link
+   setup, a completed trade with both saves independently reopened, and a
+   battle with matching state and complementary outcomes. Record the game,
+   core revision, frontend versions, endpoint roles and procedure. Local
+   two-system execution or queued-packet simulations alone do not pass this
+   gate; acceptance applies only to the device/profile actually tested.
+2. **Check indirect save-content dependence.** After gate 1 passes, repeat
+   connection, trade and battle with multiple distinct, randomized valid test
+   saves. Vary player identity, progress and party contents to check whether
+   connection maintenance, predictions or synthesized adapter/serial behavior
+   implicitly assume particular save data. Record each save's private ID,
+   variation/seed, procedure and result, including trade persistence and
+   battle agreement. Fix any functional failure before proceeding.
+3. **Measure waiting time, then consider optimization.** After gates 1–2 pass,
+   measure wall-clock time from the game's communication-start/wait message
+   to continued flow across different measured RTTs, using comparable saves
+   and inputs with repeated trials. Optimize transport only if measurements
+   show that RTT increases the wait. After any optimization, rerun functional
+   acceptance and the varied-save checks before accepting the change.
+
+Keep commercial ROMs, saves, screenshots and other game-derived artifacts
+outside the repository and CI. Public documentation may record concise,
+bounded results; repository/CI checks use original or clearly licensed assets.
+
+Ruby/Sapphire compatibility, additional languages and release packaging are
+separate follow-ups. A prerelease can describe the bounded tested scope;
+broader release claims require evidence for the advertised scenarios.
+
 Deferred frontend follow-up: remove unnecessary guest restarts when starting
-or cancelling a network link. Audit both endpoints' ROM-driven Wireless
-Adapter / Link Cable selection and consider an explicit startup core option.
-Define which mode changes require a reset, then check that connecting,
+or cancelling a network link. Audit how the existing Wireless Adapter /
+Link Cable core option interacts with session startup. Define which mode
+changes require a reset, then check that connecting,
 cancelling and reconnecting preserve running game progress when the mode is
 unchanged. Keep this separate from RFU latency and smoothness validation.
 

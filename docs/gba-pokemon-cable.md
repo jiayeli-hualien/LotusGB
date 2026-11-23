@@ -76,12 +76,14 @@ manual two-host run with 100 ms added in each direction, the user reported a
 successful trade test. Both guests received player identities during the
 post-seat handshake and continued exchanging buffered blocks; neither log
 reported a core error or peer disconnect through the observed checkpoint.
-Independent save reload, broader disconnect behavior and repeated trials
-remain unverified. The tests do not establish a latency threshold.
-One manual two-host English Emerald session through a RetroArch relay reached
-the trade menu, exchanged two Pokémon, and retained both results after each
-isolated save was reopened. The peer disconnected after the trade menu was
-closed; normal Cable Club exit over the same connection remains unverified.
+Normal Club exit and independent save reload were not checked in that run.
+A later two-host English Emerald relay session with this profile completed a
+trade and a normal Cable Club exit. The user reported save persistence after
+restarting, and both frontends logged writes to their isolated SRAM files.
+The host logged peer disconnection during shutdown. An earlier relay session
+also completed a trade, but disconnected after closing the trade menu.
+Broader disconnect behavior and repeated trials remain unverified. The tests
+do not establish a latency threshold.
 Another relay session with the host and client reversed failed at the initial
 handshake because the real peer word differed from the prediction. These are
 bounded observations, not a general relay compatibility claim.
@@ -209,6 +211,29 @@ guest-visible ordering and checksums, and never turn transport admission into
 a fabricated game acknowledgement. Arbitrary network delay or disconnection
 cannot be made instantaneous; no ROM change is required to investigate
 bounded guest pacing or a higher-level compatibility interface.
+
+### Raw handshake performance
+
+Before buffered delivery is active, Emerald's master starts a serial transfer
+on each handshake VBlank. The current cable path waits for the actual remote
+word before completing each transfer, so repeated discovery polls cost a
+network round trip apiece. In the fixed-delay two-endpoint fixture, 13 replies
+take 105 simulated ticks at four ticks per direction and 157 at six ticks per
+direction; this is a bounded transport measurement, not a game FPS claim.
+In the 100 ms-per-direction game run, both guests reached roughly 3.6–4 FPS
+during the initial handshake. The beginning of that run included many repeated
+`0xB9A0` starts, including while the other game was still entering discovery.
+
+A possible optimization is to negotiate a bounded discovery window for a
+confirmed guest state and satisfy repeated stable polls locally, ending that
+window at a verified guest-state transition, reset, disconnect or actual
+master-handshake boundary. It must not infer `0xB9A0` merely from device
+readiness: a valid first reply can be `0x0000`. Before implementation, a
+two-guest test must show how state publication, revocation and ordered
+transport prevent stale replies when either guest changes state or restarts;
+it must cover late changes, asymmetric delays, disconnect and role reversal.
+Without those guarantees, a locally replayed discovery word could advance the
+wrong guest state. This is an investigation, not implemented behavior.
 
 The next work is to:
 

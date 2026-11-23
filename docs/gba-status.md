@@ -23,15 +23,19 @@ reproducible scope. Unsupported CPU instructions stop with an explicit fault.
 
 ## SIO and RFU link
 
-Local two-ROM multiplayer SIO and remote RFU use separate paths. The current
-remote Netpacket frontend enables the experimental Emerald RFU profile for
-`BPEE`/`BPEJ`; remote cable SIO is deferred. Starting the remote session
+Local two-ROM multiplayer SIO and remote RFU use separate paths. The remote
+Netpacket frontend has experimental Emerald Wireless Adapter (`BPEE`/`BPEJ`)
+and English Emerald (`BPEE`) Link Cable profiles. Players select the device
+in a core option and reload content to apply it. Starting the remote session
 recreates the guest using its current battery memory and BIOS selection.
-The SIO/RFU choice is currently profile-driven, not a user core option.
-See the [RFU protocol and synthetic NI tests](gba-rfu-protocol.md) for clock
-handoff, radio exchanges, delayed delivery and remaining validation targets.
+See the [link play guide](gba-link-play.md) for player-facing setup and
+bounded compatibility, the [RFU protocol](gba-rfu-protocol.md) for radio
+and NI tests, and the [cable protocol](gba-pokemon-cable.md) for cable
+transport and validation.
 
-Commercial-game validation is private and is not recorded in this public status document. Use licensed ROMs and original fixtures for reproducible repository checks.
+Commercial ROMs, saves and game-derived captures stay private. Public
+documents record bounded observations; reproducible repository checks use
+licensed ROMs and original fixtures.
 
 ## HLE BIOS arithmetic
 

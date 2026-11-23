@@ -26,7 +26,12 @@ advancement have been observed. Its video, audio, save, BIOS startup and timing
 coverage remain bounded; these results do not establish broad GBA compatibility
 or hardware-level fidelity. See the [GBA implementation status](docs/gba-status.md).
 
-The libretro core sends ordered link data through RetroArch Netpacket. Pokémon
+LotusGBA also has experimental Wireless Adapter and Link Cable network play
+for a limited set of Pokémon Emerald versions. See the
+[LotusGBA link play guide](docs/gba-link-play.md) for device selection,
+compatibility, save precautions and connection steps.
+
+The LotusGB libretro core sends ordered link data through RetroArch Netpacket. Pokémon
 Red/Blue LAN trade and battle checks have completed in reported setups, though
 these bounded results do not guarantee every game, session, or network will
 stay in sync. Synthetic tests also check shared battle RNG and long ordered
@@ -61,6 +66,7 @@ macOS builds also produce `.dylib` variants. See the
 - [DMG validation matrix](docs/dmg-validation.md)
 - [CGB development and acceptance](docs/cgb-development.md)
 - [GBA implementation and evidence](docs/gba-status.md)
+- [LotusGBA link play in RetroArch](docs/gba-link-play.md)
 - [Homebrew gameplay checks](docs/homebrew-check.md)
 - [Serial-link design and evidence](docs/serial-link-overview.md)
 - [Save-state format and limits](docs/save-states.md)
