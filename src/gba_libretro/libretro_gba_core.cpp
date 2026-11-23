@@ -334,7 +334,6 @@ struct RemoteNetplay {
     uint64_t transferStartsReceived = 0;
     uint64_t transferWordsSent = 0;
     uint64_t transferWordsReceived = 0;
-    uint64_t emeraldHandshakePredictions = 0;
     uint64_t dataBlocksSent = 0;
     uint64_t dataBlocksReceived = 0;
     uint64_t rfuMessagesSent = 0;
@@ -934,42 +933,12 @@ void startRemoteEmulation() {
     gbaSystem = std::move(local);
     gbaSystem->setRfuAdapterEnabled(!cable);
     if (cable) {
-        GbaSystem::MultiplayerWordPredictor predictEmeraldHandshakeReply;
-        if (romFingerprint() == POKEMON_EMERALD_US_ROM_FINGERPRINT) {
-            predictEmeraldHandshakeReply = [](uint32_t sequence,
-                                               uint16_t localWord)
-                -> std::optional<uint16_t> {
-                constexpr uint32_t LINK_STRUCT = 0x03003170;
-                constexpr uint8_t LINK_STATE_HANDSHAKE = 2;
-                constexpr uint8_t LINK_MASTER = 8;
-                if (!gbaSystem || !net.host() ||
-                    !net.localReadyKnown || !net.localReady ||
-                    !net.peerReadyKnown || !net.peerReady ||
-                    gbaSystem->read8(LINK_STRUCT) != LINK_MASTER ||
-                    gbaSystem->read8(LINK_STRUCT + 1) != LINK_STATE_HANDSHAKE ||
-                    gbaSystem->read8(LINK_STRUCT + 2) != 0 ||
-                    (localWord != 0xB9A0 && localWord != 0x8FFF))
-                    return std::nullopt;
-
-                // This experimental prediction can conflict with a valid
-                // initial zero from a peer that has not entered its guest
-                // handshake yet. Its real reply must match; see the cable
-                // evidence document for the observed relay failure.
-                if (++net.emeraldHandshakePredictions <= 8 ||
-                    sequence % 256 == 0) {
-                    char message[128];
-                    std::snprintf(message, sizeof(message),
-                        "GBA Emerald cable predicted slave handshake: seq=%u local=%04X predicted=B9A0",
-                        sequence, localWord);
-                    logMessage(RETRO_LOG_INFO, message);
-                }
-                return 0xB9A0;
-            };
-        }
+        // SIO readiness does not guarantee the peer guest has published its
+        // handshake word. Use the real response; pacing raw handshake frames
+        // bounds the guest-time skew caused by network round trips.
         gbaSystem->configureRemoteMultiplayerLink(!net.host(), true,
             sendRemoteTransferStart, sendRemoteTransferWord, sendRemoteReady,
-            sendRemoteFrameProgress, std::move(predictEmeraldHandshakeReply),
-            sendRemoteDataBlock);
+            sendRemoteFrameProgress, {}, sendRemoteDataBlock);
         gbaSystem->setRemoteMultiplayerBufferedProtocol(true);
         gbaSystem->setRemoteMultiplayerEventPump(netpacketPoll);
         if (romFingerprint() == POKEMON_EMERALD_US_ROM_FINGERPRINT) {

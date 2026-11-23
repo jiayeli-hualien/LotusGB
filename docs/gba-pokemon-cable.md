@@ -8,8 +8,9 @@ check reached the trade room on both guests through the direct local two-system
 subsystem. After preserving child receive results until guest consumption, two
 independently clocked RetroArch instances over localhost Netpacket completed one
 trade and returned to both party-selection menus with the exchanged species.
-This bounded checkpoint does not establish cross-device, delayed-network, battle
-or repeated-session compatibility. The RFU checkpoint is described separately
+This bounded checkpoint does not establish broad game, battle or repeated-session
+compatibility. Cross-device and relay observations appear below; they do not
+establish reliable WAN support. The RFU checkpoint is described separately
 in [the RFU inventory](gba-rfu-protocol.md#scope-and-evidence).
 
 ## Device choice and session setup
@@ -30,14 +31,42 @@ frontend work.
 
 ## Complete commands cross the network
 
-The game's cable handshake remains guest-owned. The current experimental
-English Emerald profile may predict the slave handshake as `0xB9A0` when both
-ends report multiplayer readiness and the local guest is the handshake master.
-The actual ordered reply must match or the session fails. This condition is
-known to be insufficient: a relay test observed an initial `0x0000` reply and
-the prediction caused a mismatch. A no-prediction experiment avoided that
-mismatch but fell to about 7.6 guest FPS during relay handshake and subsequently
-failed during trade. Neither approach has established reliable relay play.
+The game's cable handshake remains guest-owned. The experimental profile waits
+for actual peer words during discovery and handshake. An earlier prediction of
+the slave word `0xB9A0` from multiplayer readiness proved unsafe: a relay test
+observed an initial `0x0000` reply and failed on the mismatch. A previous
+no-prediction experiment avoided that mismatch but fell to about 7.6 guest FPS
+during relay handshake and subsequently failed during trade. Those attempts
+used different reported pings, and neither established reliable relay play.
+While raw transfers are active, the current implementation bounds the child's
+guest frame lead using peer progress; the master can initiate transfers without
+waiting for peer frame watermarks. A guest serial reset clears the old pacing
+baseline, and once buffered command delivery is active both guests run
+independently. This intentionally changes child guest timing during network
+handshake. Synthetic fixed-delay tests cover these boundaries. In one manual
+two-host test with 65 ms added in each network direction, this experimental
+profile entered the trade menu, completed an exchange, and returned both
+players to the trade room. The two displayed parties reflected the exchange;
+independent save reload and normal Cable Club exit were not checked in that
+run. Host throughput briefly fell to about 5.4 guest FPS during a handshake.
+This checkpoint does not establish general timeout or WAN reliability.
+With the same experimental core and starting saves, one separate test adding
+100 ms in each direction entered the lobby but hit the game's communication
+error after the players sat down, before reaching the trade menu. RetroArch
+reported 235–295 ms at connection; the initial handshake ran at about 3.8
+guest FPS. The host and child traces showed different link states near the
+error, but did not establish its cause. A repeat with read-only task tracing
+showed both guests' `Task_WaitForLinkPlayerConnection` counters reach 300
+while remote player identities remained unreceived, followed by the error
+callback on the next update. This confirms that run reached the game's
+300-update timeout; it does not explain why the identity exchange stalled.
+Another run at the same injected delay sampled the master game in connected
+state with buffered transport active, while the child game remained in
+handshake with buffered transport active; on the next sampled guest frame
+the child reported zero players. The game requires a stable player count
+before accepting the handshake, while the emulator switches on the
+`0x8FFF`/`0xB9A0` word pair. Early switching remains a hypothesis that
+needs a regression test. The tests do not establish a latency threshold.
 One manual two-host English Emerald session through a RetroArch relay reached
 the trade menu, exchanged two Pokémon, and retained both results after each
 isolated save was reopened. The peer disconnected after the trade menu was
@@ -144,6 +173,50 @@ The local serial watchdog and the game timers are separate. For example,
 `LinkVSync` checks for a child serial interrupt within ten VBlanks, while
 `TryLinkTimeout` checks for link confirmation within 600 task updates.
 
+## Latency and next investigation
+
+LAN trade is the current practical baseline; relay operation remains
+experimental rather than excluded. One relay trade completed and both saves
+were reopened successfully, but the connection later dropped. This single
+checkpoint does not establish a supported ping threshold or reliable WAN
+operation. The failed no-prediction experiment and the prediction mismatch
+occurred at different reported pings, so neither can isolate latency as the
+sole cause.
+
+Entering the wired trade seat closes the field link. The trade-menu setup then
+opens a new link and waits for player identity exchange; see
+[`Task_StartWiredTrade` and `Task_WaitForLinkPlayerConnection`](https://github.com/pret/pokeemerald/blob/9103e529c2fbdd7add4a1ff3350c6c1f92112c42/src/cable_club.c)
+and [`CB2_CreateTradeMenu`](https://github.com/pret/pokeemerald/blob/9103e529c2fbdd7add4a1ff3350c6c1f92112c42/src/trade.c).
+Successful lobby entry therefore does not verify this second handshake. The
+game also has a 300-update wait for link players; reaching its error screen
+does not by itself identify which condition fired.
+
+The emulator can reconstruct local serial progress and buffer complete commands
+without waiting for a network round trip per word. It must still wait for real
+peer data at identity, party, confirmation and close barriers, preserve the
+guest-visible ordering and checksums, and never turn transport admission into
+a fabricated game acknowledgement. Arbitrary network delay or disconnection
+cannot be made instantaneous; no ROM change is required to investigate
+bounded guest pacing or a higher-level compatibility interface.
+
+The next work is to:
+
+1. Build deterministic two-endpoint tests with fixed round-trip delay, jitter,
+   asymmetric guest progress and both initial and post-seat handshakes. Record
+   guest frames, serial interrupts, actual words, queue state and game-visible
+   timeout boundaries; include disconnect, restart and stale-packet cases.
+2. Extend and validate the experimental handshake-only pacing against those
+   traces, and assess an explicit readiness barrier. It must accept an initial
+   peer `0x0000`, avoid unverified prediction,
+   allow both peers to progress without deadlock, and stop gating once buffered
+   command delivery is active. Treat the hypothesis that guest clock skew
+   causes the observed trade error as unproven until a test demonstrates it.
+3. Compare the candidate with the current profile at the same measured delays,
+   then validate lobby movement, trade, normal exit and independent save reload
+   with both host assignments. Record responsiveness separately from correctness.
+   If this boundary cannot meet both, assess a `LinkMain1`-level compatibility
+   implementation with explicit identity, party and confirmation barriers.
+
 ## Reproducible checks
 
 Run `make -C src/gba_libretro test-pokemon-cable build_dir="$PWD/build"` from
@@ -154,6 +227,13 @@ synthetic fixtures, without a commercial ROM:
   independent packet integrity and no per-word network requests after handshake.
 - `delayed_complete_group`: late arrival, stable in-progress group, next-group
   delivery and 16-bit checksum wraparound.
+- `handshake_frame_lead_134ms` and `handshake_frame_lead_200ms`: delayed raw
+  exchanges use real peer words and bound child guest frame lead; buffered
+  child frames continue when the peer stops advancing. These are synthetic
+  transport checks, not full game or timeout simulations.
+- `raw_master_no_peer_frame_gate` and `raw_child_rebases_after_reset`: the
+  master is not stalled by peer frame watermarks, and a child serial reset
+  rebases pacing instead of inheriting a buffered-session offset.
 - `idle_without_network_roundtrips`: repeated local idle groups generate no
   application packets or remote transfer requests.
 - `wire_checksum_and_sequence`: reject corrupt or duplicate messages without

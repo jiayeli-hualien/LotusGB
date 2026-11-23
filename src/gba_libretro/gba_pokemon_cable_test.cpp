@@ -1,8 +1,10 @@
 // Original synthetic cable guest. No commercial ROM or captured game data.
 // Oracle: the checksum/data phases in pokeemerald's SerialCB/DoRecv/DoSend.
 #include "gba_system.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -359,6 +361,146 @@ void delayedHandshakeWithUninitializedPeer() {
             child.remoteMultiplayerBufferedProtocolActive(),
             "confirmed handshake did not activate buffered protocol");
 }
+void rawMasterDoesNotWaitOnPeerFrameWatermark() {
+    GbaSystem parent(probe());
+    parent.configureRemoteMultiplayerLink(false, true,
+        [&](uint32_t seq, uint16_t, uint8_t, uint64_t) {
+            require(parent.receiveRemoteMultiplayerWord(seq, 0), "raw reply rejected");
+        }, {}, {});
+    parent.setRemoteMultiplayerBufferedProtocol(true);
+    parent.setRemoteMultiplayerEventPump([] {});
+    parent.write16(CONTROL, 0x6003);
+    parent.setRemoteMultiplayerReady(true, 0);
+    parent.write16(SEND, 0xB9A0);
+    parent.write16(CONTROL, 0x6083);
+    require(parent.runFrame().success, "initial raw frame failed");
+    const auto start = parent.remoteFrameCount();
+    for (unsigned i = 0; i < 12; ++i)
+        require(parent.runFrame().success, "idle master frame failed");
+    require(parent.remoteFrameCount() >= start + 12,
+            "idle master blocked on a peer frame watermark");
+}
+void rawChildRebasesAfterBufferedReset() {
+    GbaSystem child(probe());
+    unsigned replies = 0;
+    child.configureRemoteMultiplayerLink(true, true, {},
+        [&](uint32_t, uint16_t) { ++replies; }, {});
+    child.setRemoteMultiplayerBufferedProtocol(true);
+    child.setRemoteMultiplayerEventPump([] {});
+    child.write16(CONTROL, 0x6001);
+    child.setRemoteMultiplayerReady(true, 0);
+    child.write16(SEND, 0xB9A0);
+    require(child.receiveRemoteMultiplayerStart(1, 0x8FFF, 3),
+            "initial handshake start rejected");
+    require(child.runFrame().success && child.remoteMultiplayerBufferedProtocolActive(),
+            "initial child handshake failed");
+    for (unsigned i = 0; i < 30; ++i)
+        require(child.runFrame().success, "buffered child frame failed");
+    const auto beforeReset = child.remoteFrameCount();
+    require(beforeReset >= 30, "buffered child did not run independently");
+    // Emerald resets SIOCNT without leaving multiplayer mode. Peer frame
+    // progress remains old until the next watermark arrives.
+    child.write16(CONTROL, 0x2000);
+    child.write16(CONTROL, 0x6001);
+    require(!child.remoteMultiplayerBufferedProtocolActive(), "serial reset remained buffered");
+    require(child.receiveRemoteMultiplayerStart(2, 0xB9A0, 3),
+            "post-reset raw start rejected");
+    require(child.runFrame().success && replies == 2,
+            "post-reset raw transfer failed");
+    require(child.remoteFrameCount() > beforeReset,
+            "child reused the previous buffered epoch's pacing baseline");
+}
+void delayedHandshakeFrameLead(unsigned oneWayTicks) {
+    GbaSystem parent(probe()), child(probe());
+    enum class Kind { Start, Reply, ParentFrame, ChildFrame };
+    struct Packet {
+        Kind kind;
+        unsigned due;
+        uint32_t seq = 0;
+        uint16_t word = 0;
+        uint8_t baud = 0;
+        uint64_t value = 0;
+    };
+    unsigned tick = 0;
+    unsigned replies = 0;
+    std::deque<Packet> packets;
+    auto enqueue = [&](Packet packet) {
+        packet.due = tick + oneWayTicks;
+        packets.push_back(packet);
+    };
+    parent.configureRemoteMultiplayerLink(false, true,
+        [&](uint32_t seq, uint16_t word, uint8_t baud, uint64_t elapsed) {
+            enqueue({Kind::Start, 0, seq, word, baud, elapsed});
+        }, {}, {}, [&](uint64_t frame) {
+            enqueue({Kind::ParentFrame, 0, 0, 0, 0, frame});
+        });
+    child.configureRemoteMultiplayerLink(true, true, {},
+        [&](uint32_t seq, uint16_t word) {
+            enqueue({Kind::Reply, 0, seq, word, 0, 0});
+        }, {}, [&](uint64_t frame) {
+            enqueue({Kind::ChildFrame, 0, 0, 0, 0, frame});
+        });
+    parent.setRemoteMultiplayerBufferedProtocol(true);
+    child.setRemoteMultiplayerBufferedProtocol(true);
+    parent.setRemoteMultiplayerEventPump([] {});
+    child.setRemoteMultiplayerEventPump([] {});
+    parent.write16(CONTROL, 0x6003);
+    child.write16(CONTROL, 0x6001);
+    parent.setRemoteMultiplayerReady(true, 0);
+    child.setRemoteMultiplayerReady(true, 0);
+    child.write16(SEND, 0);
+    parent.write16(SEND, 0xB9A0);
+    parent.write16(CONTROL, 0x6083);
+
+    uint64_t maxLead = 0;
+    for (; tick < 500 && !parent.remoteMultiplayerBufferedProtocolActive(); ++tick) {
+        while (!packets.empty() && packets.front().due <= tick) {
+            const auto packet = packets.front();
+            packets.pop_front();
+            switch (packet.kind) {
+            case Kind::Start:
+                require(child.receiveRemoteMultiplayerStart(packet.seq, packet.word,
+                    packet.baud, packet.value), "delayed start rejected");
+                break;
+            case Kind::Reply:
+                require(parent.receiveRemoteMultiplayerWord(packet.seq, packet.word),
+                    "delayed actual reply rejected");
+                ++replies;
+                if (replies == 1)
+                    require(packet.word == 0, "initial peer zero was replaced");
+                break;
+            case Kind::ParentFrame:
+                require(child.receiveRemoteMultiplayerFrame(packet.value), "parent frame rejected");
+                break;
+            case Kind::ChildFrame:
+                require(parent.receiveRemoteMultiplayerFrame(packet.value), "child frame rejected");
+                break;
+            }
+        }
+        if (replies == 1)
+            child.write16(SEND, 0xB9A0);
+        if (replies && !(parent.read16(CONTROL) & 0x80)) {
+            parent.write16(SEND, replies >= 12 ? 0x8FFF : 0xB9A0);
+            parent.write16(CONTROL, 0x6083);
+        }
+        require(parent.runFrame().success && child.runFrame().success,
+                "delayed handshake frame failed");
+        if (!parent.remoteMultiplayerBufferedProtocolActive() &&
+            !child.remoteMultiplayerBufferedProtocolActive() &&
+            child.remoteFrameCount() > parent.remoteFrameCount())
+            maxLead = std::max(maxLead, child.remoteFrameCount() - parent.remoteFrameCount());
+    }
+    std::cout << " delay=" << oneWayTicks << " ticks=" << tick
+              << " replies=" << replies << " child_frame_lead=" << maxLead;
+    require(replies >= 13 && parent.remoteMultiplayerBufferedProtocolActive() &&
+            child.remoteMultiplayerBufferedProtocolActive(), "handshake did not complete");
+    require(maxLead <= 24, "child guest ran too far ahead during delayed raw handshake");
+    const uint64_t childBefore = child.remoteFrameCount();
+    for (unsigned i = 0; i < 30; ++i)
+        require(child.runFrame().success, "buffered child frame failed");
+    require(child.remoteFrameCount() >= childBefore + 30,
+            "handshake pacing incorrectly blocked buffered guest frames");
+}
 void bootstrapRace(bool cancel, bool peerOutsideMode) {
     GbaSystem parent(probe()), child(probe());
     unsigned replies = 0; uint16_t reply = 0;
@@ -422,6 +564,10 @@ int main(int argc, char **argv) {
     run("child_receive_result_lifetime", childReceiveLifetime);
     run("independent_bootstrap_clocks", [] { bootstrapRace(false, false); });
     run("delayed_handshake_uninitialized_peer", delayedHandshakeWithUninitializedPeer);
+    run("raw_master_no_peer_frame_gate", rawMasterDoesNotWaitOnPeerFrameWatermark);
+    run("raw_child_rebases_after_reset", rawChildRebasesAfterBufferedReset);
+    run("handshake_frame_lead_134ms", [] { delayedHandshakeFrameLead(4); });
+    run("handshake_frame_lead_200ms", [] { delayedHandshakeFrameLead(6); });
     run("cancelled_bootstrap_start", [] { bootstrapRace(true, false); });
     run("bootstrap_during_peer_probe", [] { bootstrapRace(false, true); });
     std::cout << "Cable tests: " << passed << " passed, " << failed << " failed\n";

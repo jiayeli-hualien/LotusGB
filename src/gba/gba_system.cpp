@@ -1101,10 +1101,13 @@ void GbaSystem::markRemoteLinkActivity() {
 }
 
 bool GbaSystem::shouldPaceRemoteFrame() {
-    // Emerald advances its own video/game clock while the ordered link stream
-    // is buffered independently. Never gate its local frames on the peer's
-    // frame watermark, including during the raw SIO handshake.
-    if (remoteBufferedProtocolRequested_)
+    // Once complete commands are buffered, both guests run independently.
+    // During raw discovery, only pace the child: the master already waits for
+    // real serial replies and must remain free to initiate the next transfer.
+    // Pacing both can deadlock across guest serial resets with different
+    // progress baselines. This intentionally changes child guest timing.
+    if (remoteBufferedProtocolRequested_ &&
+        (remoteBufferedProtocolActive_ || !remoteLinkChild_))
         return false;
     // A pending or active transfer must be allowed to advance to its local
     // SIO completion point. Once the local wire time has elapsed, the CPU may
@@ -1914,6 +1917,9 @@ void GbaSystem::disconnectRemoteRfuLink() {
 
 void GbaSystem::resetRemoteBufferedProtocol() {
     abortMultiplayerTransfer();
+    // Each guest can reset its serial parser without leaving multiplayer mode.
+    // The next raw exchange needs a fresh frame-progress baseline.
+    remoteLinkHot_ = false;
     remoteBufferedProtocolActive_ = false;
     remoteBufferedSwitchAfterTransfer_ = false;
     remoteBufferedHandshakeStartsPending_ = 0;

@@ -79,8 +79,12 @@ Commercial-game session records remain private. GBA save states remain deferred.
 
 The [Pokémon cable experiment](gba-pokemon-cable.md) adds an explicit device
 choice and a buffered English Emerald protocol profile. Component and frontend
-contracts are tested; a bounded localhost Netpacket trade checkpoint is recorded
-in that document. Cross-device, delay and battle checks remain open.
+contracts are tested; bounded cross-device LAN and relay trade observations
+are recorded in that document. LAN is the practical baseline and relay remains
+experimental: handshake prediction, reconnect, normal exit and repeated
+delayed sessions need work. The [cable investigation](gba-pokemon-cable.md#latency-and-next-investigation)
+defines fixed-delay tests and a handshake synchronization path; battle checks
+remain open.
 
 The async RFU frontend has a bounded English Emerald trade checkpoint with
 fixed LAN delay and substantially reduced stutter; Ubuntu input responsiveness
