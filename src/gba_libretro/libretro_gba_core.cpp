@@ -54,12 +54,69 @@ retro_input_poll_t inputPollCallback = nullptr;
 retro_input_state_t inputStateCallback = nullptr;
 std::unique_ptr<GbaSystem> gbaSystem;
 std::unique_ptr<GbaSystem> linkChild;
+retro_memory_descriptor gbaMemoryDescriptors[3]{};
+retro_memory_map gbaMemoryMap{gbaMemoryDescriptors, 0};
 std::vector<uint8_t> loadedRom;
 std::vector<uint8_t> loadedBios;
 std::array<uint32_t, 2 * PIXELS> xrgbFrame{};
 std::array<uint16_t, 2 * PIXELS> rgb1555Frame{};
 bool useXrgb8888 = false;
 bool coreFaulted = false;
+
+void updateMemoryMap(GbaSystem *system) {
+    if (!environmentCallback)
+        return;
+
+    if (!system) {
+        gbaMemoryDescriptors[0] = {
+            0,
+            nullptr,
+            0,
+            0,
+            0xFFFFFFFF,
+            0,
+            0,
+            nullptr,
+        };
+        gbaMemoryMap.num_descriptors = 1;
+        environmentCallback(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &gbaMemoryMap);
+        return;
+    }
+
+    constexpr uint64_t systemRam = RETRO_MEMDESC_SYSTEM_RAM;
+    gbaMemoryDescriptors[0] = {
+        systemRam,
+        system->getExternalWorkRamData(),
+        0,
+        0x02000000,
+        0xFF000000,
+        0x00FC0000,
+        system->getExternalWorkRamSize(),
+        nullptr,
+    };
+    gbaMemoryDescriptors[1] = {
+        systemRam,
+        system->getInternalWorkRamData(),
+        0,
+        0x03000000,
+        0xFF000000,
+        0x00FF8000,
+        system->getInternalWorkRamSize(),
+        nullptr,
+    };
+    gbaMemoryDescriptors[2] = {
+        0,
+        nullptr,
+        0,
+        0,
+        0xFFFFFFFF,
+        0,
+        0,
+        nullptr,
+    };
+    gbaMemoryMap.num_descriptors = 3;
+    environmentCallback(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &gbaMemoryMap);
+}
 
 enum class BiosStartupMode {
     Automatic,
@@ -1660,6 +1717,7 @@ bool retro_load_game(const retro_game_info *game) {
             candidate, candidateBios, std::move(candidateSaveFlash),
             std::move(candidateRtc));
         candidateSystem->setRfuAdapterEnabled(candidateDevice == LinkDevice::WirelessAdapter);
+        updateMemoryMap(candidateSystem.get());
         linkChild.reset();
         loadedRom = std::move(candidate);
         loadedBios = std::move(candidateBios);
@@ -1696,6 +1754,7 @@ bool retro_load_game_special(unsigned type, const retro_game_info *games, size_t
         retro_unload_game();
         gbaSystem = std::move(parent);
         linkChild = std::move(child);
+        updateMemoryMap(gbaSystem.get());
         loadedLinkDevice = device;
         return true;
     } catch (const std::exception &error) {
@@ -1708,6 +1767,7 @@ bool retro_load_game_special(unsigned type, const retro_game_info *games, size_t
 
 void retro_unload_game(void) {
     netpacketStop();
+    updateMemoryMap(nullptr);
     linkChild.reset();
     gbaSystem.reset();
     loadedRom.clear();
@@ -1716,6 +1776,8 @@ void retro_unload_game(void) {
 }
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
 static GbaSystem *systemForMemory(unsigned id) {
+    if (id == RETRO_MEMORY_SYSTEM_RAM)
+        return gbaSystem.get();
     if (id == RETRO_MEMORY_SAVE_RAM || id == RETRO_MEMORY_RTC)
         return linkChild ? nullptr : gbaSystem.get();
     if (!linkChild)
@@ -1731,6 +1793,8 @@ void *retro_get_memory_data(unsigned id) {
     auto *system = systemForMemory(id);
     if (!system)
         return nullptr;
+    if (id == RETRO_MEMORY_SYSTEM_RAM)
+        return system->getExternalWorkRamData();
     return id == RETRO_MEMORY_RTC || id == LINK_RTC[0] || id == LINK_RTC[1]
         ? system->getRtcData() : system->getSaveRamData();
 }
@@ -1739,6 +1803,8 @@ size_t retro_get_memory_size(unsigned id) {
     auto *system = systemForMemory(id);
     if (!system)
         return 0;
+    if (id == RETRO_MEMORY_SYSTEM_RAM)
+        return system->getExternalWorkRamSize();
     return id == RETRO_MEMORY_RTC || id == LINK_RTC[0] || id == LINK_RTC[1]
         ? system->getRtcSize() : system->getSaveRamSize();
 }

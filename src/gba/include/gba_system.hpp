@@ -25,6 +25,8 @@ public:
     static constexpr unsigned SCREEN_WIDTH = 240;
     static constexpr unsigned SCREEN_HEIGHT = 160;
     static constexpr size_t PIXEL_COUNT = SCREEN_WIDTH * SCREEN_HEIGHT;
+    static constexpr size_t EXTERNAL_WORK_RAM_SIZE = 256 * 1024;
+    static constexpr size_t INTERNAL_WORK_RAM_SIZE = 32 * 1024;
     static constexpr uint32_t CYCLES_PER_FRAME = 1232 * 228;
     static constexpr size_t SRAM_SIZE = 32 * 1024;
     static constexpr size_t FLASH_SIZE = 64 * 1024;
@@ -179,6 +181,10 @@ public:
     uint8_t *getSaveRamData();
     size_t getSaveRamSize() const;
     std::shared_ptr<std::vector<uint8_t>> getSaveRamStorage() const;
+    uint8_t *getExternalWorkRamData() { return externalWorkRam_.data(); }
+    size_t getExternalWorkRamSize() const { return externalWorkRam_.size(); }
+    uint8_t *getInternalWorkRamData() { return internalWorkRam_.data(); }
+    size_t getInternalWorkRamSize() const { return internalWorkRam_.size(); }
     uint8_t *getRtcData();
     size_t getRtcSize() const;
     std::shared_ptr<std::vector<uint8_t>> getRtcStorage() const;
@@ -382,8 +388,8 @@ private:
     mutable unsigned eepromReadCursor_ = 0;
     mutable bool eepromReadActive_ = false;
     bool eepromDmaWriteActive_ = false;
-    std::array<uint8_t, 256 * 1024> externalWorkRam_{};
-    std::array<uint8_t, 32 * 1024> internalWorkRam_{};
+    std::array<uint8_t, EXTERNAL_WORK_RAM_SIZE> externalWorkRam_{};
+    std::array<uint8_t, INTERNAL_WORK_RAM_SIZE> internalWorkRam_{};
     std::array<uint8_t, 0x400> io_{};
     MemoryWriteObserver memoryWriteObserver_;
     GbaSystem *linkPeer_ = nullptr;
