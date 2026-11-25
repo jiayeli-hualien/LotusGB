@@ -46,10 +46,9 @@ RetroArch redirects the save into a core-specific subdirectory, so the
 disposable save must be at
 `/tmp/emerald-agent-test/saves/LotusGBA/PokemonEmeraldUE.srm`. The initial
 copy was one directory too high and the core skipped it. After correcting the
-path, Continue loaded player `Andy`, Pokédex 2, 0 badges, and a 0:31 save. The
-starting position was in Petalburg City's Pokémon Wireless Club Direct Corner,
-so this save is already at the relevant link-room attendant and does not need a
-route from the overworld.
+path, Continue loaded the prepared checkpoint in Petalburg City's Pokémon
+Wireless Club Direct Corner. This save already starts at the relevant link-room
+attendant and does not need a route from the overworld.
 
 The one-instance navigation and link-entry smoke check covered these steps:
 
@@ -105,9 +104,9 @@ window was closed; the pre-existing ydotool daemon was left running.
 
 ### Local Mac host attempt (2026-11-24)
 
-The MacBook Air M1 has RetroArch 1.22.2 and an arm64 LotusGBA core. A
-disposable copy of the verified trainer-A save and the same ROM were placed
-under a temporary directory; the isolated core option selects
+The local macOS ARM64 host has RetroArch 1.22.2 and an arm64 LotusGBA core. A
+disposable copy of the prepared test save and the same ROM were placed under a
+temporary directory; the isolated core option selects
 `Wireless Adapter`, and the host was configured for NCI port `55357` and
 netplay port `55435`. The host log confirms that LotusGBA started its GBA
 netplay transport.
