@@ -18,6 +18,10 @@ claims remain bounded by the ROMs and scenarios actually tested.
 
 The public-release milestone is complete. The next goals are:
 
+This was the broad priority order recorded on 2026-11-12. The later GBA
+cross-device route and its dated one-week plan below supersede it for current
+Pokémon-link work; the other goals are not scheduled in the current week.
+
 1. **Add targeted end-to-end homebrew tests.** Select clearly licensed GBA
    homebrew only where it closes a specific gap in the existing suite. Avoid
    an open-ended ROM hunt. The 2026-11-10 OBJ Y-boundary regression is the
@@ -74,22 +78,61 @@ Original two-system tests cover NI identity,
 local adapter IDs, delayed traffic/credit, retries and immutable packet
 snapshots. These tests do not establish general game or WAN compatibility.
 Reset/reconnect races, recovery and measured network timeout budgets remain
-open; see the [RFU design and reproducible test scope](gba-rfu-protocol.md).
+open and are outside this week's scope; see the
+[RFU design and reproducible test scope](gba-rfu-protocol.md).
 Commercial-game session records remain private. GBA save states remain deferred.
 
 The [Pokémon cable experiment](gba-pokemon-cable.md) adds an explicit device
 choice and a buffered English Emerald protocol profile. Component and frontend
 contracts are tested; bounded cross-device LAN and relay trade observations
-are recorded in that document. WAN behavior remains experimental: repeated
-delayed sessions, reconnect and battle checks need work. The
-[cable investigation](gba-pokemon-cable.md#latency-and-next-investigation)
+are recorded in that document. WAN behavior remains experimental. Repeated
+delayed sessions, reconnect and battle checks are deferred beyond the current
+week; see the schedule below. The
+[cable investigation](gba-pokemon-cable.md#latency-and-deferred-investigation)
 describes the current handshake, fixed-delay tests and open performance work.
 
 The async RFU frontend has a bounded English Emerald trade checkpoint with
-fixed LAN delay and substantially reduced stutter; Ubuntu input responsiveness
-remains to be investigated. Keep latency optimization separate from data
-integrity and callback/barrier correctness. See the
+fixed LAN delay and substantially reduced stutter. Ubuntu input responsiveness
+remains to be investigated later, outside this week's scope. Keep latency
+optimization separate from data integrity and callback/barrier correctness. See the
 [canonical scope and evidence](gba-rfu-protocol.md#scope-and-evidence).
+
+### Current one-week plan — 2026-11-24 through 2026-11-30
+
+This schedule narrows the broader link-validation roadmap for this week. It
+does not change the eventual acceptance gates.
+
+1. **Complete (2026-11-24):** Both isolated saves from the distinct-trainer
+   English Emerald Wireless Adapter LAN trade were closed and independently
+   reopened offline. In-game Continue showed each original trainer profile,
+   and each party screen showed the post-trade party. The exchanged-save files,
+   ROM, screenshots and logs remain private.
+2. **Complete:** Align the player guide and RFU/cable evidence documents with
+   this roadmap and the verified scope.
+3. **Pending (requested 2026-11-24):** Run one bounded English Emerald
+   Wireless Adapter LAN trade with different species, including a received
+   Haunter or Kadabra that should evolve on one endpoint while the other
+   endpoint receives a non-evolving Pokémon. Use fresh isolated save copies;
+   check both endpoints through evolution, saving, normal exit and independent
+   offline reload. Keep the ROM and original saves unchanged. This is an
+   exploratory trade-only check; it does not pass or skip the later LAN battle
+   or varied-save acceptance gates.
+
+Do not start Wireless Adapter battle acceptance this week. This targeted trade
+variant is the only new manual test in the week; defer repeated sessions or
+reconnect trials, multiple randomized save sets, fixed-delay baselines, RFU or
+Cable relay trials, latency optimization, Ruby/Sapphire, Japanese Emerald and
+other game or language profiles. Incremental code-boundary reviews and new
+transport behavior are also outside this week's plan unless needed to fix a
+failure found during the scheduled work. These remain future work with no date
+assigned. Finish the formal acceptance gates below in order; the exploratory
+trade check does not authorize skipping a gate.
+
+Exploratory observation (2026-11-24): the user reported one successful
+current-version English Emerald Wireless Adapter trade through RetroArch relay.
+This single trade does not pass the formal relay gate below; post-trade save
+reload, repeated-session reliability, role reversal and battle remain
+unverified.
 
 ### Link documentation, maintainability and validation
 
@@ -117,20 +160,26 @@ Work in small, independently reviewable changes:
    explicit. Do not combine broad file moves with protocol changes.
 4. **Protect and validate the current path.** Retain focused regressions for
    handshake, queued data, reset and disconnect; run the appropriate suite
-   after each change. Repeat representative RFU trade/battle and normal exit
-   and reconnect checks; validate cable LAN and relay after changes affecting
-   its behavior. Confirm save persistence when testing trades.
-5. **Defer link performance work until the acceptance gates below pass.**
-   Then establish comparable fixed-delay baselines and test any optimization
-   against guest-visible ordering, late packets, resets, disconnects and role
-   reversal before a relay trial. Do not claim general WAN or game
-   compatibility from one run.
+   after each change. This week's manual validation is limited to independently
+   reopening both saves from the distinct-trainer RFU trade. Battle, repeated
+   sessions, reconnect, and cable LAN/relay rechecks are deferred unless a
+   future code change affects those paths. Confirm save persistence when
+   testing trades.
+5. **Use measured evidence to decide whether to optimize.** Performance
+   improvement is not a prerequisite for the relay trial. Consider a change
+   only if the fixed-delay baseline shows that RTT increases the guest-visible
+   game wait, then test it against ordering, late packets, resets, disconnects
+   and role reversal. Do not claim general WAN or game compatibility from one
+   relay run.
 
-### Deferred link validation — save independence before performance (2026-11-23)
+### Deferred link validation — LAN, saves, baseline, then relay (2026-11-24)
 
 Keep the current connection mechanism while functional acceptance is in
 progress. This is pending work, not a claim that save independence or full
-link functionality has passed. Execute these gates in order:
+link functionality has passed. The independent save reload and documentation
+alignment listed above are complete; the only remaining scheduled manual check
+this week is the exploratory trade in item 3. Do not advance to the later gates
+until they are scheduled. Execute these gates in order:
 
 1. **Pass reproducible real socket/LAN functional acceptance.** Verify link
    setup, a completed trade with both saves independently reopened, and a
@@ -144,13 +193,47 @@ link functionality has passed. Execute these gates in order:
    connection maintenance, predictions or synthesized adapter/serial behavior
    implicitly assume particular save data. Record each save's private ID,
    variation/seed, procedure and result, including trade persistence and
-   battle agreement. Fix any functional failure before proceeding.
-3. **Measure waiting time, then consider optimization.** After gates 1–2 pass,
-   measure wall-clock time from the game's communication-start/wait message
-   to continued flow across different measured RTTs, using comparable saves
-   and inputs with repeated trials. Optimize transport only if measurements
-   show that RTT increases the wait. After any optimization, rerun functional
-   acceptance and the varied-save checks before accepting the change.
+   battle agreement. Include a trade-evolution edge case: first trade a
+   Haunter or Kadabra to a player whose offered Pokémon does not evolve, then
+   (if the isolated saves permit it) trade two evolution-triggering Pokémon.
+   Check both endpoints' evolution scenes, final species, normal save/exit and
+   independent offline reload. The asymmetric case covers the game's different
+   post-trade evolution and save/finish paths; record an error by its observed
+   phase instead of assuming a transport defect from the species alone. Fix any
+   functional failure before proceeding.
+3. **Establish a comparable fixed-delay baseline.** After gates 1–2 pass,
+   measure wall-clock time from the game's communication-start/wait message to
+   continued flow across multiple controlled, measured fixed-delay levels.
+   Use comparable saves, roles and inputs with repeated trials. Keep this
+   baseline separate from a relay session; do not add artificial delay to the
+   relay path.
+4. **Complete formal current-version RFU relay acceptance.** One exploratory
+   current-version trade was reported on 2026-11-24, but it does not replace
+   this gate. Only after gates 1–3 pass, use the actual RetroArch relay with no
+   additional fixed-delay bridge.
+   Record core revision/hash, both RetroArch versions, endpoint roles, relay
+   region/server and reported RTT, trade outcome, guest-visible waits/stutter,
+   normal exit, SRAM writes and each save's independent offline reload. A
+   first result supports only a limited observation for the tested profile;
+   it does not establish general WAN reliability. Historical v9 and v11 RFU
+   builds completed relay trades, but those runs do not satisfy this
+   current-version gate. Use this checkpoint to assess the present build as
+   the intended WAN profile. Use isolated save copies and preserve private
+   logs. Later, repeat independent sessions with roles reversed before making
+   a reliability claim. Record disconnects with their phase and keep a
+   trade-time disconnect distinct from a peer disconnect during normal
+   shutdown.
+5. **Optional matched Cable relay comparison.** If assessing whether RFU gives
+   a better experience than Link Cable, run a separate Cable relay comparison
+   with the same devices, core/frontend versions, network and relay path,
+   comparable saves, and equivalent trade/exit/reload stages. Retain repeated
+   trials and document disconnects and recovery risk. This is not a substitute
+   for the RFU gate and is not scheduled for the current week.
+6. **Consider performance changes only when justified by measurements.** A
+   measured baseline and the relay observation do not require an optimization.
+   Evaluate one only if RTT demonstrably lengthens the guest-visible wait; if
+   changed, rerun the applicable LAN, save and relay checks before accepting
+   it.
 
 Keep commercial ROMs, saves, screenshots and other game-derived artifacts
 outside the repository and CI. Public documentation may record concise,
@@ -160,8 +243,8 @@ Ruby/Sapphire compatibility, additional languages and release packaging are
 separate follow-ups. A prerelease can describe the bounded tested scope;
 broader release claims require evidence for the advertised scenarios.
 
-Deferred frontend follow-up: remove unnecessary guest restarts when starting
-or cancelling a network link. Audit how the existing Wireless Adapter /
+Deferred frontend follow-up, outside the current week: remove unnecessary guest
+restarts when starting or cancelling a network link. Audit how the existing Wireless Adapter /
 Link Cable core option interacts with session startup. Define which mode
 changes require a reset, then check that connecting,
 cancelling and reconnecting preserve running game progress when the mode is
