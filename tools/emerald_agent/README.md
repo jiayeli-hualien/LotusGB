@@ -104,10 +104,40 @@ tool. The intended RetroArch window must receive the input; on macOS, make it
 the focused app first. Presses are timed in wall-clock milliseconds, not guest
 frames.
 
+## Screenshot preprocessing and OCR
+
+`screen_ocr.py` converts a screenshot to grayscale or a black/white binary
+image, enlarges the pixel text with nearest-neighbor scaling, then passes that
+processed image to Tesseract. It prints recognized text by default; `--json`
+also returns line bounding boxes in original screenshot coordinates and mean
+word confidence. `--crop x,y,width,height` can isolate a dialogue box or menu;
+reported boxes still use coordinates from the full screenshot. `--output-image`
+saves the exact processed image sent to OCR.
+
+Install the Python packages in a virtual environment and install the Tesseract
+engine separately (Python `pytesseract` is its wrapper):
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r tools/emerald_agent/requirements-ocr.txt
+# macOS: brew install tesseract
+# Ubuntu: sudo apt install tesseract-ocr
+python tools/emerald_agent/screen_ocr.py /path/to/screenshot.png \
+  --mode binary --threshold 160 --output-image /tmp/screenshot-binary.png --json
+```
+
+Grayscale is the default; use `--mode binary` to test thresholded output and
+adjust `--threshold`. Increase `--scale` for small menu text; in the local game
+check, scale 4 read the Yes/No labels better than scale 3. Add
+`--crop x,y,width,height` with the dialogue/menu bounds when background
+graphics add OCR noise. English is the default OCR language (`--lang eng`).
+Install matching Tesseract language data before using another language. OCR is
+a visual text aid: it does not determine which menu item is selected unless
+that selection marker is visible and recognized.
+
 Use short presses and observe the game after each action. On the ARM VM profile,
 a 120 ms Right press moved one map tile, while menu navigation worked best with
 a 35 ms pulse; longer holds repeated and skipped menu items. Observe the game
 after every menu action. Start and Select are mapped from the RetroArch config
-but have not been verified in-game. The OCR/screen reader remains a separate
-follow-up. The memory map formatter is the first game-specific observer and is
-read-only.
+but have not been verified in-game. The memory map formatter is read-only.

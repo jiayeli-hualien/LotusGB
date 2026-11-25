@@ -185,8 +185,18 @@ room, player position, collision grid, and its three attendants.
 
 Preprocess screenshots to grayscale or binary before OCR. Preserve recognized
 text, coordinates, and confidence so the planner can check which menu item is
-selected. Keep the RAM map as the geometry source and compare visible NPC/menu
-state against it.
+selected. The `screen_ocr.py` helper now performs grayscale or binary
+preprocessing and OCR; text line boxes are reported in original screenshot
+coordinates. Keep the RAM map as the geometry source and compare visible
+NPC/menu state against it. The Python wrapper and image-processing dependency
+are listed in `tools/emerald_agent/requirements-ocr.txt`; the Tesseract engine
+and language data are installed separately. A local smoke check on one
+Direct Corner session found both dialogue lines after cropping the dialogue
+box, then read the Yes/No menu labels at 4x scale. Grayscale gave better
+dialogue confidence than binary on this sample. Some pixel-font glyphs were
+still misrecognized; the selected row had to be inferred from the OCR box
+position and visible cursor. Repeat the check on both endpoints and more menu
+layouts before relying on it for unattended play.
 
 ## Normalized observation and action contract
 
@@ -255,8 +265,8 @@ specified in-game stage.
    check reached the leader/join role menu. Verify the complete workflow with
    both endpoints running.
 5. Decode menu/dialogue/link state only where memory provides stable signals.
-6. Add grayscale/binary screenshot preprocessing and OCR for visible dialogue
-   and menus; compare OCR selections against memory observations.
+6. Validate grayscale/binary screenshot preprocessing and OCR on visible
+   dialogue and menus; compare OCR selections against memory observations.
 7. Add repeatable two-endpoint acceptance runs and evidence summaries.
 
 Do not install cores, alter active RetroArch settings, or touch original saves

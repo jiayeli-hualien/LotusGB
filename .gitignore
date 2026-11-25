@@ -3,6 +3,7 @@ build/*
 
 # Python tooling caches
 __pycache__/
+.venv/
 
 # macOS Finder metadata
 .DS_Store
