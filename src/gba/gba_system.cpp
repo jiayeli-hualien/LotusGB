@@ -371,9 +371,13 @@ void GbaSystem::reset() {
 
 void GbaSystem::setPressedButtons(uint16_t activeHighMask) {
     const uint16_t buttons = activeHighMask & 0x03FF;
+    const uint16_t previousButtons = pressedButtons_;
     if (remoteLinkEnabled_ || remoteFrameStalled_)
         remoteInputLatch_ |= buttons;
     pressedButtons_ = buttons;
+    if (previousButtons != buttons && remoteRfuEnabled_ &&
+        rfuDetailedDiagnostics_ && rfuDiagnosticLogger_)
+        rememberRfuGuestContext("input_change");
 }
 
 uint32_t GbaSystem::videoRamOffset(uint32_t address) {
@@ -1476,6 +1480,7 @@ void GbaSystem::setRfuDiagnosticLogger(
     rfuTransferCount_ = 0;
     rfuDiagnosticCount_ = 0;
     rfuRecentDiagnostics_.clear();
+    rfuRecentGuestContexts_.clear();
 }
 
 void GbaSystem::setRemoteRfuEventPump(std::function<void()> pump) {
@@ -1506,6 +1511,73 @@ void GbaSystem::logRfuDiagnostic(const std::string &message, bool essential) {
     rfuDiagnosticLogger_(message);
     if (rfuDiagnosticCount_ == MAX_RFU_DIAGNOSTICS)
         rfuDiagnosticLogger_("RFU trace limit reached; further SIO words suppressed");
+}
+
+void GbaSystem::rememberRfuGuestContext(const char *event, uint8_t command) {
+    if (!rfuDetailedDiagnostics_ || !rfuDiagnosticLogger_)
+        return;
+    constexpr size_t RECENT_CONTEXTS = 24;
+    char trace[320];
+    std::snprintf(trace, sizeof(trace),
+        "RFU guest context: event=%s command=%02X frame=%llu cycles=%llu "
+        "pc=%08X lr=%08X sp=%08X mode=%02X thumb=%u halted=%u "
+        "buttons=%03X input_latch=%03X keyinput=%03X siocnt=%04X "
+        "ie=%04X if=%04X ime=%04X connected=%u role=%s clock=%s "
+        "awaiting_ack=%u adapter_event=%02X queued=%zu next_rx=%u next_tx=%u",
+        event, unsigned(command),
+        static_cast<unsigned long long>(rfuGuestFrameCount_),
+        static_cast<unsigned long long>(emulatedCycles_), cpu_.programCounter(),
+        cpu_.registerValue(14), cpu_.registerValue(13), cpu_.currentMode(),
+        unsigned(cpu_.thumbState()), unsigned(cpu_.halted()),
+        unsigned(pressedButtons_), unsigned(remoteInputLatch_),
+        unsigned(read16Impl(REG_KEYINPUT)), loadIo16(REG_SIOCNT),
+        loadIo16(REG_IE), loadIo16(REG_IF), loadIo16(REG_IME),
+        unsigned(rfuConnected_), rfuIsParent_ ? "parent" : "child",
+        rfuAdapterClockMaster_ ? "adapter" : "guest",
+        unsigned(rfuAdapterAwaitingAck_), unsigned(rfuAdapterEventCommand_),
+        rfuDataChannel_.queuedMessages(), rfuDataChannel_.expectedSequence(),
+        rfuNextDataSequence_);
+    if (rfuRecentGuestContexts_.size() == RECENT_CONTEXTS)
+        rfuRecentGuestContexts_.pop_front();
+    rfuRecentGuestContexts_.emplace_back(trace);
+}
+
+void GbaSystem::flushRfuGuestContexts(const char *reason) {
+    if (!rfuDiagnosticLogger_ || rfuRecentGuestContexts_.empty())
+        return;
+    rfuDiagnosticLogger_(std::string("RFU recent guest contexts: reason=") + reason);
+    for (const auto &context : rfuRecentGuestContexts_)
+        rfuDiagnosticLogger_(context);
+    rfuRecentGuestContexts_.clear();
+}
+
+void GbaSystem::logRfuGuestContext(const char *event, uint8_t command,
+                                  bool essential) {
+    if (!rfuDiagnosticLogger_)
+        return;
+    char trace[384];
+    std::snprintf(trace, sizeof(trace),
+        "RFU guest context: event=%s command=%02X frame=%llu cycles=%llu "
+        "pc=%08X lr=%08X sp=%08X r0=%08X r1=%08X r2=%08X r3=%08X "
+        "mode=%02X thumb=%u halted=%u buttons=%03X input_latch=%03X "
+        "keyinput=%03X siocnt=%04X ie=%04X if=%04X ime=%04X "
+        "connected=%u role=%s clock=%s awaiting_ack=%u adapter_event=%02X "
+        "queued=%zu next_rx=%u next_tx=%u",
+        event, unsigned(command),
+        static_cast<unsigned long long>(rfuGuestFrameCount_),
+        static_cast<unsigned long long>(emulatedCycles_), cpu_.programCounter(),
+        cpu_.registerValue(14), cpu_.registerValue(13), cpu_.registerValue(0),
+        cpu_.registerValue(1), cpu_.registerValue(2), cpu_.registerValue(3),
+        cpu_.currentMode(), unsigned(cpu_.thumbState()), unsigned(cpu_.halted()),
+        unsigned(pressedButtons_), unsigned(remoteInputLatch_),
+        unsigned(read16Impl(REG_KEYINPUT)), loadIo16(REG_SIOCNT),
+        loadIo16(REG_IE), loadIo16(REG_IF), loadIo16(REG_IME),
+        unsigned(rfuConnected_), rfuIsParent_ ? "parent" : "child",
+        rfuAdapterClockMaster_ ? "adapter" : "guest",
+        unsigned(rfuAdapterAwaitingAck_), unsigned(rfuAdapterEventCommand_),
+        rfuDataChannel_.queuedMessages(), rfuDataChannel_.expectedSequence(),
+        rfuNextDataSequence_);
+    logRfuDiagnostic(trace, essential);
 }
 
 // Opt-in trace records the bytes at each ownership boundary, not decoded
@@ -1653,15 +1725,18 @@ void GbaSystem::logRfuFrameDiagnostic() {
         if ((pixel & 0x7FFF) == 0) ++black;
         hash = (hash ^ pixel) * 16777619u;
     }
-    char trace[512];
+    char trace[640];
     std::snprintf(trace, sizeof(trace),
         "RFU frame: frame=%llu cycles=%llu role=%s pc=%08X lr=%08X sp=%08X "
+        "mode=%02X thumb=%u halted=%u buttons=%03X input_latch=%03X "
         "dispcnt=%04X bldcnt=%04X bldalpha=%04X bldy=%04X black=%zu "
         "pixels=%zu fb_hash=%08X siocnt=%04X ie=%04X if=%04X ime=%04X "
         "queued=%zu next_rx=%u next_tx=%u awaiting_reply=%u reply_ready=%u sync_required=%u",
         static_cast<unsigned long long>(rfuGuestFrameCount_),
         static_cast<unsigned long long>(emulatedCycles_), rfuIsParent_ ? "parent" : "child",
         cpu_.programCounter(), cpu_.registerValue(14), cpu_.registerValue(13),
+        cpu_.currentMode(), unsigned(cpu_.thumbState()), unsigned(cpu_.halted()),
+        unsigned(pressedButtons_), unsigned(remoteInputLatch_),
         loadIo16(REG_DISPCNT), loadIo16(0x04000050), loadIo16(0x04000052),
         loadIo16(0x04000054), black, frameBuffer_.size(), hash, loadIo16(REG_SIOCNT),
         loadIo16(REG_IE), loadIo16(REG_IF), loadIo16(REG_IME),
@@ -2771,6 +2846,18 @@ void GbaSystem::answerEmeraldRfuRequest(
         // the guest's current adapter activity; it does not end the netplay
         // peer session.
         if (accepted) {
+            if (rfuConnected_) {
+                flushRfuGuestContexts("connected-stop-mode-request");
+                if (!rfuRecentDiagnostics_.empty()) {
+                    logRfuDiagnostic(
+                        "RFU recent trace tail before connected STOP_MODE_REQ", true);
+                    for (const auto &message : rfuRecentDiagnostics_)
+                        logRfuDiagnostic(message, true);
+                    rfuRecentDiagnostics_.clear();
+                }
+                logRfuGuestContext("connected_stop_mode_request", request.command,
+                                   true);
+            }
             rfuSearchingChildren_ = false;
             rfuSearchingParents_ = false;
         }
@@ -2787,9 +2874,10 @@ void GbaSystem::answerEmeraldRfuRequest(
                   response.empty() ? 0u : response.front(),
                   unsigned(rfuSearchingChildren_), unsigned(rfuSearchingParents_),
                   unsigned(rfuConnected_), unsigned(rfuConnectionPending_));
-    logRfuDiagnostic(trace, request.command != 0x1D &&
-        request.command != 0x1A && request.command != 0x11 &&
-        request.command != 0x13);
+    const bool essential = request.command == 0x3D ||
+        (request.command != 0x1D && request.command != 0x1A &&
+         request.command != 0x11 && request.command != 0x13);
+    logRfuDiagnostic(trace, essential);
     rfuCommandSession_.respond(accepted, std::move(response), 1);
 }
 
@@ -2915,10 +3003,12 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
             // SIO is full duplex. Preserve the observed next-word ACK path;
             // the simultaneous 0x28/0xA8 case remains a compatibility path.
             if (guestWord == expectedAck) {
+                const uint8_t completedCommand = rfuAdapterEventCommand_;
                 rfuAdapterClockMaster_ = false;
                 rfuAdapterAwaitingAck_ = false;
                 rfuAdapterEventCommand_ = 0;
                 rfuPendingRadioEvents_ = 0;
+                rememberRfuGuestContext("adapter_event_ack", completedCommand);
                 logRfuDiagnostic(
                     "RFU adapter event ACK received; guest SIO master role restored", true);
             } else {
@@ -2931,10 +3021,12 @@ void GbaSystem::tickNormalSerial(uint32_t cycles) {
             !rfuDataAckPayloadPending_ && guestWord == makeGbaRfuResponseHeader(0x28, 0)) {
             // Retained as a compatibility allowance for the simultaneous
             // full-duplex word shape; normal decompiled flow ACKs next.
+            const uint8_t completedCommand = rfuAdapterEventCommand_;
             rfuAdapterClockMaster_ = false;
             rfuAdapterAwaitingAck_ = false;
             rfuAdapterEventCommand_ = 0;
             rfuPendingRadioEvents_ = 0;
+            rememberRfuGuestContext("adapter_event_ack_header", completedCommand);
             logRfuDiagnostic(
                 "RFU adapter event ACK received in the header transfer", true);
         }

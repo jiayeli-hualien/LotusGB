@@ -291,6 +291,10 @@ private:
     void servicePendingEmeraldRfuTransmit();
     void logRfuDiagnostic(const std::string &message, bool essential = false);
     void logRfuDisconnectDiagnostic(uint8_t command);
+    void rememberRfuGuestContext(const char *event, uint8_t command = 0);
+    void flushRfuGuestContexts(const char *reason);
+    void logRfuGuestContext(const char *event, uint8_t command,
+                            bool essential);
     void logRfuDataDiagnostic(const char *boundary, uint32_t sequence,
                               uint8_t payloadBytes,
                               const std::vector<uint32_t> &words,
@@ -454,6 +458,7 @@ private:
     uint32_t rfuTransferCount_ = 0;
     uint32_t rfuDiagnosticCount_ = 0;
     std::deque<std::string> rfuRecentDiagnostics_;
+    std::deque<std::string> rfuRecentGuestContexts_;
     bool rfuLoginActive_ = false;
     bool rfuCommandSessionActive_ = false;
     bool rfuMasterSwitchPending_ = false;
