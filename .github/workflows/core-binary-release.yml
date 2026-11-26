@@ -1,0 +1,164 @@
+name: Core Binary Release
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'core-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build LotusGB core
+        run: make -C src/libretro build_dir="$RUNNER_TEMP/core-build"
+      - name: Load the built core and run licensed homebrew
+        run: |
+          python3 tools/smoke_libretro_core.py \
+            --core "$RUNNER_TEMP/core-build/lotusgb_libretro.so" \
+            --rom tests/roms/gb-pong/gb-pong.gb \
+            --frames 120
+      - name: Verify and stage binary
+        run: |
+          python3 tools/verify_core_binary.py \
+            --platform linux-x86_64 \
+            --core "$RUNNER_TEMP/core-build/lotusgb_libretro.so" \
+            --info "$RUNNER_TEMP/core-build/lotusgb_libretro.info" \
+            --output "$RUNNER_TEMP/core-release"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LotusGB-linux-x86_64
+          path: ${{ runner.temp }}/core-release
+          if-no-files-found: error
+
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build LotusGB core
+        run: make -C src/libretro build_dir="$RUNNER_TEMP/core-build"
+      - name: Load the built core and run licensed homebrew
+        run: |
+          python3 tools/smoke_libretro_core.py \
+            --core "$RUNNER_TEMP/core-build/lotusgb_libretro.so" \
+            --rom tests/roms/gb-pong/gb-pong.gb \
+            --frames 120
+      - name: Verify and stage binary
+        run: |
+          python3 tools/verify_core_binary.py \
+            --platform linux-aarch64 \
+            --core "$RUNNER_TEMP/core-build/lotusgb_libretro.so" \
+            --info "$RUNNER_TEMP/core-build/lotusgb_libretro.info" \
+            --output "$RUNNER_TEMP/core-release"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LotusGB-linux-arm64
+          path: ${{ runner.temp }}/core-release
+          if-no-files-found: error
+
+  windows-x86_64:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up native MinGW environment
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+            file
+      - name: Build and load LotusGB core DLL
+        shell: msys2 {0}
+        run: |
+          workspace="$(cygpath -u "$GITHUB_WORKSPACE")"
+          runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          build_dir="$runner_temp/windows-build"
+          make -C "$workspace/src/libretro" build_dir="$build_dir" \
+            CXX='g++ -static -static-libgcc -static-libstdc++'
+          cp "$build_dir/lotusgb_libretro.so" "$build_dir/lotusgb_libretro.dll"
+          python "$workspace/tools/smoke_libretro_core.py" \
+            --core "$build_dir/lotusgb_libretro.dll" \
+            --rom "$workspace/tests/roms/gb-pong/gb-pong.gb" \
+            --frames 120
+          python "$workspace/tools/verify_core_binary.py" \
+            --platform windows-x86_64 \
+            --core "$build_dir/lotusgb_libretro.dll" \
+            --info "$build_dir/lotusgb_libretro.info" \
+            --output "$runner_temp/core-release"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LotusGB-windows-x86_64
+          path: ${{ runner.temp }}/core-release
+          if-no-files-found: error
+
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Confirm native Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - name: Build LotusGB core
+        run: |
+          make -C src/libretro build \
+            build_dir="$RUNNER_TEMP/core-build" \
+            CXX=clang++ \
+            'CPPFLAGS=-Wall -Wextra -std=c++17 -O2 -fPIC -Iinclude -I../lib/include -arch arm64 -mmacosx-version-min=11.0'
+      - name: Load the built core and run licensed homebrew
+        run: |
+          python3 tools/smoke_libretro_core.py \
+            --core "$RUNNER_TEMP/core-build/lotusgb_libretro.dylib" \
+            --rom tests/roms/gb-pong/gb-pong.gb \
+            --frames 120
+      - name: Verify and stage binary
+        run: |
+          python3 tools/verify_core_binary.py \
+            --platform macos-arm64 \
+            --core "$RUNNER_TEMP/core-build/lotusgb_libretro.dylib" \
+            --info "$RUNNER_TEMP/core-build/lotusgb_libretro.info" \
+            --output "$RUNNER_TEMP/core-release"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LotusGB-macos-arm64
+          path: ${{ runner.temp }}/core-release
+          if-no-files-found: error
+
+  steam-deck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Zig 0.17.0
+        run: |
+          curl --fail --location --retry 3 \
+            https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz \
+            --output "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p build/toolchains/zig-0.17.0
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" \
+            --strip-components=1 -C build/toolchains/zig-0.17.0
+          chmod +x build/toolchains/zig-0.17.0/zig
+      - name: Build and package Steam Deck core
+        run: make package-retroarch-steam-deck
+      - name: Load the Steam Deck core on Linux and run licensed homebrew
+        run: |
+          python3 tools/smoke_libretro_core.py \
+            --core build/steamdeck-package/lotusgb_libretro.so \
+            --rom tests/roms/gb-pong/gb-pong.gb \
+            --frames 120
+      - name: Verify package checksum
+        run: |
+          cd build/packages
+          sha256sum --check LotusGB-Steam-Deck-x86_64.zip.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LotusGB-steam-deck-x86_64
+          path: |
+            build/packages/LotusGB-Steam-Deck-x86_64.zip
+            build/packages/LotusGB-Steam-Deck-x86_64.zip.sha256
+          if-no-files-found: error
