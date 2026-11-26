@@ -1038,6 +1038,8 @@ void startRemoteEmulation() {
     auto local = std::make_unique<GbaSystem>(
         loadedRom, loadedBios, gbaSystem->getSaveRamStorage(),
         gbaSystem->getRtcStorage(), net.epoch);
+    // RetroArch retains pointers into the mapped system's RAM.
+    updateMemoryMap(local.get());
     gbaSystem = std::move(local);
     gbaSystem->setRfuAdapterEnabled(!cable);
     if (cable) {
