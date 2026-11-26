@@ -39,6 +39,53 @@ LINUX_KEY_CODES = {
     "select": 54, # KEY_RIGHTSHIFT
 }
 
+WINDOWS_KEY_CODES = {
+    "a": 0x58, "b": 0x5A,  # X, Z
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "start": 0x0D, "select": 0xA1,  # Return, right Shift
+}
+
+
+def windows_key_event(key_code: int, pressed: bool) -> None:
+    """Inject a physical key into the focused window, checking delivery."""
+    from ctypes import wintypes
+
+    class KeyboardInput(ctypes.Structure):
+        _fields_ = [("vk", wintypes.WORD), ("scan", wintypes.WORD),
+                    ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("extra", ctypes.c_size_t)]
+
+    class MouseInput(ctypes.Structure):
+        _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG),
+                    ("data", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("extra", ctypes.c_size_t)]
+
+    class HardwareInput(ctypes.Structure):
+        _fields_ = [("message", wintypes.DWORD), ("low", wintypes.WORD),
+                    ("high", wintypes.WORD)]
+
+    class Payload(ctypes.Union):
+        _fields_ = [("keyboard", KeyboardInput), ("mouse", MouseInput),
+                    ("hardware", HardwareInput)]
+
+    class Input(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("payload", Payload)]
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+    user32.MapVirtualKeyW.restype = wintypes.UINT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+    scan = user32.MapVirtualKeyW(key_code, 0)
+    if not scan:
+        raise ctypes.WinError(ctypes.get_last_error())
+    flags = 0x0008 | (0 if pressed else 0x0002)  # SCANCODE, KEYUP
+    if key_code in (0x25, 0x26, 0x27, 0x28):
+        flags |= 0x0001  # extended arrow keys
+    event = Input(type=1, payload=Payload(keyboard=KeyboardInput(0, scan, flags, 0, 0)))
+    if user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(Input)) != 1:
+        raise ctypes.WinError(ctypes.get_last_error())
+
 
 def mac_key_event(key_code: int, pressed: bool) -> None:
     core_graphics = ctypes.CDLL(
@@ -98,6 +145,9 @@ def press(button: str, duration_ms: int, ydotool_socket: str | None = None) -> N
     elif system == "Linux":
         mapping = LINUX_KEY_CODES
         send = lambda code, pressed: linux_key_event(code, pressed, ydotool_socket)
+    elif system == "Windows":
+        mapping = WINDOWS_KEY_CODES
+        send = windows_key_event
     else:
         raise RuntimeError(f"unsupported input platform: {system}")
 

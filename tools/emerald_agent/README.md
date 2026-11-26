@@ -97,12 +97,13 @@ python3 tools/emerald_agent/generate_map_profile.py /path/to/pokeemerald
 The button mapping matches the isolated test configs: `a` sends X, `b` sends Z,
 directions send the arrow keys, `start` sends Enter, and `select` sends Right
 Shift. Linux uses `ydotool` and requires its input daemon/socket to be
-available; `--ydotool-socket` selects a non-default socket path. macOS posts
-CoreGraphics keyboard events and may
+available; `--ydotool-socket` selects a non-default socket path. Windows uses
+`SendInput` with scan codes. macOS posts CoreGraphics keyboard events and may
 require Accessibility/Input Monitoring permission for the terminal running the
-tool. The intended RetroArch window must receive the input; on macOS, make it
-the focused app first. Presses are timed in wall-clock milliseconds, not guest
-frames.
+tool. The intended RetroArch window must receive the input; on Windows and
+macOS, make it the focused app first. Windows may reject input from a process
+at a lower integrity level than the target. Presses are timed in wall-clock
+milliseconds, not guest frames.
 
 ## Screenshot preprocessing and OCR
 
