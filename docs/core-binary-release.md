@@ -109,9 +109,15 @@ dynamic library. Its SHA-256 was
 `c9fa677dc839e580ff770da3296ff614ca934fbabc9d2573292ef25e6b29fe04`. The
 full local `make build` and `make test` also passed on macOS arm64, including
 the GB/CGB, libretro, GBA, netpacket probe, Mooneye protocol, homebrew checker
-and PPU frame runner checks. The GitHub Actions workflow has not yet run for
-this change, so Linux x86-64, Linux arm64, Windows x86-64 and Steam Deck CI
-artifacts await their first run.
+and PPU frame runner checks.
+
+GitHub Actions acceptance on 2026-11-26: [PR #1's Core Binary Release run](https://github.com/jiayeli-hualien/LotusGB/actions/runs/45735338534)
+passed all five platform jobs. Each loaded the target core and ran licensed
+GB Pong for 120 frames; the Windows job ran on native Windows, and Steam Deck
+ABI smoke ran on Ubuntu x86-64. All five artifacts were downloaded and
+checked for expected files, formats, manifests, notices and SHA-256 values.
+The [existing PR CI run](https://github.com/jiayeli-hualien/LotusGB/actions/runs/45735338407)
+also passed, including `make test` and GBIT instruction comparisons.
 Build and smoke success do not establish broad compatibility or prove loading
 in RetroArch's GUI. The Steam Deck manifest explicitly keeps device
 verification pending; its Ubuntu smoke test does not replace loading the
