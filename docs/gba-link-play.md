@@ -45,7 +45,7 @@ and back up your save before trading.
 2. **Relay:** The host enables **Use Relay Server** before hosting; the other
    player joins that same room and does not need to enable the option
    separately. One current-version Wireless Adapter relay trade has succeeded;
-   offline reload of both saves after that trade remains unverified.
+   both players confirmed the trade result after reopening their saves offline.
 3. In both games, enter the matching Wireless Adapter or Cable activity and
    follow the game's prompts. A RetroArch connection alone does not mean the
    games have linked.

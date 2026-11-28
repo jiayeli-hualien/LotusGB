@@ -119,9 +119,9 @@ does not change the eventual acceptance gates.
    or varied-save acceptance gates.
 
 Limited Wireless Adapter LAN and relay single-battle observations are recorded
-in the [RFU design notes](gba-rfu-protocol.md). The next relay priority is to
-confirm that both saves reopen offline with the expected trade results. The
-broader acceptance gates below remain open.
+in the [RFU design notes](gba-rfu-protocol.md). The user confirmed both saves
+reopened offline with the expected relay trade results. The broader acceptance
+gates below remain open.
 
 ### Link documentation, maintainability and validation
 
