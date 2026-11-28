@@ -118,21 +118,10 @@ does not change the eventual acceptance gates.
    exploratory trade-only check; it does not pass or skip the later LAN battle
    or varied-save acceptance gates.
 
-Do not start Wireless Adapter battle acceptance this week. This targeted trade
-variant is the only new manual test in the week; defer repeated sessions or
-reconnect trials, multiple randomized save sets, fixed-delay baselines, RFU or
-Cable relay trials, latency optimization, Ruby/Sapphire, Japanese Emerald and
-other game or language profiles. Incremental code-boundary reviews and new
-transport behavior are also outside this week's plan unless needed to fix a
-failure found during the scheduled work. These remain future work with no date
-assigned. Finish the formal acceptance gates below in order; the exploratory
-trade check does not authorize skipping a gate.
-
-Exploratory observation (2026-11-24): the user reported one successful
-current-version English Emerald Wireless Adapter trade through RetroArch relay.
-This single trade does not pass the formal relay gate below; post-trade save
-reload, repeated-session reliability, role reversal and battle remain
-unverified.
+Limited Wireless Adapter LAN and relay single-battle observations are recorded
+in the [RFU design notes](gba-rfu-protocol.md). The next relay priority is to
+confirm that both saves reopen offline with the expected trade results. The
+broader acceptance gates below remain open.
 
 ### Link documentation, maintainability and validation
 
@@ -160,11 +149,8 @@ Work in small, independently reviewable changes:
    explicit. Do not combine broad file moves with protocol changes.
 4. **Protect and validate the current path.** Retain focused regressions for
    handshake, queued data, reset and disconnect; run the appropriate suite
-   after each change. This week's manual validation is limited to independently
-   reopening both saves from the distinct-trainer RFU trade. Battle, repeated
-   sessions, reconnect, and cable LAN/relay rechecks are deferred unless a
-   future code change affects those paths. Confirm save persistence when
-   testing trades.
+   after each change. Confirm save persistence when testing trades and track
+   reconnect and repeated-session reliability separately.
 5. **Use measured evidence to decide whether to optimize.** Performance
    improvement is not a prerequisite for the relay trial. Consider a change
    only if the fixed-delay baseline shows that RTT increases the guest-visible
@@ -175,11 +161,8 @@ Work in small, independently reviewable changes:
 ### Deferred link validation — LAN, saves, baseline, then relay (2026-11-24)
 
 Keep the current connection mechanism while functional acceptance is in
-progress. This is pending work, not a claim that save independence or full
-link functionality has passed. The independent save reload and documentation
-alignment listed above are complete; the only remaining scheduled manual check
-this week is the exploratory trade in item 3. Do not advance to the later gates
-until they are scheduled. Execute these gates in order:
+progress. Use the gates below to establish reproducibility and expand the
+tested scope beyond the documented trade and battle observations.
 
 1. **Pass reproducible real socket/LAN functional acceptance.** Verify link
    setup, a completed trade with both saves independently reopened, and a

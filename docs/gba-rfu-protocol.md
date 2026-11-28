@@ -6,7 +6,7 @@
 
 RFU is the data-exchange protocol Pokémon Emerald uses with the Game Boy Advance Wireless Adapter. LotusGBA's experimental link support currently targets English Emerald only; it is not general GBA wireless multiplayer support.
 
-One English Emerald trade completed over LAN, and both players reopened their saves offline to confirm the result. One current-version relay trade was also reported successful. Battle, save reload after a relay trade, repeated-session reliability and reversed host roles remain unverified.
+One English Emerald trade completed over LAN, and both players reopened their saves offline to confirm the result. One current-version relay trade was also reported successful. Colosseum single battles have completed over LAN and relay. Offline reload of both saves after a relay trade remains unverified.
 
 ## What happens on original hardware
 
@@ -32,8 +32,9 @@ The game still waits for the other endpoint at steps such as identity and trade 
 
 | Test | Current result | Not yet established |
 |---|---|---|
-| English Emerald, LAN | One trade completed. Both distinct-trainer saves were reopened offline and showed the original trainer and post-trade party. | Other game flows, battle or long-term reliability. |
-| English Emerald, relay | One current-version trade was reported successful on 2026-11-24. | Save reload after relay, repeated sessions, reversed host roles, battle or general WAN support. |
+| English Emerald, LAN | One trade completed. Both distinct-trainer saves were reopened offline and showed the original trainer and post-trade party. A separate single battle showed complementary Win/Loss screens. | Other game flows and long-term reliability. |
+| English Emerald, relay | One current-version trade was reported successful on 2026-11-24. | Offline reload of both saves after the trade. |
+| English Emerald, relay single battle | On 2026-11-27, a single battle and Trainer Card viewing were reported successful through the Singapore relay. After reversing host and client roles, play reached a faint and both players returned to the lobby. Viewing the Trainer Card kept the session connected. Neither run added artificial delay. | Formal Win/Loss screens were not captured in the reversed-role run. Long-term relay reliability remains unverified. |
 | Japanese Emerald | The core recognizes game code `BPEJ`; synthetic startup and reset tests pass. | Actual Japanese Emerald link play. |
 | Automated checks | Two emulated GBA systems exchange test data to check ordering, delay, retries, queues and some reset cases. | Whether the commercial game completes a connection, trade or battle. |
 

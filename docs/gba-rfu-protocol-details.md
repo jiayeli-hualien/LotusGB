@@ -128,10 +128,9 @@ tests check ordering, retries and timeout handling under the chosen event
 schedules; they cannot establish a supported RTT limit or Emerald's real
 timeout budget.
 
-Actual-game results are tracked separately: one English Emerald trade has
-completed over LAN, and one relay trade was reported successful. Battle, save
-reload after the relay trade, reconnect after cancellation and physical
-Wireless Adapter timing remain unverified; see the [RFU overview](gba-rfu-protocol.md).
+See the [RFU overview](gba-rfu-protocol.md) for English Emerald trade, save
+reload and battle results. Reconnect after cancellation and physical adapter
+timing remain unverified.
 
 For exact test names, commands, source references and diagnostic trace fields,
 see the English [implementation reference](gba-rfu-implementation-reference.en.md).

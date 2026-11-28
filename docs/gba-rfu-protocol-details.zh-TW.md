@@ -77,6 +77,6 @@ LotusGBA 以 RetroArch Netpacket 的可靠模式送出封包；前端負責可�
 
 這些合成測試以 service tick（服務刻度）推進，不是按真實時間計時。延遲測試能檢查程式在指定排程下如何處理資料順序、重試和逾時，但不能換算成可支援的 RTT 門檻，也不能代表綠寶石實際使用的逾時時間。
 
-實際遊戲驗收結果另見[RFU 設計說明](gba-rfu-protocol.zh-TW.md)：英文版綠寶石已完成一次 LAN 交換，另有一次中繼交換成功回報。對戰、中繼後存檔重開、取消後重新連線，以及真實 Wireless Adapter 時序尚未驗證。
+交換、存檔重開及對戰的驗證結果請見 [RFU 設計說明](gba-rfu-protocol.zh-TW.md#目前的驗證結果)。取消後重新連線及真實轉接器的時序仍待驗證。
 
 主要來源是 [`librfu.h`](https://github.com/pret/pokeemerald/blob/master/include/librfu.h)、[`librfu_rfu.c`](https://github.com/pret/pokeemerald/blob/master/src/librfu_rfu.c) 和 [`librfu_intr.c`](https://github.com/pret/pokeemerald/blob/master/src/librfu_intr.c)。若要查完整測試案例名稱、trace 欄位和原始程式索引，另見英文[實作參考](gba-rfu-implementation-reference.en.md)。

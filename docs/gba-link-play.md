@@ -5,14 +5,14 @@
 Link play is experimental. Current GBA link support is built and tested
 primarily for English Pokémon Emerald; it is not general-purpose GBA
 multiplayer support. For this game, **Wireless Adapter** is the recommended
-default link device and preferred profile for eventual WAN play. Use
+default link device and preferred device for relay play. Use
 **Link Cable** primarily on LAN. Each player uses their own save.
 
 ## Supported scope
 
 - **English Pokémon Emerald — Wireless Adapter:** One real LAN trade exchanged
   one Pokémon per player (two total); both saves reopened offline with the
-  traded Pokémon. Battle is unverified.
+  traded Pokémon. Single battles have completed over LAN and relay.
 - **English Pokémon Emerald — Link Cable:** Use primarily on LAN. Relay
   performance and reliability are not established.
 - **Other profiles:** Japanese Emerald Wireless Adapter is recognized, but
@@ -45,8 +45,7 @@ and back up your save before trading.
 2. **Relay:** The host enables **Use Relay Server** before hosting; the other
    player joins that same room and does not need to enable the option
    separately. One current-version Wireless Adapter relay trade has succeeded;
-   this does not establish save persistence, repeated-session reliability or
-   battle support.
+   offline reload of both saves after that trade remains unverified.
 3. In both games, enter the matching Wireless Adapter or Cable activity and
    follow the game's prompts. A RetroArch connection alone does not mean the
    games have linked.
